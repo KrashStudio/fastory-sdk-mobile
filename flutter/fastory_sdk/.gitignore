@@ -1,0 +1,14 @@
+!lib/
+.dart_tool/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+pubspec.lock
+.idea/
+*.iml
+.DS_Store
+example/android/
+example/ios/
+example/.metadata
+example/analysis_options.yaml
+example/test/

@@ -1,0 +1,16 @@
+name: fastory_sdk_example
+description: Demo app for the fastory_sdk plugin.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  fastory_sdk:
+    path: ../
+
+flutter:
+  uses-material-design: true

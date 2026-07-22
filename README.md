@@ -1,4 +1,199 @@
-# Fastory Mobile SDK
+# Fastory SDK v0.1 — 433 Integration Guide
 
-Release distribution of the Fastory Mobile SDK. The first tagged release (`sdk-v0.1.0`) will replace
-this placeholder with the SDK package and its integration guide.
+Audience: 433 / Globant engineering team.
+Scope: Fastory Flutter SDK v0.1.0 (ultra-light, WebView-based).
+
+## Overview
+
+The SDK opens the Fastory games hub of the 433 Fanzone inside your Flutter app, in five steps:
+
+1. Your app calls `Fastory.openGames()` (e.g. from your footer tab).
+2. The SDK presents a full-screen native view containing **WebView A**, which loads the hub — a hidden tab of the 433 Fanzone: `https://fanzone.me/433?tab=games-app&chrome=0&consent=1`.
+3. The user taps a game image. The hub triggers `window.open(url)`; the SDK intercepts the navigation natively.
+4. The SDK presents a native bottom sheet ("toaster") containing **WebView B**, which loads the game: `https://fanzone.me/s/{slug}?embed=1&utm_source=sdk`.
+5. Any navigation to an origin other than `fanzone.me` opens in the system browser. Closing the sheet returns to the hub; closing the hub returns to your app.
+
+```
++---------------------------------------------------------------+
+|                        433 Flutter app                        |
+|                                                               |
+|   footer tap --> Fastory.openGames()                          |
+|                        |                                      |
+|                        v                                      |
+|   +-------------------------------------------------------+   |
+|   |            Full-screen native view                    |   |
+|   |   WebView A (hub)                                     |   |
+|   |   fanzone.me/433?tab=games-app&chrome=0&consent=1     |   |
+|   |                                                       |   |
+|   |   tap game image (window.open)                        |   |
+|   |            |                                          |   |
+|   |            |  intercepted natively (URLPolicy)        |   |
+|   |            v                                          |   |
+|   |   +-----------------------------------------------+   |   |
+|   |   |   Native bottom sheet ("toaster")             |   |   |
+|   |   |   WebView B (game)                            |   |   |
+|   |   |   fanzone.me/s/{slug}?embed=1&utm_source=sdk  |   |   |
+|   |   +-----------------------------------------------+   |   |
+|   +-------------------------------------------------------+   |
+|                                                               |
+|   any non-fanzone.me origin ------> system browser            |
++---------------------------------------------------------------+
+```
+
+## Prerequisites
+
+- Flutter >= 3.10.0 (Dart >= 3.0)
+- iOS 15.0+ (deployment target)
+- Android minSdk 24
+
+## Install
+
+Add the SDK as a git dependency in your `pubspec.yaml`:
+
+```yaml
+dependencies:
+  fastory_sdk:
+    git:
+      url: https://github.com/KrashStudio/fastory-sdk-mobile
+      path: flutter/fastory_sdk
+      ref: sdk-v0.1.0
+```
+
+Then:
+
+```sh
+flutter pub get
+```
+
+No extra native setup is required beyond the minimum OS versions above (iOS deployment target 15.0 in your Podfile/Xcode project, `minSdkVersion 24` in your Android Gradle config).
+
+## Integrate in 5 lines
+
+Configure once in `main()`, open from anywhere (e.g. your footer):
+
+```dart
+import 'package:fastory_sdk/fastory_sdk.dart';
+
+void main() {
+  Fastory.configure(const FastoryConfig(fanzoneSlug: '433'));
+  runApp(const App433());
+}
+
+// In your footer tap handler:
+onTap: () => Fastory.openGames(),
+```
+
+## Configuration reference
+
+`FastoryConfig`:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `fanzoneSlug` | `String` | yes | Your Fanzone slug, e.g. `"433"` |
+| `environment` | `FastoryEnvironment` | no (default `production`) | `production` (`https://fanzone.me`), `staging` (`https://staging.fanzone.me`), or `development` (uses `developmentBaseUrl`) |
+| `hubTabSlug` | `String` | no (default `"games-app"`) | The hidden hub tab slug |
+| `locale` | `String?` | no | Forwarded to the hub when provided; defaults to the web Fanzone's own locale resolution |
+| `developmentBaseUrl` | `String?` | only when `environment == development` | Custom `https` base URL for internal testing; `configure` throws if missing in development |
+
+Public methods:
+
+| Method | Description |
+|---|---|
+| `Fastory.configure(FastoryConfig)` | Sets the configuration. Call once before any `openGames()`. |
+| `Fastory.openGames()` | Presents the full-screen hub view. |
+| `Fastory.close()` | Programmatically dismisses the hub (and any open game sheet). |
+
+Under the hood the plugin uses a `MethodChannel` named `fastory_sdk` (`configure`, `openGames`, `close`) and an `EventChannel` named `fastory_sdk/events`.
+
+## Events
+
+The SDK exposes a broadcast stream of lifecycle events:
+
+| Event | Payload | Emitted when |
+|---|---|---|
+| `hubOpened` | — | The hub view is presented |
+| `hubClosed` | — | The hub view is dismissed |
+| `gameOpened` | `{slug}` | A game sheet is presented |
+| `gameClosed` | — | The game sheet is dismissed |
+| `externalLink` | `{url}` | A non-fanzone link was handed off to the system browser |
+
+Example — forwarding to Segment on the app side:
+
+Events are Dart sealed classes — switch over the event instance:
+
+```dart
+Fastory.events.listen((FastoryEvent event) {
+  switch (event) {
+    case FastoryHubOpened():
+      analytics.track('Fastory Hub Opened');
+    case FastoryGameOpened(:final slug):
+      analytics.track('Fastory Game Opened', properties: {'slug': slug});
+    case FastoryExternalLink(:final url):
+      analytics.track('Fastory External Link', properties: {'url': url});
+    default:
+      break;
+  }
+});
+```
+
+The SDK itself sends no analytics in v0.1 — you own all tracking through this stream.
+
+## Behavior details
+
+### URL interception (URLPolicy)
+
+Every navigation decision is made natively, per URL:
+
+| Rule | Condition | Decision |
+|---|---|---|
+| 1 | Origin = Fanzone base AND path starts with `/s/` | Open the game bottom sheet (WebView B) |
+| 2 | Origin = Fanzone base, any other path | Allow — navigate inside the current WebView |
+| 3 | Any other `http(s)` origin | Open in the system browser |
+| 4 | Non-`http(s)` scheme (`mailto:`, `tel:`, `intent:`, `market:`, …) | Hand off to the system (external) |
+
+### Shared cookies
+
+WebView A (hub) and WebView B (game) share the same cookie store, so consent and session state set in the hub are visible to games:
+
+- iOS: both WebViews use the same `WKWebsiteDataStore.default()` and a shared static `WKProcessPool`.
+- Android: the global `CookieManager` is used, with `acceptThirdPartyCookies` enabled on both WebViews.
+
+### Android back button
+
+Priority order:
+
+1. If the game sheet is open, close the sheet.
+2. Else if WebView A `canGoBack`, `goBack()`.
+3. Else close the full-screen view and return to the app.
+
+### Safe areas
+
+The SDK WebViews are laid out **edge-to-edge** (the Fanzone fills the screen top and bottom, no letterboxing); the chromeless Fanzone pads its own content via `env(safe-area-inset-*)` so nothing interactive sits under the notch, Dynamic Island, or gesture bar. Native close affordances (the ✕ button) are inset below the system bars. You do not need to do anything on the app side.
+
+### Offline
+
+If the **hub** fails to load (airplane mode, no network), the SDK shows a native error state with a retry action — no blank white WebView is left on screen. In v0.1 the game sheet has no error view of its own; on failure it simply remains dismissible (swipe down / back).
+
+## FAQ
+
+**Can we use our own in-app WebView policy / browser component?**
+No — the two WebViews are owned and configured by the SDK (cookie sharing, URL interception, safe areas depend on it). External links respect the system default browser.
+
+**Do we need ProGuard / R8 rules?**
+No custom rules are expected for v0.1.0: the SDK uses the platform `android.webkit.WebView` and standard Flutter plugin registration, both covered by default Flutter/AGP keep rules. If your build uses aggressive custom shrinking and you hit an issue, keep the SDK's plugin package and report it to us.
+
+**What does the SDK add to app size?**
+It is intentionally ultra-light: Dart plugin glue plus thin native view controllers around system WebViews. No bundled UI frameworks, no analytics libraries, no native third-party dependencies. Expect a negligible footprint (well under 1 MB per platform).
+
+**Will this pass Apple App Store review / TestFlight?**
+The SDK displays the partner's own web content (433's Fanzone) in a WebView, with no payments, no OAuth, no account creation, and no downloadable code beyond regular web pages. This is standard partner-content embedding. Prize-based games remain subject to the usual App Store Review Guidelines on contests (the organizer of the contest is 433/Fastory, not Apple — state this in your contest rules as usual).
+
+**Which environments exist?**
+Production (`https://fanzone.me`) and staging (`https://staging.fanzone.me`). A development environment with a configurable base URL (`developmentBaseUrl`) is available for internal testing.
+
+## Known limitations (v0.1)
+
+- No authentication / SSO bridge — games run anonymously or with their own web-side identity.
+- No SDK-side analytics — use the event stream and your own tracker (Segment, etc.).
+- No JavaScript injection and no `postMessage` bridge between the app and the web content — a `postMessage` bridge is planned for v0.2.
+- Portrait and landscape are supported, but the hub content is designed mobile-first (portrait).

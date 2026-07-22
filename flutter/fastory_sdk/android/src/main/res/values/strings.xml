@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="fastory_sdk_error_message">Something went wrong while loading the content.</string>
+    <string name="fastory_sdk_retry">Retry</string>
+    <string name="fastory_sdk_close">Close</string>
+</resources>
