@@ -61,7 +61,7 @@ public final class FastorySdkPlugin: NSObject, FlutterPlugin {
         let config = FastoryConfig(
             environment: environment,
             fanzoneSlug: fanzoneSlug,
-            hubTabSlug: arguments["hubTabSlug"] as? String ?? "games-app",
+            hubTabSlug: arguments["hubTabSlug"] as? String ?? "games",
             locale: arguments["locale"] as? String
         )
         Fastory.configure(config)

@@ -5,6 +5,7 @@ final class FastoryGameSheetViewController: UIViewController {
     private let config: FastoryConfig
     private let gameURL: URL
     private var gameSlug: String
+    private var lastGameURL: URL
     private let webView: WKWebView
     private let reusedLoadedSlug: String?
     private var hasNotifiedOpened = false
@@ -12,6 +13,7 @@ final class FastoryGameSheetViewController: UIViewController {
     init(config: FastoryConfig, gameURL: URL, gameSlug: String) {
         self.config = config
         self.gameURL = gameURL
+        self.lastGameURL = gameURL
         self.gameSlug = gameSlug
         var loadedSlug: String?
         if let warm = Fastory.takeWarmGameWebView(loadedSlug: &loadedSlug) {
@@ -64,11 +66,12 @@ final class FastoryGameSheetViewController: UIViewController {
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         if isBeingDismissed || presentingViewController == nil {
-            // Keep the loaded game warm: reopening the same game is instant, another game
-            // reuses the webview and its warm renderer process.
+            // Keep the webview warm but reload the game in the background: reopening is still
+            // instant, and the player lands on a fresh start screen instead of mid-session.
             webView.navigationDelegate = nil
             webView.uiDelegate = nil
             webView.removeFromSuperview()
+            webView.load(URLRequest(url: lastGameURL))
             Fastory.stashWarmGameWebView(webView, slug: gameSlug)
             Fastory.eventsDelegate?.fastoryGameClosed()
         }
@@ -87,7 +90,8 @@ final class FastoryGameSheetViewController: UIViewController {
             Fastory.eventsDelegate?.fastoryGameClosed()
             gameSlug = newSlug
         }
-        webView.load(URLRequest(url: url.fastoryEmbeddedGameURL))
+        lastGameURL = url.fastoryEmbeddedGameURL
+        webView.load(URLRequest(url: lastGameURL))
         if slugChanged {
             Fastory.eventsDelegate?.fastoryGameOpened(slug: newSlug)
         }

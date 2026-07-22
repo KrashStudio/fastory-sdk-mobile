@@ -44,14 +44,14 @@ void main() {
 
   group('configure — platform channel contract (SPEC §5.2)', () {
     test('sends the full configure map with defaults applied', () async {
-      await Fastory.configure(const FastoryConfig(fanzoneSlug: '433'));
+      await Fastory.configure(const FastoryConfig(fanzoneSlug: 'your-fanzone'));
 
       expect(calls, hasLength(1));
       expect(calls.single.method, 'configure');
       expect(calls.single.arguments, <String, Object?>{
-        'fanzoneSlug': '433',
+        'fanzoneSlug': 'your-fanzone',
         'environment': 'production',
-        'hubTabSlug': 'games-app',
+        'hubTabSlug': 'games',
         'locale': null,
         'developmentBaseUrl': null,
       });
@@ -59,7 +59,7 @@ void main() {
 
     test('sends every configured field', () async {
       await Fastory.configure(const FastoryConfig(
-        fanzoneSlug: '433',
+        fanzoneSlug: 'your-fanzone',
         environment: FastoryEnvironment.development,
         hubTabSlug: 'hidden-games',
         locale: 'fr-FR',
@@ -67,7 +67,7 @@ void main() {
       ));
 
       expect(calls.single.arguments, <String, Object?>{
-        'fanzoneSlug': '433',
+        'fanzoneSlug': 'your-fanzone',
         'environment': 'development',
         'hubTabSlug': 'hidden-games',
         'locale': 'fr-FR',
@@ -81,7 +81,7 @@ void main() {
         FastoryEnvironment.staging,
       ]) {
         await Fastory.configure(FastoryConfig(
-          fanzoneSlug: '433',
+          fanzoneSlug: 'your-fanzone',
           environment: environment,
         ));
       }
@@ -103,7 +103,7 @@ void main() {
     test('rejects a blank hubTabSlug', () {
       expect(
         () => Fastory.configure(
-          const FastoryConfig(fanzoneSlug: '433', hubTabSlug: ''),
+          const FastoryConfig(fanzoneSlug: 'your-fanzone', hubTabSlug: ''),
         ),
         throwsArgumentError,
       );
@@ -112,7 +112,7 @@ void main() {
     test('rejects development without developmentBaseUrl', () {
       expect(
         () => Fastory.configure(const FastoryConfig(
-          fanzoneSlug: '433',
+          fanzoneSlug: 'your-fanzone',
           environment: FastoryEnvironment.development,
         )),
         throwsArgumentError,
@@ -152,25 +152,25 @@ void main() {
       events.listen(received.add);
       await null;
 
-      await emitEvent(<String, Object?>{'type': 'hubOpened', 'slug': '433'});
+      await emitEvent(<String, Object?>{'type': 'hubOpened', 'slug': 'your-fanzone'});
       await emitEvent(<String, Object?>{'type': 'gameOpened', 'slug': 'summer-quiz'});
       await emitEvent(<String, Object?>{'type': 'gameClosed'});
       await emitEvent(<String, Object?>{
         'type': 'externalLink',
-        'url': 'https://www.instagram.com/433',
+        'url': 'https://www.instagram.com/fastory',
       });
       await emitEvent(<String, Object?>{'type': 'hubClosed'});
       await null;
 
       expect(received, hasLength(5));
       expect(received[0], isA<FastoryHubOpened>()
-          .having((FastoryHubOpened event) => event.fanzoneSlug, 'fanzoneSlug', '433'));
+          .having((FastoryHubOpened event) => event.fanzoneSlug, 'fanzoneSlug', 'your-fanzone'));
       expect(received[1], isA<FastoryGameOpened>()
           .having((FastoryGameOpened event) => event.slug, 'slug', 'summer-quiz'));
       expect(received[2], isA<FastoryGameClosed>());
       expect(received[3], isA<FastoryExternalLink>()
           .having((FastoryExternalLink event) => event.url, 'url',
-              'https://www.instagram.com/433'));
+              'https://www.instagram.com/fastory'));
       expect(received[4], isA<FastoryHubClosed>());
     });
 

@@ -1,7 +1,7 @@
 # Fastory Mobile SDK — v0.1 Specification
 
 Status: **Normative** — this document is the single source of truth for the Fastory Mobile SDK v0.1 public API.
-Audience: SDK implementers (iOS, Android, Flutter) and integrators (433 app team).
+Audience: SDK implementers (iOS, Android, Flutter) and integrators (your-fanzone app team).
 The key words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are to be interpreted as described in RFC 2119.
 
 ---
@@ -12,8 +12,8 @@ The Fastory Mobile SDK embeds the Fastory Fanzone games experience inside a host
 
 ### 1.1 User flow
 
-1. The host app (Flutter, e.g. the 433 app) calls `Fastory.openGames()`.
-2. The SDK presents a **full-screen native view** containing **WebView A** (the "hub"), which loads a hidden tab of the client's Fanzone (e.g. `https://fanzone.me/433?tab=games-app&chrome=0&consent=0`).
+1. The host app (Flutter, e.g. the your-fanzone app) calls `Fastory.openGames()`.
+2. The SDK presents a **full-screen native view** containing **WebView A** (the "hub"), which loads a hidden tab of the client's Fanzone (e.g. `https://fanzone.me/your-fanzone?tab=games&chrome=0&consent=0`).
 3. The user taps a game image in the hub. The web page performs `window.open(url, '_self')`; the SDK intercepts this navigation natively.
 4. The SDK presents a **native bottom sheet** (the "toaster") containing **WebView B**, which loads the game (e.g. `https://fanzone.me/s/{slug}?embed=1&utm_source=sdk`).
 5. Any navigation to an origin other than the configured Fanzone base URL opens in the **system browser**.
@@ -44,8 +44,8 @@ The SDK exposes three operations and one event stream. Signatures below are norm
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `environment` | enum `production` \| `staging` \| `development` | yes | Selects the Fanzone base URL (§ 3.1) |
-| `fanzoneSlug` | string | yes | Fanzone identifier, e.g. `"433"` |
-| `hubTabSlug` | string | yes | Hidden tab used as games hub, e.g. `"games-app"` |
+| `fanzoneSlug` | string | yes | Fanzone identifier, e.g. `"your-fanzone"` |
+| `hubTabSlug` | string | yes | Hidden tab used as games hub, e.g. `"games"` |
 | `locale` | string (BCP 47) | no | Preferred locale hint, e.g. `"en"`, `"fr-FR"` |
 | `developmentBaseUrl` | string (https URL) | only when `environment == development` | Custom base URL for development |
 
@@ -212,7 +212,7 @@ The configured base URL origin (scheme + host + port) is referred to below as th
 | `consent` | `0` | Marks consent as handled by the host app; the web player suppresses its own cookie banner and does not assume analytics consent |
 | `locale` | `locale` config value | Optional locale hint; omitted when not configured |
 
-Example: `https://fanzone.me/433?tab=games-app&chrome=0&consent=0`
+Example: `https://fanzone.me/your-fanzone?tab=games&chrome=0&consent=0`
 
 ### 3.3 Game URL (WebView B)
 
@@ -249,16 +249,16 @@ The **stories origins** are the Fastory story-player domains games may be served
 `https://story.tl` and `https://test.story.tl` (exact `https` host match, default port). Any
 stories-origin URL whose path does not start with `/s/` follows rule 3 (external).
 
-### 4.1 Examples (production, `fanzoneSlug=433`)
+### 4.1 Examples (production, `fanzoneSlug=your-fanzone`)
 
 | URL | Rule | Decision |
 |---|---|---|
 | `https://fanzone.me/s/summer-quiz` | 1 | `OPEN_GAME_SHEET` |
 | `https://fanzone.me/s/wheel-of-fortune?ref=hub` | 1 | `OPEN_GAME_SHEET` |
 | `https://story.tl/s/summer-quiz` | 1 | `OPEN_GAME_SHEET` |
-| `https://fanzone.me/433?tab=games-app&chrome=0&consent=0` | 2 | `ALLOW` |
-| `https://fanzone.me/433/legal` | 2 | `ALLOW` |
-| `https://www.instagram.com/433` | 3 | `OPEN_EXTERNAL_BROWSER` |
+| `https://fanzone.me/your-fanzone?tab=games&chrome=0&consent=0` | 2 | `ALLOW` |
+| `https://fanzone.me/your-fanzone/legal` | 2 | `ALLOW` |
+| `https://www.instagram.com/your-fanzone` | 3 | `OPEN_EXTERNAL_BROWSER` |
 | `https://story.tl/x/abc` | 3 | `OPEN_EXTERNAL_BROWSER` |
 | `mailto:support@fastory.io` | 4 | `OPEN_EXTERNAL_BROWSER` |
 | `tel:+33100000000` | 4 | `OPEN_EXTERNAL_BROWSER` |
@@ -296,8 +296,8 @@ Argument: a `Map<String, Object?>`:
 ```json
 {
   "environment": "production",
-  "fanzoneSlug": "433",
-  "hubTabSlug": "games-app",
+  "fanzoneSlug": "your-fanzone",
+  "hubTabSlug": "games",
   "locale": "en",
   "developmentBaseUrl": null
 }
@@ -329,7 +329,7 @@ Each event is a `Map<String, Object?>` with a `type` discriminator:
 
 | `type` | Payload | Emitted when |
 |---|---|---|
-| `hubOpened` | `{"type": "hubOpened", "slug": "433"}` | Hub view is presented (`slug` = configured `fanzoneSlug`) |
+| `hubOpened` | `{"type": "hubOpened", "slug": "your-fanzone"}` | Hub view is presented (`slug` = configured `fanzoneSlug`) |
 | `hubClosed` | `{"type": "hubClosed"}` | Hub view is fully dismissed |
 | `gameOpened` | `{"type": "gameOpened", "slug": "summer-quiz"}` | Game sheet is presented (or replaced) |
 | `gameClosed` | `{"type": "gameClosed"}` | Game sheet is dismissed |
@@ -408,7 +408,7 @@ The chromeless Fanzone (`chrome=0`) applies its own `env(safe-area-inset-*)` pad
 - The SDK follows **Semantic Versioning 2.0.0** (`MAJOR.MINOR.PATCH`). The public API surface defined in § 2 and the platform channel contract in § 5 are the compatibility boundary: breaking either requires a MAJOR bump.
 - Releases are tagged `sdk-vX.Y.Z` (e.g. `sdk-v0.1.0`).
 - Distribution repository: **`KrashStudio/fastory-sdk-mobile`** (GitHub, **public, release-only**) — it receives the clean release package per version, tagged `sdk-vX.Y.Z`, with no development history (dev happens in the `fastory` monorepo). v0.1 ships the Flutter plugin; native Swift (SPM), native Kotlin (Maven), and React Native follow in later versions.
-- This spec version: **0.1.1**. The public names in § 2 and the channel contract in § 5 are locked (they ship in third-party integrations); any later normative change requires a new spec version and a coordinated SDK release. Changes since 0.1.0: stories origins added to rule 1 (§ 4); hub and game WebViews are kept warm across sessions (behavioral); the consent hint is now `consent=0` on both hub and game URLs (§ 3.2/§ 3.3) — banner suppressed without asserting analytics consent; the `hubOpened` event carries the `fanzoneSlug` (§ 5.3).
+- This spec version: **0.1.2**. The public names in § 2 and the channel contract in § 5 are locked (they ship in third-party integrations); any later normative change requires a new spec version and a coordinated SDK release. Changes since 0.1.0: stories origins added to rule 1 (§ 4); hub and game WebViews are kept warm across sessions (behavioral); the consent hint is now `consent=0` on both hub and game URLs (§ 3.2/§ 3.3) — banner suppressed without asserting analytics consent; the `hubOpened` event carries the `fanzoneSlug` (§ 5.3). Changes in 0.1.2: the default `hubTabSlug` is `games` (was `games-app`).
 
 ---
 

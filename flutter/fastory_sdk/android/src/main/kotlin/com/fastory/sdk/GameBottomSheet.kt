@@ -127,10 +127,14 @@ class GameBottomSheet : BottomSheetDialogFragment() {
     }
 
     override fun onDestroyView() {
-        // Keep the loaded game warm: reopening the same game is instant, another game reuses
-        // the webview and its warm renderer process.
+        // Keep the webview warm but reload the game in the background: reopening is still
+        // instant, and the player lands on a fresh start screen instead of mid-session.
         webView?.let {
-            Fastory.stashGameWebView(it, requireArguments().getString(ARG_SLUG).orEmpty())
+            Fastory.stashGameWebView(
+                it,
+                requireArguments().getString(ARG_SLUG).orEmpty(),
+                requireArguments().getString(ARG_URL),
+            )
         }
         webView = null
         super.onDestroyView()

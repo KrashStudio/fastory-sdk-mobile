@@ -11,7 +11,7 @@ enum class FastoryEnvironment(internal val defaultBaseUrl: String?) {
 data class FastoryConfig(
     val fanzoneSlug: String,
     val environment: FastoryEnvironment = FastoryEnvironment.PRODUCTION,
-    val hubTabSlug: String = "games-app",
+    val hubTabSlug: String = "games",
     val locale: String? = null,
     val developmentBaseUrl: String? = null,
 ) {

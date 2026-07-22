@@ -104,7 +104,7 @@ class FastorySdkPlugin :
             FastoryConfig(
                 fanzoneSlug = fanzoneSlug,
                 environment = environment,
-                hubTabSlug = call.argument<String>("hubTabSlug") ?: "games-app",
+                hubTabSlug = call.argument<String>("hubTabSlug") ?: "games",
                 locale = call.argument<String>("locale"),
                 developmentBaseUrl = call.argument<String>("developmentBaseUrl"),
             )

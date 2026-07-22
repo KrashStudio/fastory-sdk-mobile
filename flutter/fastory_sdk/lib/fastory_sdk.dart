@@ -1,4 +1,5 @@
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
 
 enum FastoryEnvironment { production, staging, development }
 
@@ -6,7 +7,7 @@ class FastoryConfig {
   const FastoryConfig({
     required this.fanzoneSlug,
     this.environment = FastoryEnvironment.production,
-    this.hubTabSlug = 'games-app',
+    this.hubTabSlug = 'games',
     this.locale,
     this.developmentBaseUrl,
   });
@@ -83,6 +84,9 @@ abstract final class Fastory {
       .cast<FastoryEvent>();
 
   static Future<void> configure(FastoryConfig config) {
+    // configure() is documented as callable straight from main(); make sure the platform
+    // channel has a binding even when runApp() has not executed yet.
+    WidgetsFlutterBinding.ensureInitialized();
     if (config.fanzoneSlug.trim().isEmpty) {
       throw ArgumentError.value(
         config.fanzoneSlug,

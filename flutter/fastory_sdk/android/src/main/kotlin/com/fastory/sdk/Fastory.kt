@@ -151,7 +151,7 @@ object Fastory {
         return createWebView(MutableContextWrapper(activity)) to null
     }
 
-    internal fun stashGameWebView(webView: WebView, slug: String) {
+    internal fun stashGameWebView(webView: WebView, slug: String, reloadUrl: String?) {
         val wrapper = webView.context as? MutableContextWrapper ?: run {
             webView.destroy()
             return
@@ -160,7 +160,9 @@ object Fastory {
         webView.webViewClient = WebViewClient()
         webView.webChromeClient = null
         wrapper.baseContext = wrapper.baseContext.applicationContext
-        webView.onPause()
+        // Reload the game in the background (no onPause, so the load completes): reopening is
+        // still instant, and the player lands on a fresh start screen instead of mid-session.
+        reloadUrl?.let(webView::loadUrl)
         warmGameWebView?.destroy()
         warmGameWebView = webView
         warmGameSlug = slug

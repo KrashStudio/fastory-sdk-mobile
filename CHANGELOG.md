@@ -4,6 +4,26 @@ All notable changes to the Fastory Mobile SDK are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: [SemVer](https://semver.org),
 tags `sdk-vX.Y.Z`.
 
+## 0.1.2
+
+Reopening a game now starts fresh, and `configure()` is safe to call straight from `main()`.
+
+### Changed
+
+- The default `hubTabSlug` is now **`games`** (was `games-app`), matching the Fanzone hub tab
+  convention. Hosts passing an explicit `hubTabSlug` are unaffected.
+- **Games restart on reopen** — closing the game sheet reloads the game in the background in the
+  retained WebView. Reopening the same game is still instant, but the player lands on the start
+  screen instead of back in the middle of a session. Visitor session and consent are preserved (the
+  reload reuses the shared cookie store); media autoplay stays gesture-gated, so nothing plays while
+  the reload happens off-screen.
+
+### Fixed
+
+- `configure()` now calls `WidgetsFlutterBinding.ensureInitialized()` itself. Calling `configure()`
+  from `main()` before `runApp()` previously failed silently (unawaited platform-channel call), and
+  every later `openGames()` rejected with `not_configured`.
+
 ## 0.1.1
 
 Faster opens (warm hub and game WebViews), stories-domain game links, and a corrected consent hint.

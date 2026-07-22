@@ -32,9 +32,9 @@ import 'package:fastory_sdk/fastory_sdk.dart';
 
 await Fastory.configure(
   const FastoryConfig(
-    fanzoneSlug: '433',
+    fanzoneSlug: 'your-fanzone',
     environment: FastoryEnvironment.production,
-    hubTabSlug: 'games-app',
+    hubTabSlug: 'games',
     locale: 'fr',
   ),
 );
@@ -42,9 +42,9 @@ await Fastory.configure(
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `fanzoneSlug` | `String` | required | Fanzone slug (e.g. `433`) |
+| `fanzoneSlug` | `String` | required | Fanzone slug (e.g. `your-fanzone`) |
 | `environment` | `FastoryEnvironment` | `production` | `production` (`fanzone.me`), `staging` (`staging.fanzone.me`), `development` |
-| `hubTabSlug` | `String` | `games-app` | Hidden fanzone tab used as the hub |
+| `hubTabSlug` | `String` | `games` | Hidden fanzone tab used as the hub |
 | `locale` | `String?` | `null` | Forced hub locale |
 | `developmentBaseUrl` | `String?` | `null` | Base URL, required when `environment` is `development` |
 

@@ -1,7 +1,7 @@
 # fastory_sdk_example
 
 Demo app for the `fastory_sdk` plugin: a dark app with a Home / Matches / Games / Profile bottom bar.
-The **Games** item calls `Fastory.openGames()` and opens the games hub of the `433` fanzone.
+The **Games** item calls `Fastory.openGames()` and opens the games hub of the configured fanzone.
 
 ## Unversioned native runners
 

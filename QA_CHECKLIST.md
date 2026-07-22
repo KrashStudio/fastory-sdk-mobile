@@ -1,4 +1,4 @@
-# Fastory SDK v0.1 — QA Checklist (433)
+# Fastory SDK v0.1 — QA Checklist
 
 Run the full scenario list on each device of the matrix before sign-off.
 
