@@ -1,6 +1,7 @@
 package com.fastory.sdk.flutter
 
 import android.app.Activity
+import android.content.Context
 import com.fastory.sdk.Fastory
 import com.fastory.sdk.FastoryConfig
 import com.fastory.sdk.FastoryEnvironment
@@ -22,9 +23,11 @@ class FastorySdkPlugin :
     private var eventChannel: EventChannel? = null
     private var eventSink: EventChannel.EventSink? = null
     private var activity: Activity? = null
+    private var applicationContext: Context? = null
 
     private val eventsListener = object : FastoryEventsListener {
-        override fun onHubOpened() = emit(mapOf("type" to "hubOpened"))
+        override fun onHubOpened(fanzoneSlug: String) =
+            emit(mapOf("type" to "hubOpened", "slug" to fanzoneSlug))
         override fun onHubClosed() = emit(mapOf("type" to "hubClosed"))
         override fun onGameOpened(slug: String) = emit(mapOf("type" to "gameOpened", "slug" to slug))
         override fun onGameClosed() = emit(mapOf("type" to "gameClosed"))
@@ -32,6 +35,7 @@ class FastorySdkPlugin :
     }
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+        applicationContext = binding.applicationContext
         methodChannel = MethodChannel(binding.binaryMessenger, "fastory_sdk").also {
             it.setMethodCallHandler(this)
         }
@@ -46,6 +50,7 @@ class FastorySdkPlugin :
         eventChannel?.setStreamHandler(null)
         eventChannel = null
         eventSink = null
+        applicationContext = null
     }
 
     override fun onAttachedToActivity(binding: ActivityPluginBinding) {
@@ -108,6 +113,7 @@ class FastorySdkPlugin :
             return
         }
         Fastory.configure(config, eventsListener)
+        applicationContext?.let(Fastory::preloadHub)
         result.success(null)
     }
 

@@ -118,8 +118,8 @@ extension FastorySdkPlugin: FlutterStreamHandler {
 }
 
 extension FastorySdkPlugin: FastoryEventsDelegate {
-    public func fastoryHubOpened() {
-        emit(["type": "hubOpened"])
+    public func fastoryHubOpened(fanzoneSlug: String) {
+        emit(["type": "hubOpened", "slug": fanzoneSlug])
     }
 
     public func fastoryHubClosed() {

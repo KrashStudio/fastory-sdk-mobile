@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:fastory_sdk/fastory_sdk.dart';
 import 'package:flutter/material.dart';
 
+const String kBuildLabel = 'fastory_sdk 0.1.1 · 433 tab=penalty';
+
 void main() {
   runApp(const ExampleApp());
 }
@@ -43,7 +45,9 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    Fastory.configure(const FastoryConfig(fanzoneSlug: '433'));
+    Fastory.configure(
+      const FastoryConfig(fanzoneSlug: '433', hubTabSlug: 'penalty'),
+    );
     _eventsSubscription = Fastory.events.listen(
       (FastoryEvent event) => debugPrint('Fastory event: $event'),
     );
@@ -66,6 +70,11 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      appBar: AppBar(
+        title: const Text(kBuildLabel, style: TextStyle(fontSize: 13)),
+        centerTitle: true,
+        toolbarHeight: 34,
+      ),
       body: IndexedStack(
         index: _currentIndex,
         children: const <Widget>[

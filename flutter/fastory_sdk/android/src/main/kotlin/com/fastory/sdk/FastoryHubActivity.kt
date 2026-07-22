@@ -60,19 +60,22 @@ class FastoryHubActivity : AppCompatActivity() {
         )
 
         Fastory.notifyHubOpened(this)
-        webView.loadUrl(config.hubUrl)
+        if (webView.url == null) {
+            webView.loadUrl(config.hubUrl)
+        }
     }
 
     override fun onDestroy() {
         if (::webView.isInitialized) {
-            webView.destroy()
+            // Keep the loaded hub warm for the next openGames() instead of reloading from scratch.
+            Fastory.stashHubWebView(webView)
             Fastory.notifyHubClosed(this)
         }
         super.onDestroy()
     }
 
     private fun buildViews() {
-        webView = WebView(this).apply {
+        webView = Fastory.obtainHubWebView(this).apply {
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -86,6 +89,7 @@ class FastoryHubActivity : AppCompatActivity() {
                 Gravity.TOP,
             )
             max = 100
+            isVisible = webView.progress < 100
         }
 
         errorView = LinearLayout(this).apply {
@@ -262,6 +266,9 @@ class FastoryHubActivity : AppCompatActivity() {
         }
         if (uri.getQueryParameter("utm_source") == null) {
             builder.appendQueryParameter("utm_source", "sdk")
+        }
+        if (uri.getQueryParameter("consent") == null) {
+            builder.appendQueryParameter("consent", "0")
         }
         return builder.build().toString()
     }

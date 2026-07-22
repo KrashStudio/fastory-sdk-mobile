@@ -17,13 +17,14 @@ enum FastoryWebKit {
 
 final class FastoryHubViewController: UIViewController {
     private let config: FastoryConfig
-    private lazy var webView = FastoryWebKit.makeWebView()
+    private let webView: WKWebView
     private let loadingIndicator = UIActivityIndicatorView(style: .large)
     private let errorView = UIView()
     private var hasNotifiedOpened = false
 
     init(config: FastoryConfig) {
         self.config = config
+        self.webView = Fastory.takeWarmHubWebView() ?? FastoryWebKit.makeWebView()
         super.init(nibName: nil, bundle: nil)
         modalPresentationStyle = .fullScreen
     }
@@ -40,20 +41,29 @@ final class FastoryHubViewController: UIViewController {
         setupLoadingIndicator()
         setupErrorView()
         setupCloseButton()
-        loadHub()
+        if webView.url == nil, !webView.isLoading {
+            loadHub()
+        } else if webView.isLoading {
+            loadingIndicator.startAnimating()
+        }
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         if !hasNotifiedOpened {
             hasNotifiedOpened = true
-            Fastory.eventsDelegate?.fastoryHubOpened()
+            Fastory.eventsDelegate?.fastoryHubOpened(fanzoneSlug: config.fanzoneSlug)
         }
     }
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         if isBeingDismissed {
+            // Keep the loaded hub warm for the next openGames() instead of reloading from scratch.
+            webView.navigationDelegate = nil
+            webView.uiDelegate = nil
+            webView.removeFromSuperview()
+            Fastory.stashWarmHubWebView(webView)
             Fastory.eventsDelegate?.fastoryHubClosed()
         }
     }

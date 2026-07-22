@@ -7,17 +7,26 @@ public enum NavigationDecision: Equatable, Sendable {
 }
 
 public enum URLPolicy {
+    // Games are served from the Fanzone origin or from the Fastory stories domains; /s/ links on
+    // either open the game sheet. Any other stories-domain path stays external.
+    private static let storiesHosts: Set<String> = ["story.tl", "test.story.tl"]
+
     public static func decide(url: URL, baseURL: URL) -> NavigationDecision {
         guard isWebScheme(url) else {
             return .openExternal
         }
-        guard isSameOrigin(url, baseURL) else {
-            return .openExternal
+        if isSameOrigin(url, baseURL) {
+            return url.path.hasPrefix("/s/") ? .openGameSheet : .allow
         }
-        if url.path.hasPrefix("/s/") {
+        if isStoriesOrigin(url), url.path.hasPrefix("/s/") {
             return .openGameSheet
         }
-        return .allow
+        return .openExternal
+    }
+
+    private static func isStoriesOrigin(_ url: URL) -> Bool {
+        url.scheme?.lowercased() == "https"
+            && storiesHosts.contains(url.host?.lowercased() ?? "")
     }
 
     private static func isWebScheme(_ url: URL) -> Bool {

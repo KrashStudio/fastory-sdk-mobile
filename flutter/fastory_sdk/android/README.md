@@ -2,8 +2,13 @@
 
 # fastory_sdk — Android
 
-- `src/main/kotlin/com/fastory/sdk/` : copie des classes cœur du SDK Android natif (`Fastory`, `FastoryConfig`, `FastoryHubActivity`, `GameBottomSheet`, `UrlPolicy`). Seule adaptation autorisée : l'import `com.fastory.sdk.flutter.R` (le namespace Gradle du plugin diffère de celui du module natif).
-- `src/main/kotlin/com/fastory/sdk/flutter/FastorySdkPlugin.kt` : pont Flutter (MethodChannel `fastory_sdk`, EventChannel `fastory_sdk/events`), spécifique au plugin — pas concerné par la synchronisation.
-- `src/main/res/` et `src/main/AndroidManifest.xml` : copies des ressources et du manifest du module natif.
+- `src/main/kotlin/com/fastory/sdk/`: copy of the native Android SDK core classes (`Fastory`,
+  `FastoryConfig`, `FastoryHubActivity`, `GameBottomSheet`, `UrlPolicy`). The only allowed
+  adaptation is the `com.fastory.sdk.flutter.R` import (the plugin's Gradle namespace differs from
+  the native module's).
+- `src/main/kotlin/com/fastory/sdk/flutter/FastorySdkPlugin.kt`: Flutter bridge (MethodChannel
+  `fastory_sdk`, EventChannel `fastory_sdk/events`), plugin-specific — not part of the sync.
+- `src/main/res/` and `src/main/AndroidManifest.xml`: copies of the native module's resources and
+  manifest.
 
-Toute évolution des classes cœur doit être faite dans `packages/sdk/android` puis reportée ici à l'identique.
+Any change to the core classes must be made in `packages/sdk/android`, then mirrored here verbatim.

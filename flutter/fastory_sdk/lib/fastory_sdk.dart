@@ -31,10 +31,12 @@ sealed class FastoryEvent {
 }
 
 class FastoryHubOpened extends FastoryEvent {
-  const FastoryHubOpened();
+  const FastoryHubOpened(this.fanzoneSlug);
+
+  final String fanzoneSlug;
 
   @override
-  String toString() => 'FastoryHubOpened()';
+  String toString() => 'FastoryHubOpened(fanzoneSlug: $fanzoneSlug)';
 }
 
 class FastoryHubClosed extends FastoryEvent {
@@ -114,7 +116,7 @@ abstract final class Fastory {
       return null;
     }
     return switch (raw['type']) {
-      'hubOpened' => const FastoryHubOpened(),
+      'hubOpened' => FastoryHubOpened(raw['slug'] as String? ?? ''),
       'hubClosed' => const FastoryHubClosed(),
       'gameOpened' => FastoryGameOpened(raw['slug'] as String? ?? ''),
       'gameClosed' => const FastoryGameClosed(),

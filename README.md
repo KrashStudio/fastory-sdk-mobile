@@ -75,6 +75,7 @@ Configure once in `main()`, open from anywhere (e.g. your footer):
 import 'package:fastory_sdk/fastory_sdk.dart';
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
   Fastory.configure(const FastoryConfig(fanzoneSlug: '433'));
   runApp(const App433());
 }

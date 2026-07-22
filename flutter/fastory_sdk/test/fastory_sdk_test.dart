@@ -152,7 +152,7 @@ void main() {
       events.listen(received.add);
       await null;
 
-      await emitEvent(<String, Object?>{'type': 'hubOpened'});
+      await emitEvent(<String, Object?>{'type': 'hubOpened', 'slug': '433'});
       await emitEvent(<String, Object?>{'type': 'gameOpened', 'slug': 'summer-quiz'});
       await emitEvent(<String, Object?>{'type': 'gameClosed'});
       await emitEvent(<String, Object?>{
@@ -163,7 +163,8 @@ void main() {
       await null;
 
       expect(received, hasLength(5));
-      expect(received[0], isA<FastoryHubOpened>());
+      expect(received[0], isA<FastoryHubOpened>()
+          .having((FastoryHubOpened event) => event.fanzoneSlug, 'fanzoneSlug', '433'));
       expect(received[1], isA<FastoryGameOpened>()
           .having((FastoryGameOpened event) => event.slug, 'slug', 'summer-quiz'));
       expect(received[2], isA<FastoryGameClosed>());

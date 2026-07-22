@@ -44,7 +44,7 @@ public struct FastoryConfig: Equatable, Sendable {
         var queryItems = [
             URLQueryItem(name: "tab", value: hubTabSlug),
             URLQueryItem(name: "chrome", value: "0"),
-            URLQueryItem(name: "consent", value: "1")
+            URLQueryItem(name: "consent", value: "0")
         ]
         if let locale {
             queryItems.append(URLQueryItem(name: "locale", value: locale))
@@ -62,7 +62,8 @@ extension URL {
         var queryItems = components.queryItems ?? []
         let embedItems = [
             URLQueryItem(name: "embed", value: "1"),
-            URLQueryItem(name: "utm_source", value: "sdk")
+            URLQueryItem(name: "utm_source", value: "sdk"),
+            URLQueryItem(name: "consent", value: "0")
         ]
         for item in embedItems where !queryItems.contains(where: { $0.name == item.name }) {
             queryItems.append(item)

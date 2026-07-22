@@ -28,6 +28,7 @@ import com.google.android.material.bottomsheet.BottomSheetDialogFragment
 class GameBottomSheet : BottomSheetDialogFragment() {
 
     private var webView: WebView? = null
+    private var warmLoadedSlug: String? = null
 
     override fun onCreateDialog(savedInstanceState: Bundle?): Dialog {
         val dialog = super.onCreateDialog(savedInstanceState) as BottomSheetDialog
@@ -48,7 +49,9 @@ class GameBottomSheet : BottomSheetDialogFragment() {
     ): View {
         val context = requireContext()
 
-        webView = buildWebView().also { configureWebView(it) }
+        val (obtained, loadedSlug) = Fastory.obtainGameWebView(requireActivity())
+        warmLoadedSlug = loadedSlug
+        webView = obtained.also { configureWebView(it) }
 
         val closeButton = ImageButton(context).apply {
             setImageResource(android.R.drawable.ic_menu_close_clear_cancel)
@@ -99,8 +102,12 @@ class GameBottomSheet : BottomSheetDialogFragment() {
             dismiss()
             return
         }
-        webView?.loadUrl(url)
-        Fastory.notifyGameOpened(requireArguments().getString(ARG_SLUG).orEmpty())
+        val slug = requireArguments().getString(ARG_SLUG).orEmpty()
+        // Reopening the game that is still warm: show it as-is, state preserved, no reload.
+        if (warmLoadedSlug != slug || webView?.url == null) {
+            webView?.loadUrl(url)
+        }
+        Fastory.notifyGameOpened(slug)
     }
 
     override fun onStart() {
@@ -120,7 +127,11 @@ class GameBottomSheet : BottomSheetDialogFragment() {
     }
 
     override fun onDestroyView() {
-        webView?.destroy()
+        // Keep the loaded game warm: reopening the same game is instant, another game reuses
+        // the webview and its warm renderer process.
+        webView?.let {
+            Fastory.stashGameWebView(it, requireArguments().getString(ARG_SLUG).orEmpty())
+        }
         webView = null
         super.onDestroyView()
     }
@@ -128,13 +139,6 @@ class GameBottomSheet : BottomSheetDialogFragment() {
     override fun onDismiss(dialog: DialogInterface) {
         super.onDismiss(dialog)
         Fastory.notifyGameClosed()
-    }
-
-    private fun buildWebView(): WebView = WebView(requireContext()).also {
-        CookieManager.getInstance().apply {
-            setAcceptCookie(true)
-            setAcceptThirdPartyCookies(it, true)
-        }
     }
 
     @SuppressLint("SetJavaScriptEnabled")

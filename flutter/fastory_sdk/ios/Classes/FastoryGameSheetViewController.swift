@@ -5,13 +5,22 @@ final class FastoryGameSheetViewController: UIViewController {
     private let config: FastoryConfig
     private let gameURL: URL
     private var gameSlug: String
-    private lazy var webView = FastoryWebKit.makeWebView()
+    private let webView: WKWebView
+    private let reusedLoadedSlug: String?
     private var hasNotifiedOpened = false
 
     init(config: FastoryConfig, gameURL: URL, gameSlug: String) {
         self.config = config
         self.gameURL = gameURL
         self.gameSlug = gameSlug
+        var loadedSlug: String?
+        if let warm = Fastory.takeWarmGameWebView(loadedSlug: &loadedSlug) {
+            self.webView = warm
+            self.reusedLoadedSlug = loadedSlug
+        } else {
+            self.webView = FastoryWebKit.makeWebView()
+            self.reusedLoadedSlug = nil
+        }
         super.init(nibName: nil, bundle: nil)
         modalPresentationStyle = .pageSheet
         if let sheet = sheetPresentationController {
@@ -38,7 +47,10 @@ final class FastoryGameSheetViewController: UIViewController {
             webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             webView.trailingAnchor.constraint(equalTo: view.trailingAnchor)
         ])
-        webView.load(URLRequest(url: gameURL))
+        // Reopening the game that is still warm: show it as-is, state preserved, no reload.
+        if reusedLoadedSlug != gameSlug || webView.url == nil {
+            webView.load(URLRequest(url: gameURL))
+        }
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -52,6 +64,12 @@ final class FastoryGameSheetViewController: UIViewController {
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         if isBeingDismissed || presentingViewController == nil {
+            // Keep the loaded game warm: reopening the same game is instant, another game
+            // reuses the webview and its warm renderer process.
+            webView.navigationDelegate = nil
+            webView.uiDelegate = nil
+            webView.removeFromSuperview()
+            Fastory.stashWarmGameWebView(webView, slug: gameSlug)
             Fastory.eventsDelegate?.fastoryGameClosed()
         }
     }

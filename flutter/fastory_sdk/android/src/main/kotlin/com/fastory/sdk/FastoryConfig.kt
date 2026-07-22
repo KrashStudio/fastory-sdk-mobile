@@ -36,7 +36,7 @@ data class FastoryConfig(
             append(fanzoneSlug)
             append("?tab=")
             append(hubTabSlug)
-            append("&chrome=0&consent=1")
+            append("&chrome=0&consent=0")
             locale?.let {
                 append("&locale=")
                 append(it)

@@ -4,6 +4,35 @@ All notable changes to the Fastory Mobile SDK are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: [SemVer](https://semver.org),
 tags `sdk-vX.Y.Z`.
 
+## 0.1.1
+
+Faster opens (warm hub and game WebViews), stories-domain game links, and a corrected consent hint.
+
+### Changed
+
+- **Instant hub** — the hub WebView is created and loaded as soon as `configure()` is called, and
+  kept warm across sessions: `openGames()` presents an already-rendered page instead of reloading
+  every time, with the scroll position preserved.
+- **Warm game sheet** — the game WebView is retained across opens: reopening the same game is
+  instant with its state preserved; opening another game reuses the warm webview and renderer
+  process. The game WebView is only ever created when the first game sheet opens, never
+  preemptively.
+- Warm WebViews are dropped when the configuration changes and under system memory pressure.
+- **Consent hint is now `consent=0`** on both the hub and game URLs (was `consent=1` on the hub in
+  0.1.0). The web still suppresses its cookie banner, but the SDK no longer asserts analytics
+  consent the host app never collected. (Spec §3.2/§3.3.)
+
+### Added
+
+- Game links served from the Fastory stories domains (`https://story.tl`, `https://test.story.tl`)
+  with an `/s/` path now open in the game sheet; any other stories-domain path still opens in the
+  system browser. (Spec §4.)
+- Game URLs now carry the `consent` hint like the hub, so the story player no longer shows its own
+  cookie banner inside the game sheet.
+- The `hubOpened` event now carries the `fanzoneSlug` (`FastoryHubOpened(fanzoneSlug)` /
+  `fastoryHubOpened(fanzoneSlug:)` / `onHubOpened(fanzoneSlug)`), mirroring how `gameOpened` carries
+  the game slug. (Spec §5.3, spec version 0.1.1.)
+
 ## 0.1.0
 
 Initial release — the "ultra-light" SDK: a native WebView container with a strict URL-interception

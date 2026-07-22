@@ -12,6 +12,10 @@ object UrlPolicy {
 
     const val GAME_PATH_PREFIX = "/s/"
 
+    // Games are served from the Fanzone origin or from the Fastory stories domains; /s/ links on
+    // either open the game sheet. Any other stories-domain path stays external.
+    private val STORIES_HOSTS = setOf("story.tl", "test.story.tl")
+
     fun decide(url: String, baseUrl: String): NavigationDecision {
         val scheme = url.substringBefore(':', "").lowercase()
         if (scheme != "http" && scheme != "https") {
@@ -21,16 +25,22 @@ object UrlPolicy {
         val target = url.toUriOrNull() ?: return NavigationDecision.OPEN_EXTERNAL_BROWSER
         val base = baseUrl.toUriOrNull() ?: return NavigationDecision.OPEN_EXTERNAL_BROWSER
 
-        if (!target.hasSameOriginAs(base)) {
-            return NavigationDecision.OPEN_EXTERNAL_BROWSER
+        val isGamePath = target.path.orEmpty().startsWith(GAME_PATH_PREFIX)
+
+        if (target.hasSameOriginAs(base)) {
+            return if (isGamePath) NavigationDecision.OPEN_GAME_SHEET else NavigationDecision.ALLOW
         }
 
-        return if (target.path.orEmpty().startsWith(GAME_PATH_PREFIX)) {
-            NavigationDecision.OPEN_GAME_SHEET
-        } else {
-            NavigationDecision.ALLOW
+        if (target.isStoriesOrigin() && isGamePath) {
+            return NavigationDecision.OPEN_GAME_SHEET
         }
+
+        return NavigationDecision.OPEN_EXTERNAL_BROWSER
     }
+
+    private fun URI.isStoriesOrigin(): Boolean =
+        scheme.orEmpty().equals("https", ignoreCase = true) &&
+            STORIES_HOSTS.contains(host.orEmpty().lowercase())
 
     fun gameSlug(url: String): String? =
         url.toUriOrNull()

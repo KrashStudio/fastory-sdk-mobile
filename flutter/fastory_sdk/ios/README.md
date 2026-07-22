@@ -2,7 +2,10 @@
 
 # fastory_sdk — iOS
 
-- `Classes/Fastory.swift`, `Classes/FastoryConfig.swift`, `Classes/FastoryHubViewController.swift`, `Classes/FastoryGameSheetViewController.swift`, `Classes/URLPolicy.swift` : copies à l'identique des sources du package Swift natif (`packages/sdk/ios/Sources/FastorySDK`).
-- `Classes/FastorySdkPlugin.swift` : pont Flutter (MethodChannel `fastory_sdk`, EventChannel `fastory_sdk/events`), spécifique au plugin — pas concerné par la synchronisation.
+- `Classes/Fastory.swift`, `Classes/FastoryConfig.swift`, `Classes/FastoryHubViewController.swift`,
+  `Classes/FastoryGameSheetViewController.swift`, `Classes/URLPolicy.swift`: verbatim copies of the
+  native Swift package sources (`packages/sdk/ios/Sources/FastorySDK`).
+- `Classes/FastorySdkPlugin.swift`: Flutter bridge (MethodChannel `fastory_sdk`, EventChannel
+  `fastory_sdk/events`), plugin-specific — not part of the sync.
 
-Toute évolution des classes cœur doit être faite dans `packages/sdk/ios` puis reportée ici à l'identique.
+Any change to the core classes must be made in `packages/sdk/ios`, then mirrored here verbatim.
