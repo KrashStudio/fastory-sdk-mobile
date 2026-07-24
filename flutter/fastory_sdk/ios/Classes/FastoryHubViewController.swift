@@ -41,6 +41,9 @@ final class FastoryHubViewController: UIViewController {
         setupLoadingIndicator()
         setupErrorView()
         setupCloseButton()
+        // Covers the cold-open path (no warm hub yet) and keeps discovery running on every
+        // hub load, including retries; harmless re-watch when the hub was prewarmed.
+        Fastory.watchHubForPreloading(webView)
         if webView.url == nil, !webView.isLoading {
             loadHub()
         } else if webView.isLoading {

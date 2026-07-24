@@ -4,6 +4,24 @@ All notable changes to the Fastory Mobile SDK are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: [SemVer](https://semver.org),
 tags `sdk-vX.Y.Z`.
 
+## 0.1.3
+
+Games open instantly (hub-driven preloading) and closing a game now truly stops it.
+
+### Changed
+
+- **Closing a game actually ends it** — dismissing the game sheet pauses media playback right away
+  and discards the played WebView: audio stops instantly and no game state survives the close.
+  Previously the played page was kept and reloaded best-effort in the background, so a slow or
+  failed reload could resurface the game mid-session, sometimes still playing sound.
+- **Games are preloaded from the hub** — once the hub has loaded, the SDK discovers the games of
+  the hub tab (read-only query of the page's embedded data; the page's behavior is never modified)
+  and warms them one at a time in background WebViews: up to 12 games are fetched (warming the
+  HTTP cache for all of them) and the first 3 stay alive, so tapping a tile presents an
+  already-rendered game. A closed game is re-warmed first, ahead of untouched games. Preloading
+  never runs while a game is being played, and everything is dropped under memory pressure.
+  (Spec §11, spec version 0.1.3.)
+
 ## 0.1.2
 
 Reopening a game now starts fresh, and `configure()` is safe to call straight from `main()`.

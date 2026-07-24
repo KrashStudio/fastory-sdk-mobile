@@ -7,7 +7,7 @@ final class FastoryGameSheetViewController: UIViewController {
     private var gameSlug: String
     private var lastGameURL: URL
     private let webView: WKWebView
-    private let reusedLoadedSlug: String?
+    private let isPreloaded: Bool
     private var hasNotifiedOpened = false
 
     init(config: FastoryConfig, gameURL: URL, gameSlug: String) {
@@ -15,13 +15,12 @@ final class FastoryGameSheetViewController: UIViewController {
         self.gameURL = gameURL
         self.lastGameURL = gameURL
         self.gameSlug = gameSlug
-        var loadedSlug: String?
-        if let warm = Fastory.takeWarmGameWebView(loadedSlug: &loadedSlug) {
-            self.webView = warm
-            self.reusedLoadedSlug = loadedSlug
+        if let preloaded = FastoryGamePreloader.shared.takeWebView(slug: gameSlug) {
+            self.webView = preloaded
+            self.isPreloaded = true
         } else {
             self.webView = FastoryWebKit.makeWebView()
-            self.reusedLoadedSlug = nil
+            self.isPreloaded = false
         }
         super.init(nibName: nil, bundle: nil)
         modalPresentationStyle = .pageSheet
@@ -49,8 +48,10 @@ final class FastoryGameSheetViewController: UIViewController {
             webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             webView.trailingAnchor.constraint(equalTo: view.trailingAnchor)
         ])
-        // Reopening the game that is still warm: show it as-is, state preserved, no reload.
-        if reusedLoadedSlug != gameSlug || webView.url == nil {
+        FastoryGamePreloader.shared.gameSheetWillPresent()
+        // A preloaded webview is already rendering the game (or finishing its load) on a
+        // fresh state — present it as-is. Only cold opens need a load here.
+        if !isPreloaded {
             webView.load(URLRequest(url: gameURL))
         }
     }
@@ -66,13 +67,15 @@ final class FastoryGameSheetViewController: UIViewController {
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         if isBeingDismissed || presentingViewController == nil {
-            // Keep the webview warm but reload the game in the background: reopening is still
-            // instant, and the player lands on a fresh start screen instead of mid-session.
+            // Closing must actually end the game: silence it right away, then discard the
+            // played webview with the sheet — its page (timers, audio, state) dies with it.
+            // The preloader immediately rebuilds a fresh copy so reopening stays instant.
+            webView.stopLoading()
+            webView.pauseAllMediaPlayback()
             webView.navigationDelegate = nil
             webView.uiDelegate = nil
             webView.removeFromSuperview()
-            webView.load(URLRequest(url: lastGameURL))
-            Fastory.stashWarmGameWebView(webView, slug: gameSlug)
+            FastoryGamePreloader.shared.gameSheetDidClose(slug: gameSlug, url: lastGameURL)
             Fastory.eventsDelegate?.fastoryGameClosed()
         }
     }

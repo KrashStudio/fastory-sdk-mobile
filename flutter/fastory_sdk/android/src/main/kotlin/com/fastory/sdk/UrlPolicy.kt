@@ -51,6 +51,27 @@ object UrlPolicy {
             ?.substringBefore('/')
             ?.takeIf { it.isNotBlank() }
 
+    /**
+     * Augments a game URL with the embedded-rendering params (SPEC §3.3): `embed=1`,
+     * `utm_source=sdk`, `consent=0`. Existing params are preserved and never duplicated.
+     */
+    fun embeddedGameUrl(url: String): String {
+        val fragmentSplit = url.split('#', limit = 2)
+        val base = fragmentSplit[0]
+        val fragment = fragmentSplit.getOrNull(1)
+        val existingNames = base.substringAfter('?', "")
+            .split('&')
+            .filter { it.isNotEmpty() }
+            .map { it.substringBefore('=') }
+            .toSet()
+        val missing = listOf("embed" to "1", "utm_source" to "sdk", "consent" to "0")
+            .filter { it.first !in existingNames }
+        if (missing.isEmpty()) return url
+        val separator = if (base.contains('?')) "&" else "?"
+        val augmented = base + separator + missing.joinToString("&") { "${it.first}=${it.second}" }
+        return if (fragment != null) "$augmented#$fragment" else augmented
+    }
+
     private fun String.toUriOrNull(): URI? = runCatching { URI(this) }.getOrNull()
 
     private fun URI.hasSameOriginAs(other: URI): Boolean =

@@ -8,7 +8,7 @@ The key words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are to be interpreted 
 
 ## 1. Overview & Scope (v0.1)
 
-The Fastory Mobile SDK embeds the Fastory Fanzone games experience inside a host mobile application. v0.1 is deliberately ultra-light: it is a native WebView container with a strict URL interception policy — no authentication, no analytics, no injected JavaScript.
+The Fastory Mobile SDK embeds the Fastory Fanzone games experience inside a host mobile application. v0.1 is deliberately ultra-light: it is a native WebView container with a strict URL interception policy — no authentication, no analytics, no behavior-modifying JavaScript (the only script evaluation permitted is the read-only preload discovery query of § 11).
 
 ### 1.1 User flow
 
@@ -27,6 +27,7 @@ The Fastory Mobile SDK embeds the Fastory Fanzone games experience inside a host
 - Shared cookie/data store between both WebViews (§ 7).
 - Native safe-area handling (§ 8).
 - Native error/offline view with retry (§ 9).
+- Game preloading and fresh-state close (§ 11).
 
 ### 1.3 Minimum OS versions
 
@@ -408,11 +409,37 @@ The chromeless Fanzone (`chrome=0`) applies its own `env(safe-area-inset-*)` pad
 - The SDK follows **Semantic Versioning 2.0.0** (`MAJOR.MINOR.PATCH`). The public API surface defined in § 2 and the platform channel contract in § 5 are the compatibility boundary: breaking either requires a MAJOR bump.
 - Releases are tagged `sdk-vX.Y.Z` (e.g. `sdk-v0.1.0`).
 - Distribution repository: **`KrashStudio/fastory-sdk-mobile`** (GitHub, **public, release-only**) — it receives the clean release package per version, tagged `sdk-vX.Y.Z`, with no development history (dev happens in the `fastory` monorepo). v0.1 ships the Flutter plugin; native Swift (SPM), native Kotlin (Maven), and React Native follow in later versions.
-- This spec version: **0.1.2**. The public names in § 2 and the channel contract in § 5 are locked (they ship in third-party integrations); any later normative change requires a new spec version and a coordinated SDK release. Changes since 0.1.0: stories origins added to rule 1 (§ 4); hub and game WebViews are kept warm across sessions (behavioral); the consent hint is now `consent=0` on both hub and game URLs (§ 3.2/§ 3.3) — banner suppressed without asserting analytics consent; the `hubOpened` event carries the `fanzoneSlug` (§ 5.3). Changes in 0.1.2: the default `hubTabSlug` is `games` (was `games-app`).
+- This spec version: **0.1.3**. The public names in § 2 and the channel contract in § 5 are locked (they ship in third-party integrations); any later normative change requires a new spec version and a coordinated SDK release. Changes since 0.1.0: stories origins added to rule 1 (§ 4); hub and game WebViews are kept warm across sessions (behavioral); the consent hint is now `consent=0` on both hub and game URLs (§ 3.2/§ 3.3) — banner suppressed without asserting analytics consent; the `hubOpened` event carries the `fanzoneSlug` (§ 5.3). Changes in 0.1.2: the default `hubTabSlug` is `games` (was `games-app`). Changes in 0.1.3: closing the game sheet discards the played WebView (fresh state guaranteed, audio stops immediately) and the SDK preloads the hub's games via a read-only discovery query (§ 11 — Non-Goals renumbered to § 12).
 
 ---
 
-## 11. Non-Goals (v0.1)
+## 11. Game Preloading & Fresh Game State (since 0.1.3)
+
+Goal: tapping a game tile presents an **already-rendered** game (like the warm hub), and closing a game **actually ends it**.
+
+### 11.1 Discovery
+
+- After each completed hub load (including retries and in-place navigations), the SDK discovers the games of the current hub tab by evaluating a script against the hub document that reads the fanzone's embedded SSR payload (`__NEXT_DATA__` → `fanzoneData`): visible `Experience` tiles and `Crusher` blocks of the active tab, in display order. Game URLs never appear in the hub DOM (tiles call `window.open` from JS), so the embedded payload is the only reliable source.
+- The discovery script MUST be strictly **read-only**: no DOM mutation, no event listeners, no storage access, no behavior change. This is the sole exception to the no-JavaScript rule (§ 12).
+- Discovered URLs replicate the web's own link construction (`{storiesOrigin}/s/{slug}?utm_source=fanzone`, § 3.1 origins: production `https://story.tl`, staging `https://test.story.tl`, development falls back to the page origin), are augmented per § 3.3, and MUST be validated against § 4 — only URLs resolving to `OPEN_GAME_SHEET` may be preloaded.
+
+### 11.2 Preloading
+
+- Games are preloaded **sequentially** — at most one background load at a time — and never while a game sheet is presented, so preloading cannot compete with the hub or a live game.
+- Per discovery, at most **12** games are loaded (bounding background data usage); the first **3** stay alive in a pool of prewarmed WebViews, the rest are released after loading (which still warms the HTTP disk cache, making their cold open fast).
+- Pool priority: the game the player closed last, then hub display order. A lower-priority pooled game is evicted when a higher-priority one finishes loading.
+- Opening a game with a pooled WebView MUST present it as-is (no reload — it is fresh by construction, § 11.3). A game without one falls back to a normal load.
+- All preloaded WebViews and pending loads MUST be dropped under system memory pressure and when the configuration changes.
+
+### 11.3 Fresh state on close
+
+- Closing the game sheet MUST immediately silence and end the played game: media playback is paused at dismissal and the played WebView is discarded — its page (timers, audio, state) dies with it. Game state MUST NOT survive a close.
+- After a close, the SDK re-preloads that game ahead of everything else, so reopening it is instant **and** lands on the start screen.
+- Session state stored in cookies is unaffected (§ 7): fresh loads reuse the shared cookie store.
+
+---
+
+## 12. Non-Goals (v0.1)
 
 Explicitly out of scope for v0.1 (candidates for v0.2+):
 
@@ -423,6 +450,6 @@ Explicitly out of scope for v0.1 (candidates for v0.2+):
 | Push notifications | — |
 | OTA / remote configuration | Configuration is compile-time via `configure` |
 | JS ↔ native `postMessage` bridge | Planned for **v0.2** (game → native events, haptics, share) |
-| JavaScript injection | The SDK MUST NOT inject any JS in v0.1 |
+| JavaScript injection | The SDK MUST NOT inject behavior-modifying JS; the only permitted script evaluation is the read-only preload discovery query (§ 11.1) |
 | Deep links into a specific game | `openGames()` always lands on the hub |
 | Tablet-specific layouts | Phones first; tablets render the phone layout |

@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:fastory_sdk/fastory_sdk.dart';
 import 'package:flutter/material.dart';
 
-const String kBuildLabel = 'fastory_sdk 0.1.2';
+const String kBuildLabel = 'fastory_sdk 0.1.3';
 
 void main() {
   runApp(const ExampleApp());

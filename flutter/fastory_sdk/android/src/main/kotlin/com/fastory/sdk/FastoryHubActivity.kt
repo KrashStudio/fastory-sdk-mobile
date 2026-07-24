@@ -3,7 +3,6 @@ package com.fastory.sdk
 import android.annotation.SuppressLint
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
-import android.net.Uri
 import android.os.Bundle
 import android.view.Gravity
 import android.view.ViewGroup
@@ -207,6 +206,12 @@ class FastoryHubActivity : AppCompatActivity() {
                     showError()
                 }
             }
+
+            override fun onPageFinished(view: WebView, url: String?) {
+                // Discover and prewarm the hub's games on every completed load (including
+                // retries), so tapping a tile presents an already-rendered game.
+                GamePreloader.onHubLoadFinished(view)
+            }
         }
 
         webView.webChromeClient = object : WebChromeClient() {
@@ -254,23 +259,8 @@ class FastoryHubActivity : AppCompatActivity() {
     private fun openGameSheet(url: String) {
         val slug = UrlPolicy.gameSlug(url) ?: return
         if (supportFragmentManager.findFragmentByTag(GameBottomSheet.TAG) != null) return
-        GameBottomSheet.newInstance(buildGameUrl(url), slug)
+        GameBottomSheet.newInstance(UrlPolicy.embeddedGameUrl(url), slug)
             .show(supportFragmentManager, GameBottomSheet.TAG)
-    }
-
-    private fun buildGameUrl(url: String): String {
-        val uri = Uri.parse(url)
-        val builder = uri.buildUpon()
-        if (uri.getQueryParameter("embed") == null) {
-            builder.appendQueryParameter("embed", "1")
-        }
-        if (uri.getQueryParameter("utm_source") == null) {
-            builder.appendQueryParameter("utm_source", "sdk")
-        }
-        if (uri.getQueryParameter("consent") == null) {
-            builder.appendQueryParameter("consent", "0")
-        }
-        return builder.build().toString()
     }
 
     private fun handleBack() {

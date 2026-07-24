@@ -23,7 +23,7 @@ Run the full scenario list on each device of the matrix before sign-off.
 ### 2. Game in the toaster
 
 - [ ] Tap a game image → native bottom sheet slides up with WebView B.
-- [ ] Game URL is `fanzone.me/s/{slug}?embed=1&utm_source=sdk` (verify via proxy/charles or event payload).
+- [ ] Game URL carries `embed=1`, a `utm_source`, and `consent=0` (verify via proxy/charles or event payload).
 - [ ] Game is playable end-to-end inside the sheet (scroll, taps, keyboard if any).
 - [ ] `gameOpened{slug}` then `gameClosed` events fire with the correct slug.
 - [ ] Opening a second game after closing the first works (no dead WebView reuse).
@@ -56,8 +56,8 @@ Run the full scenario list on each device of the matrix before sign-off.
 
 ### 7. Cookie persistence hub ↔ game
 
-- [ ] Consent/session cookies set by the hub are visible in the game WebView (no second consent prompt, `consent=1` state respected).
-- [ ] Play a game that stores progress, close the sheet, reopen the same game → state persists.
+- [ ] Consent/session cookies set by the hub are visible in the game WebView (no second consent prompt; the `consent=0` hint suppresses the banner without asserting analytics consent).
+- [ ] A game whose progress is cookie-backed keeps that session across close/reopen (in-memory game state intentionally resets — see § 9).
 - [ ] Kill the app, reopen the hub → cookies persist across app restarts.
 
 ### 8. Rotation
@@ -66,7 +66,14 @@ Run the full scenario list on each device of the matrix before sign-off.
 - [ ] Rotate with the sheet open: sheet stays open and usable, game not reloaded.
 - [ ] Rotate mid-load: no crash.
 
-### 9. Notch / safe areas
+### 9. Preloading & fresh close (0.1.3)
+
+- [ ] After the hub has been open a few seconds, tapping a game presents it near-instantly (already rendered, no long spinner).
+- [ ] Close a game while it plays sound → audio stops immediately on dismiss.
+- [ ] Play a few moves, close the sheet, reopen the same game → it is back on its start screen (never mid-session), and still opens instantly after a short wait.
+- [ ] While a game is open, background preloading is paused (no visible jank or competing network spinners in the game).
+
+### 10. Notch / safe areas
 
 - [ ] Device #1: WebViews render edge-to-edge (Fanzone background fills the screen top and bottom — this is expected, not a bug); interactive web content pads itself clear of the Dynamic Island / notch and home indicator via its own safe-area padding.
 - [ ] Native close affordance (✕) sits below the status bar when the hub or sheet is fully expanded.

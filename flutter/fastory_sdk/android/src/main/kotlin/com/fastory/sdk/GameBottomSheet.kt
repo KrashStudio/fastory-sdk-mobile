@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.app.Dialog
 import android.graphics.Color
 import android.content.DialogInterface
+import android.content.MutableContextWrapper
 import android.os.Bundle
 import android.view.Gravity
 import android.view.LayoutInflater
@@ -28,7 +29,7 @@ import com.google.android.material.bottomsheet.BottomSheetDialogFragment
 class GameBottomSheet : BottomSheetDialogFragment() {
 
     private var webView: WebView? = null
-    private var warmLoadedSlug: String? = null
+    private var isPreloaded = false
 
     override fun onCreateDialog(savedInstanceState: Bundle?): Dialog {
         val dialog = super.onCreateDialog(savedInstanceState) as BottomSheetDialog
@@ -49,9 +50,11 @@ class GameBottomSheet : BottomSheetDialogFragment() {
     ): View {
         val context = requireContext()
 
-        val (obtained, loadedSlug) = Fastory.obtainGameWebView(requireActivity())
-        warmLoadedSlug = loadedSlug
-        webView = obtained.also { configureWebView(it) }
+        val slug = requireArguments().getString(ARG_SLUG).orEmpty()
+        val preloaded = GamePreloader.takeWebView(requireActivity(), slug)
+        isPreloaded = preloaded != null
+        webView = (preloaded ?: Fastory.createWebView(MutableContextWrapper(requireActivity())))
+            .also { configureWebView(it) }
 
         val closeButton = ImageButton(context).apply {
             setImageResource(android.R.drawable.ic_menu_close_clear_cancel)
@@ -103,8 +106,10 @@ class GameBottomSheet : BottomSheetDialogFragment() {
             return
         }
         val slug = requireArguments().getString(ARG_SLUG).orEmpty()
-        // Reopening the game that is still warm: show it as-is, state preserved, no reload.
-        if (warmLoadedSlug != slug || webView?.url == null) {
+        GamePreloader.gameSheetWillPresent()
+        // A preloaded WebView is already rendering the game (or finishing its load) on a
+        // fresh state — present it as-is. Only cold opens need a load here.
+        if (!isPreloaded) {
             webView?.loadUrl(url)
         }
         Fastory.notifyGameOpened(slug)
@@ -127,11 +132,14 @@ class GameBottomSheet : BottomSheetDialogFragment() {
     }
 
     override fun onDestroyView() {
-        // Keep the webview warm but reload the game in the background: reopening is still
-        // instant, and the player lands on a fresh start screen instead of mid-session.
-        webView?.let {
-            Fastory.stashGameWebView(
-                it,
+        // Closing must actually end the game: destroy the played WebView — its page
+        // (timers, audio, state) dies with it. The preloader immediately rebuilds a fresh
+        // copy so reopening stays instant.
+        webView?.let { playedWebView ->
+            playedWebView.stopLoading()
+            (playedWebView.parent as? ViewGroup)?.removeView(playedWebView)
+            playedWebView.destroy()
+            GamePreloader.gameSheetDidClose(
                 requireArguments().getString(ARG_SLUG).orEmpty(),
                 requireArguments().getString(ARG_URL),
             )

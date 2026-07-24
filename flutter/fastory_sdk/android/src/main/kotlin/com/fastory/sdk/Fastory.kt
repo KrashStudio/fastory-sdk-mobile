@@ -91,8 +91,6 @@ object Fastory {
     // under memory pressure.
 
     private var warmHubWebView: WebView? = null
-    private var warmGameWebView: WebView? = null
-    private var warmGameSlug: String? = null
     private var trimCallbacksRegistered = false
 
     internal fun preloadHub(context: Context) {
@@ -100,6 +98,13 @@ object Fastory {
         if (hubRef?.get() != null || warmHubWebView != null) return
         registerTrimCallbacksOnce(context.applicationContext)
         val webView = createWebView(MutableContextWrapper(context.applicationContext))
+        // Kick off game discovery as soon as the warm hub has rendered, so games are
+        // already prewarmed when the user first opens the hub.
+        webView.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView, url: String?) {
+                GamePreloader.onHubLoadFinished(view)
+            }
+        }
         webView.loadUrl(config.hubUrl)
         warmHubWebView = webView
     }
@@ -131,45 +136,14 @@ object Fastory {
     internal fun discardWarmHub() {
         warmHubWebView?.destroy()
         warmHubWebView = null
-        warmGameWebView?.destroy()
-        warmGameWebView = null
-        warmGameSlug = null
+        GamePreloader.flush()
     }
 
-    // The game sheet WebView is also retained across opens: reopening the same game shows it
-    // instantly with its state; a different game reuses the warm webview and process.
-
-    internal fun obtainGameWebView(activity: Activity): Pair<WebView, String?> {
-        warmGameWebView?.let { webView ->
-            val loadedSlug = warmGameSlug
-            warmGameWebView = null
-            warmGameSlug = null
-            (webView.context as MutableContextWrapper).baseContext = activity
-            webView.onResume()
-            return webView to loadedSlug
-        }
-        return createWebView(MutableContextWrapper(activity)) to null
-    }
-
-    internal fun stashGameWebView(webView: WebView, slug: String, reloadUrl: String?) {
-        val wrapper = webView.context as? MutableContextWrapper ?: run {
-            webView.destroy()
-            return
-        }
-        (webView.parent as? ViewGroup)?.removeView(webView)
-        webView.webViewClient = WebViewClient()
-        webView.webChromeClient = null
-        wrapper.baseContext = wrapper.baseContext.applicationContext
-        // Reload the game in the background (no onPause, so the load completes): reopening is
-        // still instant, and the player lands on a fresh start screen instead of mid-session.
-        reloadUrl?.let(webView::loadUrl)
-        warmGameWebView?.destroy()
-        warmGameWebView = webView
-        warmGameSlug = slug
-    }
+    // Warm game webviews live in GamePreloader: games are preloaded from the hub's own
+    // game list, and a played game is rebuilt fresh right after its sheet closes.
 
     @SuppressLint("SetJavaScriptEnabled")
-    private fun createWebView(wrapper: MutableContextWrapper): WebView {
+    internal fun createWebView(wrapper: MutableContextWrapper): WebView {
         val webView = WebView(wrapper)
         webView.settings.apply {
             javaScriptEnabled = true

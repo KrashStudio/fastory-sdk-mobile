@@ -15,6 +15,21 @@ public enum FastoryEnvironment: Equatable, Sendable {
             return baseURL
         }
     }
+
+    /// Origin the fanzone builds its game links on (the web's `storiesUrl`). Preload URLs
+    /// must match the URL a real tap would produce, so cache entries line up. Development
+    /// environments have no known stories origin — the discovery script falls back to the
+    /// page's own origin.
+    var storiesOrigin: URL? {
+        switch self {
+        case .production:
+            return URL(string: "https://story.tl")!
+        case .staging:
+            return URL(string: "https://test.story.tl")!
+        case .development:
+            return nil
+        }
+    }
 }
 
 public struct FastoryConfig: Equatable, Sendable {

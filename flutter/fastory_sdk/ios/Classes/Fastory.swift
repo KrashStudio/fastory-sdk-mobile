@@ -14,8 +14,6 @@ public enum Fastory {
     public static weak var eventsDelegate: FastoryEventsDelegate?
     private static weak var hubViewController: FastoryHubViewController?
     private static var warmHubWebView: WKWebView?
-    private static var warmGameWebView: WKWebView?
-    private static var warmGameSlug: String?
     private static var memoryWarningObserver: NSObjectProtocol?
 
     public static func configure(_ config: FastoryConfig) {
@@ -56,25 +54,19 @@ public enum Fastory {
         warmHubWebView = webView
     }
 
-    // The game sheet WebView is also retained across opens: reopening the same game shows it
-    // instantly with its state; a different game reuses the warm webview and process.
+    // Warm game webviews live in FastoryGamePreloader: games are preloaded from the hub's
+    // own game list, and a played game is rebuilt fresh right after its sheet closes.
 
-    static func takeWarmGameWebView(loadedSlug: inout String?) -> WKWebView? {
-        let webView = warmGameWebView
-        loadedSlug = warmGameSlug
-        warmGameWebView = nil
-        warmGameSlug = nil
-        return webView
-    }
-
-    static func stashWarmGameWebView(_ webView: WKWebView, slug: String) {
-        warmGameWebView = webView
-        warmGameSlug = slug
+    static func watchHubForPreloading(_ webView: WKWebView) {
+        guard let config else { return }
+        FastoryGamePreloader.shared.watchHub(webView, config: config)
     }
 
     private static func warmUpHub() {
         guard hubViewController == nil, let config else { return }
+        FastoryGamePreloader.shared.flush()
         let webView = FastoryWebKit.makeWebView()
+        FastoryGamePreloader.shared.watchHub(webView, config: config)
         webView.load(URLRequest(url: config.hubURL))
         warmHubWebView = webView
         observeMemoryPressureOnce()
@@ -88,8 +80,7 @@ public enum Fastory {
             queue: .main
         ) { _ in
             warmHubWebView = nil
-            warmGameWebView = nil
-            warmGameSlug = nil
+            FastoryGamePreloader.shared.flush()
         }
     }
 }
