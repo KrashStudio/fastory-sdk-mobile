@@ -28,6 +28,10 @@ import org.json.JSONTokener
  *   and destroyed, which still warms WebView's disk cache and makes their cold open fast.
  * - The game the player closed last always outranks hub order: it is re-preloaded first
  *   and never evicted before untouched games.
+ *
+ * A few members below are `internal` rather than `private` solely so pool-state tests
+ * (GamePreloaderPoolTest) can drive and inspect them directly; production never reads them
+ * from outside this object.
  */
 internal object GamePreloader {
 
@@ -37,15 +41,15 @@ internal object GamePreloader {
     private const val MAX_PRELOAD_COUNT = 12
     private const val LOAD_TIMEOUT_MS = 30_000L
 
-    private class CurrentLoad(val slug: String, val webView: WebView, val timeout: Runnable)
+    internal class CurrentLoad(val slug: String, val webView: WebView, val timeout: Runnable)
 
     private val handler = Handler(Looper.getMainLooper())
 
     /** Live prewarmed webviews keyed by game slug, never presented yet (fresh state). */
-    private val pool = LinkedHashMap<String, WebView>()
+    internal val pool = LinkedHashMap<String, WebView>()
 
     /** Games waiting for a background load (slug to load URL), most urgent first. */
-    private val queue = ArrayDeque<Pair<String, String>>()
+    internal val queue = ArrayDeque<Pair<String, String>>()
 
     /** Hub display order of the discovered games; drives pool eviction priority. */
     private var hubOrder: List<String> = emptyList()
@@ -53,9 +57,9 @@ internal object GamePreloader {
     /** The game the player closed last — always the top preload priority. */
     private var lastClosedSlug: String? = null
 
-    private var currentLoad: CurrentLoad? = null
+    internal var currentLoad: CurrentLoad? = null
     private var isGameSheetPresented = false
-    private var appContext: Context? = null
+    internal var appContext: Context? = null
 
     /** Seam for tests; production always performs the real load. */
     internal var loadStarter: (WebView, String) -> Unit = { webView, url -> webView.loadUrl(url) }
@@ -130,10 +134,13 @@ internal object GamePreloader {
     // MARK: Discovery
 
     /**
-     * Read-only query of the fanzone's SSR payload: visible Experience tiles and Crusher
-     * blocks of the active tab. Mirrors the web's own URL construction
-     * (`{storiesOrigin}/s/{slug}?utm_source=fanzone`) so preloads hit the exact URL a tap
-     * would navigate to. Must stay read-only — the SDK never alters page behavior.
+     * Read-only query of the fanzone's SSR payload, in two passes: visible Experience tiles
+     * and Crusher blocks of the active tab first (mirroring the web's own URL construction,
+     * `{storiesOrigin}/s/{slug}?utm_source=fanzone`), then any direct game URL — an absolute
+     * http(s) string with an `/s/` path — found anywhere in the payload, verbatim: hubs whose
+     * tiles are plain links reference games that way, with no Experience component at all.
+     * The URL scan may over-collect on origin; [parseDiscoveredGames] filters through
+     * UrlPolicy and dedups. Must stay read-only — the SDK never alters page behavior.
      */
     fun discoveryScript(storiesOrigin: String?): String {
         val origin = storiesOrigin.orEmpty()
@@ -141,44 +148,60 @@ internal object GamePreloader {
         (function () {
           try {
             var data = window.__NEXT_DATA__;
-            var fanzone = data && data.props && data.props.pageProps && data.props.pageProps.fanzoneData;
-            if (!fanzone) return "[]";
-            var tabSlug = new URLSearchParams(window.location.search).get("tab");
-            var tabs = fanzone.tabs || [];
-            var activeTabId = null;
-            if (tabSlug && tabSlug !== "default") {
-              for (var i = 0; i < tabs.length; i++) {
-                if (tabs[i] && tabs[i].slug === tabSlug) { activeTabId = tabs[i].id; break; }
-              }
-            }
-            var origin = "$origin" || window.location.origin;
+            if (!data) return "[]";
             var urls = [];
             var seen = {};
-            var push = function (slug) {
-              var parts = String(slug).split("/").filter(Boolean);
-              var normalized = parts.length ? parts[parts.length - 1] : null;
-              if (!normalized || seen[normalized]) return;
-              seen[normalized] = true;
-              urls.push(origin + "/s/" + normalized + "?utm_source=fanzone");
-            };
-            var components = fanzone.components || [];
-            for (var j = 0; j < components.length; j++) {
-              var component = components[j];
-              if (!component || component.isHidden) continue;
-              var hiddenByTab = component.tabId == null
-                ? activeTabId != null
-                : component.tabId !== activeTabId;
-              if (hiddenByTab) continue;
-              if (component.type === "Experience") {
-                var experiences = (component.settings && component.settings.experiences) || [];
-                for (var k = 0; k < experiences.length; k++) {
-                  var experience = experiences[k];
-                  if (experience && experience.visible && experience.slug) push(experience.slug);
+            var fanzone = data.props && data.props.pageProps && data.props.pageProps.fanzoneData;
+            if (fanzone) {
+              var tabSlug = new URLSearchParams(window.location.search).get("tab");
+              var tabs = fanzone.tabs || [];
+              var activeTabId = null;
+              if (tabSlug && tabSlug !== "default") {
+                for (var i = 0; i < tabs.length; i++) {
+                  if (tabs[i] && tabs[i].slug === tabSlug) { activeTabId = tabs[i].id; break; }
                 }
-              } else if (component.type === "Crusher" && component.settings && component.settings.slug) {
-                push(component.settings.slug);
+              }
+              var origin = "$origin" || window.location.origin;
+              var push = function (slug) {
+                var parts = String(slug).split("/").filter(Boolean);
+                var normalized = parts.length ? parts[parts.length - 1] : null;
+                if (!normalized || seen[normalized]) return;
+                seen[normalized] = true;
+                urls.push(origin + "/s/" + normalized + "?utm_source=fanzone");
+              };
+              var components = fanzone.components || [];
+              for (var j = 0; j < components.length; j++) {
+                var component = components[j];
+                if (!component || component.isHidden) continue;
+                var hiddenByTab = component.tabId == null
+                  ? activeTabId != null
+                  : component.tabId !== activeTabId;
+                if (hiddenByTab) continue;
+                if (component.type === "Experience") {
+                  var experiences = (component.settings && component.settings.experiences) || [];
+                  for (var k = 0; k < experiences.length; k++) {
+                    var experience = experiences[k];
+                    if (experience && experience.visible && experience.slug) push(experience.slug);
+                  }
+                } else if (component.type === "Crusher" && component.settings && component.settings.slug) {
+                  push(component.settings.slug);
+                }
               }
             }
+            var gameUrlPattern = new RegExp("^https?://[^/?#]+/s/");
+            var collect = function (node) {
+              if (typeof node === "string") {
+                if (gameUrlPattern.test(node) && !seen[node]) {
+                  seen[node] = true;
+                  urls.push(node);
+                }
+                return;
+              }
+              if (node && typeof node === "object") {
+                for (var key in node) collect(node[key]);
+              }
+            };
+            collect(data);
             return JSON.stringify(urls);
           } catch (error) {
             return "[]";
@@ -198,7 +221,9 @@ internal object GamePreloader {
 
     /**
      * Parses the discovery result and keeps only URLs UrlPolicy would open in the game
-     * sheet, mapped to their load URL (embed/consent params added, like a real tap).
+     * sheet, mapped to their load URL (embed/consent params added, like a real tap). The
+     * script's URL scan over-collects (any origin with an `/s/` path), so this filter is
+     * what enforces the game-sheet policy.
      */
     fun parseDiscoveredGames(json: String, baseUrl: String, limit: Int): List<Pair<String, String>> {
         val array = runCatching { JSONArray(json) }.getOrNull() ?: return emptyList()
@@ -217,7 +242,7 @@ internal object GamePreloader {
 
     // MARK: Sequential loading
 
-    private fun schedule(games: List<Pair<String, String>>) {
+    internal fun schedule(games: List<Pair<String, String>>) {
         if (games.isEmpty()) return
         hubOrder = games.map { it.first }
         queue.clear()
@@ -264,7 +289,7 @@ internal object GamePreloader {
         loadStarter(webView, url)
     }
 
-    private fun finishCurrentLoad(webView: WebView, success: Boolean) {
+    internal fun finishCurrentLoad(webView: WebView, success: Boolean) {
         val load = currentLoad ?: return
         if (load.webView != webView) return
         handler.removeCallbacks(load.timeout)

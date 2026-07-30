@@ -15,6 +15,23 @@ enum FastoryWebKit {
     }
 }
 
+/// Pure classification, kept independent of any view controller instance so it is directly
+/// testable (`@testable import`) without spinning up a `FastoryHubViewController`.
+enum NavigationErrorClassifier {
+    static func isBenign(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorCancelled {
+            return true
+        }
+        // WebKit reports frame-load-interrupted (102, legacy WebKitErrorDomain) when a
+        // navigation is cancelled by our URLPolicy decision — not a real load failure.
+        if nsError.domain == "WebKitErrorDomain", nsError.code == 102 {
+            return true
+        }
+        return false
+    }
+}
+
 final class FastoryHubViewController: UIViewController {
     private let config: FastoryConfig
     private let webView: WKWebView
@@ -181,19 +198,6 @@ final class FastoryHubViewController: UIViewController {
         UIApplication.shared.open(url)
         Fastory.eventsDelegate?.fastoryExternalLink(url: url)
     }
-
-    private func isBenignNavigationError(_ error: Error) -> Bool {
-        let nsError = error as NSError
-        if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorCancelled {
-            return true
-        }
-        // WebKit reports frame-load-interrupted (102, legacy WebKitErrorDomain) when a
-        // navigation is cancelled by our URLPolicy decision — not a real load failure.
-        if nsError.domain == "WebKitErrorDomain", nsError.code == 102 {
-            return true
-        }
-        return false
-    }
 }
 
 extension FastoryHubViewController: WKNavigationDelegate {
@@ -256,7 +260,7 @@ extension FastoryHubViewController: WKNavigationDelegate {
 
     private func handleLoadFailure(_ error: Error) {
         loadingIndicator.stopAnimating()
-        guard !isBenignNavigationError(error) else {
+        guard !NavigationErrorClassifier.isBenign(error) else {
             return
         }
         errorView.isHidden = false

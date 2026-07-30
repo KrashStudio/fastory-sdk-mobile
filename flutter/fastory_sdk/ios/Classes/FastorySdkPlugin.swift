@@ -35,8 +35,7 @@ public final class FastorySdkPlugin: NSObject, FlutterPlugin {
 
     private func configure(_ call: FlutterMethodCall, result: FlutterResult) {
         guard let arguments = call.arguments as? [String: Any],
-              let fanzoneSlug = arguments["fanzoneSlug"] as? String,
-              !fanzoneSlug.isEmpty else {
+              let fanzoneSlug = arguments["fanzoneSlug"] as? String else {
             result(FlutterError(code: "invalid_config", message: "fanzoneSlug is required", details: nil))
             return
         }
@@ -58,10 +57,17 @@ public final class FastorySdkPlugin: NSObject, FlutterPlugin {
         default:
             environment = .production
         }
+        let hubTabSlug = arguments["hubTabSlug"] as? String ?? "games"
+        do {
+            try FastoryConfig.validate(fanzoneSlug: fanzoneSlug, hubTabSlug: hubTabSlug)
+        } catch {
+            result(FlutterError(code: "invalid_config", message: "\(error)", details: nil))
+            return
+        }
         let config = FastoryConfig(
             environment: environment,
             fanzoneSlug: fanzoneSlug,
-            hubTabSlug: arguments["hubTabSlug"] as? String ?? "games",
+            hubTabSlug: hubTabSlug,
             locale: arguments["locale"] as? String
         )
         Fastory.configure(config)

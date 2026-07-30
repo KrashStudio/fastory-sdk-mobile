@@ -32,6 +32,24 @@ public enum FastoryEnvironment: Equatable, Sendable {
     }
 }
 
+/// Mirrors Android's (`require`) / Dart's (`ArgumentError`) config validation. Thrown by
+/// `FastoryConfig.validate(fanzoneSlug:hubTabSlug:)` for callers that must surface a bad
+/// configuration to the host app instead of trapping — e.g. the Flutter plugin's `configure()`
+/// bridge, which maps each case to an `invalid_config` error.
+public enum FastoryConfigError: Error, Equatable, Sendable, CustomStringConvertible {
+    case blankFanzoneSlug
+    case blankHubTabSlug
+
+    public var description: String {
+        switch self {
+        case .blankFanzoneSlug:
+            return "fanzoneSlug must not be blank"
+        case .blankHubTabSlug:
+            return "hubTabSlug must not be blank"
+        }
+    }
+}
+
 public struct FastoryConfig: Equatable, Sendable {
     public let environment: FastoryEnvironment
     public let fanzoneSlug: String
@@ -41,13 +59,26 @@ public struct FastoryConfig: Equatable, Sendable {
     public init(
         environment: FastoryEnvironment = .production,
         fanzoneSlug: String,
-        hubTabSlug: String,
+        hubTabSlug: String = "games",
         locale: String? = nil
     ) {
         self.environment = environment
         self.fanzoneSlug = fanzoneSlug
         self.hubTabSlug = hubTabSlug
         self.locale = locale
+    }
+
+    /// Validates the two config rules Android/Dart enforce unconditionally at construction.
+    /// iOS keeps `init` non-throwing (source-compatible with every existing call site), so
+    /// callers that must reject bad input gracefully call this explicitly first.
+    ///
+    /// `environment == .development` needs no rule here: unlike Kotlin/Dart's nullable
+    /// `developmentBaseUrl: String?`, Swift's `.development(baseURL: URL)` case cannot be
+    /// constructed without a URL — "development without a base URL" is not a representable
+    /// state on iOS, so there is nothing to validate.
+    public static func validate(fanzoneSlug: String, hubTabSlug: String) throws {
+        guard !fanzoneSlug.isBlank else { throw FastoryConfigError.blankFanzoneSlug }
+        guard !hubTabSlug.isBlank else { throw FastoryConfigError.blankHubTabSlug }
     }
 
     var hubURL: URL {
@@ -93,5 +124,12 @@ extension URL {
             return ""
         }
         return components[1]
+    }
+}
+
+private extension String {
+    /// Mirrors Kotlin's `isBlank()`: empty, or made up entirely of whitespace.
+    var isBlank: Bool {
+        trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }

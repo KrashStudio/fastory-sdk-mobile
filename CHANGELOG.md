@@ -4,6 +4,20 @@ All notable changes to the Fastory Mobile SDK are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: [SemVer](https://semver.org),
 tags `sdk-vX.Y.Z`.
 
+## 0.1.4
+
+Game preloading now also finds games referenced by direct link, not only by game components.
+
+### Fixed
+
+- **Games referenced by direct URL are preloaded again** — on hubs whose tiles are plain links
+  (a button pointing straight at the game's `/s/…` URL) instead of game components, discovery
+  found nothing, so no game was preloaded and every tap fell back to a cold load. Discovery now
+  also collects direct game URLs from the hub page's embedded data (same read-only query, page
+  behavior still never modified), so those hubs get warm, instant game opens too. Tiles linking
+  to anything other than a game are unaffected: they still follow the URL policy and are never
+  preloaded. (Spec §11.1, spec version 0.1.4.)
+
 ## 0.1.3
 
 Games open instantly (hub-driven preloading) and closing a game now truly stops it.
