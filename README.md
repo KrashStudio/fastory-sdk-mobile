@@ -66,7 +66,7 @@ Add the SDK as a git dependency in your `pubspec.yaml`, pinned to a release tag:
 dependencies:
   fastory_sdk:
     git:
-      url: https://github.com/KrashStudio/fastory-sdk-mobile
+      url: https://github.com/fastoryapp/fastory-sdk-mobile
       path: flutter/fastory_sdk
       ref: sdk-v0.2.0
 ```
@@ -79,11 +79,11 @@ flutter pub get
 
 ### Native iOS (Swift Package Manager)
 
-In Xcode: *File > Add Package Dependencies…*, enter `https://github.com/KrashStudio/fastory-sdk-mobile`, and pick *Up to Next Major Version*. Or declare it in your own `Package.swift`:
+In Xcode: *File > Add Package Dependencies…*, enter `https://github.com/fastoryapp/fastory-sdk-mobile`, and pick *Up to Next Major Version*. Or declare it in your own `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/KrashStudio/fastory-sdk-mobile.git", from: "0.2.0")
+    .package(url: "https://github.com/fastoryapp/fastory-sdk-mobile.git", from: "0.2.0")
 ]
 ```
 

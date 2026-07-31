@@ -28,7 +28,7 @@ Add the plugin as a git dependency pinned to a release tag:
 dependencies:
   fastory_sdk:
     git:
-      url: https://github.com/KrashStudio/fastory-sdk-mobile
+      url: https://github.com/fastoryapp/fastory-sdk-mobile
       path: flutter/fastory_sdk
       ref: sdk-v0.2.0
 ```

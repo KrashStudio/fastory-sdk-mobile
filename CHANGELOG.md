@@ -12,7 +12,7 @@ budget while they are on screen.
 ### Added
 
 - **Swift package (SwiftPM)** — native iOS apps no longer need Flutter to embed the SDK. Add
-  `https://github.com/KrashStudio/fastory-sdk-mobile` in Xcode, or `from: "0.2.0"` in your own
+  `https://github.com/fastoryapp/fastory-sdk-mobile` in Xcode, or `from: "0.2.0"` in your own
   `Package.swift`, and call `Fastory.configure(_:)` then `Fastory.openGames(from:)`. The Flutter
   plugin is unchanged and keeps its own install path. Every release now publishes both channels
   from the same commit: `sdk-vX.Y.Z` for Flutter, the bare `X.Y.Z` tag that SwiftPM resolves.
