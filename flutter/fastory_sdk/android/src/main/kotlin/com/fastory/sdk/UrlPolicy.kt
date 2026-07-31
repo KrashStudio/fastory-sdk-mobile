@@ -14,7 +14,7 @@ object UrlPolicy {
 
     // Games are served from the Fanzone origin or from the Fastory stories domains; /s/ links on
     // either open the game sheet. Any other stories-domain path stays external.
-    private val STORIES_HOSTS = setOf("story.tl", "test.story.tl")
+    private val STORIES_HOSTS = setOf("story.tl", "staging.story.tl")
 
     fun decide(url: String, baseUrl: String): NavigationDecision {
         val scheme = url.substringBefore(':', "").lowercase()

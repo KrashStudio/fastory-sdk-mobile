@@ -54,6 +54,12 @@ internal object GamePreloader {
     /** Hub display order of the discovered games; drives pool eviction priority. */
     private var hubOrder: List<String> = emptyList()
 
+    /**
+     * Load URL per discovered slug, so the pool can be rebuilt after a game is played without
+     * waiting for the hub to run discovery again.
+     */
+    private val discoveredUrls = mutableMapOf<String, String>()
+
     /** The game the player closed last — always the top preload priority. */
     private var lastClosedSlug: String? = null
 
@@ -97,23 +103,59 @@ internal object GamePreloader {
         return null
     }
 
-    /** Suspends background loads while a game is being played. */
+    /**
+     * Gives the game about to be played the whole budget: background loads stop, the load in
+     * flight is abandoned, and every other warm game is destroyed.
+     *
+     * Destroying the pool is what matters for heavy games. A pooled WebView is detached, so its
+     * timers are throttled — but it keeps its page, its textures and its WebGL context resident,
+     * and they all compete for the same process memory. Three warm 3D games starve the one on
+     * screen. The sheet already took its own WebView out of the pool before this runs, so opening
+     * stays instant; [gameSheetDidClose] rebuilds the pool afterwards.
+     */
     fun gameSheetWillPresent() {
         isGameSheetPresented = true
+        currentLoad?.let { load ->
+            handler.removeCallbacks(load.timeout)
+            load.webView.stopLoading()
+            load.webView.destroy()
+        }
+        currentLoad = null
+        pool.values.forEach(WebView::destroy)
+        pool.clear()
     }
 
     /**
-     * The played WebView is destroyed by the sheet; queue a fresh copy of that game ahead
-     * of everything else so reopening it is instant and starts from a clean state.
+     * The played WebView is destroyed by the sheet. Rebuild the pool that [gameSheetWillPresent]
+     * released, with a fresh copy of the game just closed first so reopening it is instant and
+     * starts from a clean state.
      */
     fun gameSheetDidClose(slug: String, url: String?) {
         isGameSheetPresented = false
         if (slug.isNotEmpty() && !url.isNullOrEmpty()) {
             lastClosedSlug = slug
-            queue.removeAll { it.first == slug }
-            queue.addFirst(slug to url)
+            discoveredUrls[slug] = url
         }
+        refillQueue(if (slug.isNotEmpty() && !url.isNullOrEmpty()) slug else null)
         startNextLoadIfIdle()
+    }
+
+    /**
+     * Rebuilds the pending queue from the games discovered on the hub, skipping whatever is
+     * already warm or in flight. Playing a game empties the pool, so this is what puts the other
+     * games back in line once the sheet is gone.
+     */
+    private fun refillQueue(firstSlug: String?) {
+        val ordered = buildList {
+            firstSlug?.let(::add)
+            addAll(hubOrder.filter { it != firstSlug })
+        }
+        queue.clear()
+        ordered.forEach { slug ->
+            val url = discoveredUrls[slug] ?: return@forEach
+            if (pool.containsKey(slug) || slug == currentLoad?.slug) return@forEach
+            queue.addLast(slug to url)
+        }
     }
 
     /** Drops every warm game and pending load (memory pressure, re-configure). */
@@ -128,6 +170,7 @@ internal object GamePreloader {
         pool.clear()
         queue.clear()
         hubOrder = emptyList()
+        discoveredUrls.clear()
         lastClosedSlug = null
     }
 
@@ -245,6 +288,7 @@ internal object GamePreloader {
     internal fun schedule(games: List<Pair<String, String>>) {
         if (games.isEmpty()) return
         hubOrder = games.map { it.first }
+        games.forEach { (slug, url) -> discoveredUrls[slug] = url }
         queue.clear()
         games.filterTo(queue) { !pool.containsKey(it.first) && it.first != currentLoad?.slug }
         lastClosedSlug?.let { last ->

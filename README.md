@@ -1,11 +1,21 @@
 # Fastory Mobile SDK — Integration Guide
 
 Audience: host app engineering teams integrating the SDK.
-Scope: Fastory Flutter SDK v0.1 (ultra-light, WebView-based).
+Scope: Fastory Mobile SDK v0.2 (ultra-light, WebView-based).
+
+Two ways to consume it, same behavior and same version:
+
+| Channel | For | How |
+|---|---|---|
+| **Flutter plugin** | Flutter apps | git dependency on this repo, `path: flutter/fastory_sdk` |
+| **Swift package** | Native iOS apps | Swift Package Manager, this repo's root package |
+
+A native Kotlin artifact on Maven Central follows. The real logic is native in both channels — the
+Flutter plugin is a thin bridge over the same Swift and Kotlin cores.
 
 ## Overview
 
-The SDK opens the Fastory games hub of your Fanzone inside your Flutter app, in five steps:
+The SDK opens the Fastory games hub of your Fanzone inside your app, in five steps:
 
 1. Your app calls `Fastory.openGames()` (e.g. from your footer tab).
 2. The SDK presents a full-screen native view containing **WebView A**, which loads the hub — a hidden tab of your Fanzone: `https://fanzone.me/your-fanzone?tab=games&chrome=0&consent=0`.
@@ -42,11 +52,13 @@ The SDK opens the Fastory games hub of your Fanzone inside your Flutter app, in 
 
 ## Prerequisites
 
-- Flutter >= 3.10.0 (Dart >= 3.0)
 - iOS 15.0+ (deployment target)
 - Android minSdk 24
+- Flutter >= 3.10.0 (Dart >= 3.0) — Flutter channel only
 
 ## Install
+
+### Flutter
 
 Add the SDK as a git dependency in your `pubspec.yaml`, pinned to a release tag:
 
@@ -56,7 +68,7 @@ dependencies:
     git:
       url: https://github.com/KrashStudio/fastory-sdk-mobile
       path: flutter/fastory_sdk
-      ref: sdk-v0.1.2
+      ref: sdk-v0.2.0
 ```
 
 Then:
@@ -65,9 +77,23 @@ Then:
 flutter pub get
 ```
 
+### Native iOS (Swift Package Manager)
+
+In Xcode: *File > Add Package Dependencies…*, enter `https://github.com/KrashStudio/fastory-sdk-mobile`, and pick *Up to Next Major Version*. Or declare it in your own `Package.swift`:
+
+```swift
+dependencies: [
+    .package(url: "https://github.com/KrashStudio/fastory-sdk-mobile.git", from: "0.2.0")
+]
+```
+
+Each release carries two tags on the same commit: the bare version, which is the only form SwiftPM resolves, and `sdk-v<version>`, the name the Flutter channel uses.
+
 No extra native setup is required beyond the minimum OS versions above (iOS deployment target 15.0 in your Podfile/Xcode project, `minSdkVersion 24` in your Android Gradle config).
 
 ## Integrate in 5 lines
+
+### Flutter
 
 Configure once in `main()`, open from anywhere (e.g. your footer):
 
@@ -83,6 +109,22 @@ void main() {
 // In your footer tap handler:
 onTap: () => Fastory.openGames(),
 ```
+
+### Native iOS
+
+Configure at launch, then present from the view controller of your choice:
+
+```swift
+import FastorySDK
+
+// In your App / AppDelegate:
+Fastory.configure(FastoryConfig(fanzoneSlug: "your-fanzone"))
+
+// From your games tab or button:
+Fastory.openGames(from: presentingViewController)
+```
+
+The Swift API takes the presenter explicitly (`openGames(from:)`) and delivers lifecycle events through `Fastory.eventsDelegate`, a `FastoryEventsDelegate`. Each channel follows its own platform idiom rather than a lowest-common-denominator signature — the behavior behind them is identical.
 
 ## Configuration reference
 

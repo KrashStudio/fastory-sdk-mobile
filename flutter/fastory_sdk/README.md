@@ -20,7 +20,7 @@ dependencies:
     git:
       url: https://github.com/KrashStudio/fastory-sdk-mobile
       path: flutter/fastory_sdk
-      ref: sdk-v0.1.1
+      ref: sdk-v0.2.0
 ```
 
 ## API

@@ -4,6 +4,37 @@ All notable changes to the Fastory Mobile SDK are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: [SemVer](https://semver.org),
 tags `sdk-vX.Y.Z`.
 
+## 0.2.0
+
+Native iOS apps can now consume the SDK as a Swift package, and heavy games get the whole device
+budget while they are on screen.
+
+### Added
+
+- **Swift package (SwiftPM)** — native iOS apps no longer need Flutter to embed the SDK. Add
+  `https://github.com/KrashStudio/fastory-sdk-mobile` in Xcode, or `from: "0.2.0"` in your own
+  `Package.swift`, and call `Fastory.configure(_:)` then `Fastory.openGames(from:)`. The Flutter
+  plugin is unchanged and keeps its own install path. Every release now publishes both channels
+  from the same commit: `sdk-vX.Y.Z` for Flutter, the bare `X.Y.Z` tag that SwiftPM resolves.
+
+### Fixed
+
+- **Heavy games no longer share the device with the games waiting behind them** — up to three
+  preloaded games stayed fully resident while another was being played. Set aside, their timers
+  are throttled, but they keep their page, their textures and their graphics contexts, and every
+  web view shares one content process and therefore one memory budget. Presenting a game now
+  releases the others and abandons the preload in flight; closing rebuilds them, the game just
+  closed first. Opening from the hub stays instant. Reopening a *different* game in the seconds
+  after a close may be a cold open — deliberate: a smooth game on screen comes first.
+- **Games served from the staging environment open in the game sheet again** — the SDK expected a
+  host the platform does not serve there, so a staging game was treated as an external link and
+  handed to the system browser, losing the cookies shared with the hub and the `gameOpened` event.
+  Production was never affected.
+
+### Changed
+
+- The package no longer ships its test suite. Nothing an integrator consumes changes.
+
 ## 0.1.4
 
 Game preloading now also finds games referenced by direct link, not only by game components.

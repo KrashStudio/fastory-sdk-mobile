@@ -30,7 +30,7 @@ dependencies:
     git:
       url: https://github.com/KrashStudio/fastory-sdk-mobile
       path: flutter/fastory_sdk
-      ref: sdk-v0.1.0
+      ref: sdk-v0.2.0
 ```
 
 Public API surface (normative in `SPEC.md §2`): **3 methods** — `Fastory.configure(FastoryConfig)`,

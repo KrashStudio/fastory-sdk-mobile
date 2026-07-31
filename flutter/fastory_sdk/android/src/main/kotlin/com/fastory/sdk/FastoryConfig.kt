@@ -9,7 +9,7 @@ enum class FastoryEnvironment(
 ) {
     PRODUCTION("https://fanzone.me", "https://story.tl"),
 
-    STAGING("https://staging.fanzone.me", "https://test.story.tl"),
+    STAGING("https://staging.fanzone.me", "https://staging.story.tl"),
 
     DEVELOPMENT(null, null),
 }
