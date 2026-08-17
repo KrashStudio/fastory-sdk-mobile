@@ -13,6 +13,45 @@ const Color kClubBar = Color(0xFF091834);
 
 String get kClubPlatform => Platform.isIOS ? 'Flutter · iOS' : 'Flutter · Android';
 
+// Pointing the demo at a real fanzone needs a real publishable key, and a key must
+// never reach a commit. Run with `--dart-define-from-file=fastory.local.json` (that
+// file is gitignored; copy `fastory.local.example.json`). Without it the demo still
+// runs, on the placeholder slug — the pre-key behaviour.
+const String kPlaceholderFanzoneSlug = 'your-fanzone';
+const String kPublishableKey = String.fromEnvironment('FASTORY_PUBLISHABLE_KEY');
+const String kEnvironmentName =
+    String.fromEnvironment('FASTORY_ENVIRONMENT', defaultValue: 'staging');
+
+FastoryEnvironment get kEnvironment {
+  switch (kEnvironmentName.toLowerCase()) {
+    case 'production':
+      return FastoryEnvironment.production;
+    case 'staging':
+      return FastoryEnvironment.staging;
+    // Failing here beats silently running against the wrong platform: a typo would
+    // otherwise look like "the key is rejected" hours later.
+    default:
+      throw ArgumentError.value(
+        kEnvironmentName,
+        'FASTORY_ENVIRONMENT',
+        "must be 'staging' or 'production'",
+      );
+  }
+}
+
+// `configure` takes exactly one identifier and rejects both-or-neither, so the key and
+// the placeholder slug are alternatives, never a pair.
+FastoryConfig get kDemoConfig => kPublishableKey.isEmpty
+    // ignore: deprecated_member_use
+    ? FastoryConfig(
+        fanzoneSlug: kPlaceholderFanzoneSlug,
+        environment: kEnvironment,
+      )
+    : FastoryConfig(
+        publishableKey: kPublishableKey,
+        environment: kEnvironment,
+      );
+
 void main() {
   runApp(const ExampleApp());
 }
@@ -54,7 +93,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    Fastory.configure(const FastoryConfig(fanzoneSlug: 'your-fanzone'));
+    Fastory.configure(kDemoConfig);
     _eventsSubscription = Fastory.events.listen(
       (FastoryEvent event) => debugPrint('Fastory event: $event'),
     );

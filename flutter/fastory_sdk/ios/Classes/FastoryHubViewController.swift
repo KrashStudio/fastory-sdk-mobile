@@ -38,6 +38,8 @@ final class FastoryHubViewController: UIViewController {
     private let loadingIndicator = UIActivityIndicatorView(style: .large)
     private let errorView = UIView()
     private var hasNotifiedOpened = false
+    private var hasAppeared = false
+    private var resolvedFanzoneSlug: String?
 
     init(config: FastoryConfig) {
         self.config = config
@@ -70,10 +72,17 @@ final class FastoryHubViewController: UIViewController {
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        if !hasNotifiedOpened {
-            hasNotifiedOpened = true
-            Fastory.eventsDelegate?.fastoryHubOpened(fanzoneSlug: config.fanzoneSlug)
-        }
+        hasAppeared = true
+        notifyHubOpenedIfReady()
+    }
+
+    /// `hubOpened` carries the fanzone slug, which on the publishable key path is only known once
+    /// the API answers. Both conditions gate the event: the slug path resolves synchronously in
+    /// `viewDidLoad`, so it still fires on appearance as before.
+    private func notifyHubOpenedIfReady() {
+        guard !hasNotifiedOpened, hasAppeared, let slug = resolvedFanzoneSlug else { return }
+        hasNotifiedOpened = true
+        Fastory.eventsDelegate?.fastoryHubOpened(fanzoneSlug: slug)
     }
 
     override func viewDidDisappear(_ animated: Bool) {
@@ -182,7 +191,21 @@ final class FastoryHubViewController: UIViewController {
     private func loadHub() {
         errorView.isHidden = true
         loadingIndicator.startAnimating()
-        webView.load(URLRequest(url: config.hubURL))
+        // Configured by publishable key, the fanzone is resolved from the API — the indicator
+        // covers that round trip, and a rejected key lands on the same native error view as a
+        // failed page load rather than on a blank webview.
+        Fastory.resolveHub { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let hub):
+                self.resolvedFanzoneSlug = hub.fanzoneSlug
+                self.notifyHubOpenedIfReady()
+                self.webView.load(URLRequest(url: hub.url))
+            case .failure:
+                self.loadingIndicator.stopAnimating()
+                self.errorView.isHidden = false
+            }
+        }
     }
 
     private func presentGameSheet(for url: URL) {

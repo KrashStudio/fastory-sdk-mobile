@@ -1,6 +1,6 @@
-# Fastory Mobile SDK — v0.1 Specification
+# Fastory Mobile SDK — Specification
 
-Status: **Normative** — this document is the single source of truth for the Fastory Mobile SDK v0.1 public API.
+Status: **Normative** — this document is the single source of truth for the Fastory Mobile SDK public API. Sections tagged *since X.Y.Z* were added after 0.1.
 Audience: SDK implementers (iOS, Android, Flutter) and integrators (your-fanzone app team).
 The key words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are to be interpreted as described in RFC 2119.
 
@@ -45,12 +45,17 @@ The SDK exposes three operations and one event stream. Signatures below are norm
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `environment` | enum `production` \| `staging` \| `development` | yes | Selects the Fanzone base URL (§ 3.1) |
-| `fanzoneSlug` | string | yes | Fanzone identifier, e.g. `"your-fanzone"` |
+| `publishableKey` | string | exactly one of `publishableKey` / `fanzoneSlug` | Workspace publishable key, `fpk_live_…` or `fpk_test_…` (§ 2.5) |
+| `fanzoneSlug` | string | exactly one of `publishableKey` / `fanzoneSlug` | **Deprecated since 0.3.0.** Fanzone identifier, e.g. `"your-fanzone"` |
+| `workspaceId` | string | no | Cross-check: a key resolving to another workspace MUST be rejected (§ 2.5) |
 | `hubTabSlug` | string | yes | Hidden tab used as games hub, e.g. `"games"` |
 | `locale` | string (BCP 47) | no | Preferred locale hint, e.g. `"en"`, `"fr-FR"` |
+| `theme` | enum `light` \| `dark` | no | Appearance hint forwarded to the web surfaces (§ 3.2, § 3.3) |
 | `developmentBaseUrl` | string (https URL) | only when `environment == development` | Custom base URL for development |
 
 `configure` MUST be called before `openGames()`. Calling `openGames()` unconfigured MUST fail with error code `not_configured` (§ 5.4). `configure` MAY be called again; the new configuration applies to the next `openGames()` call.
+
+Implementations MUST reject, at `configure` time and before any network call: neither identifier supplied, both supplied, a blank `fanzoneSlug`, a blank `workspaceId`, and a `publishableKey` that is malformed or minted for another environment (§ 2.5). Rejection MUST be a typed, catchable error — never a crash, and never a configuration accepted now that fails later at the network layer.
 
 ### 2.2 Swift (iOS)
 
@@ -61,16 +66,32 @@ public enum FastoryEnvironment {
     case development(baseURL: URL)
 }
 
+public enum FastoryTheme: String { case light, dark }
+
 public struct FastoryConfig {
     public let environment: FastoryEnvironment
-    public let fanzoneSlug: String
+    public let publishableKey: String?
+    public let workspaceId: String?
+    public let fanzoneSlug: String?
     public let hubTabSlug: String
     public let locale: String?
+    public let theme: FastoryTheme?
 
-    public init(environment: FastoryEnvironment,
+    public init(publishableKey: String,
+                workspaceId: String? = nil,
+                environment: FastoryEnvironment = .production,
+                hubTabSlug: String = "games",
+                locale: String? = nil,
+                theme: FastoryTheme? = nil)
+
+    @available(*, deprecated)
+    public init(environment: FastoryEnvironment = .production,
                 fanzoneSlug: String,
-                hubTabSlug: String,
-                locale: String? = nil)
+                hubTabSlug: String = "games",
+                locale: String? = nil,
+                theme: FastoryTheme? = nil)
+
+    public func validate() throws
 }
 
 public protocol FastoryEventsDelegate: AnyObject {
@@ -104,11 +125,17 @@ sealed class FastoryEnvironment {
     data class Development(val baseUrl: String) : FastoryEnvironment()
 }
 
+enum class FastoryTheme { LIGHT, DARK }
+
 data class FastoryConfig(
-    val environment: FastoryEnvironment,
-    val fanzoneSlug: String,
-    val hubTabSlug: String,
+    @Deprecated("use publishableKey") val fanzoneSlug: String? = null,
+    val environment: FastoryEnvironment = FastoryEnvironment.PRODUCTION,
+    val hubTabSlug: String = "games",
     val locale: String? = null,
+    val developmentBaseUrl: String? = null,
+    val publishableKey: String? = null,
+    val workspaceId: String? = null,
+    val theme: FastoryTheme? = null,
 )
 
 interface FastoryEventsListener {
@@ -135,20 +162,33 @@ object Fastory {
 ```dart
 enum FastoryEnvironment { production, staging, development }
 
+enum FastoryTheme { light, dark }
+
 class FastoryConfig {
+  // Both identifiers are optional so an app written against 0.1 keeps compiling;
+  // validate() enforces "exactly one".
   const FastoryConfig({
-    required this.environment,
-    required this.fanzoneSlug,
-    required this.hubTabSlug,
+    this.publishableKey,
+    this.fanzoneSlug,
+    this.workspaceId,
+    this.environment = FastoryEnvironment.production,
+    this.hubTabSlug = 'games',
     this.locale,
+    this.theme,
     this.developmentBaseUrl,
   });
 
+  final String? publishableKey;
+  @Deprecated('use publishableKey')
+  final String? fanzoneSlug;
+  final String? workspaceId;
   final FastoryEnvironment environment;
-  final String fanzoneSlug;
   final String hubTabSlug;
   final String? locale;
+  final FastoryTheme? theme;
   final String? developmentBaseUrl;
+
+  void validate();
 }
 
 sealed class FastoryEvent {
@@ -186,6 +226,20 @@ class Fastory {
 - All three methods delegate to the platform channel (§ 5) and complete when the native side has acknowledged the call.
 - `events` is a broadcast stream backed by the `EventChannel`; subscribing MUST NOT be required for the SDK to function.
 
+### 2.5 Publishable key (since 0.3.0)
+
+A publishable key identifies the workspace a host application belongs to. It is embedded in a shipped app and is **not a credential**: it grants no data access, it is bound to declared application identifiers, its use is rate-limited, and it is revocable.
+
+- Keys are minted per environment: `fpk_live_` belongs to `production`, `fpk_test_` to `staging` and `development`. A prefix alone is not a key. Both rules MUST be enforced locally at `configure` time.
+- Configured by key, the SDK does **not** know which fanzone to open. It MUST exchange the key at `POST {apiBase}/sdk/auth/bootstrap`, sending the key and the host's application identifier (bundle identifier on iOS, package name on Android) as headers, and MUST take the fanzone slug from the `workspace.slug` of the response.
+- The exchange MUST start at `configure` and `openGames()` MUST wait on it rather than blocking the caller. While it is in flight the hub MUST show its existing loading state; on failure it MUST show the existing native error view (§ 9) — never a blank WebView.
+- Failures MUST surface the API's machine-readable `code` (`sdk_key_revoked`, `sdk_application_not_allowed`, `sdk_rate_limited`, …). Hosts branch on the code, never on a message.
+- When `workspaceId` is supplied and the resolved workspace differs, the SDK MUST reject the configuration rather than open the resolved fanzone.
+- The endpoint also returns a short-lived session token. Until a route accepts it, implementations MUST discard it — holding an unused credential only creates a leak surface.
+- Configured by key, no hub warm-up is possible before the exchange resolves: there is no URL to warm.
+
+**Deprecation window.** `fanzoneSlug` remains accepted for the whole 0.x line and MUST keep behaving exactly as in 0.1 — same URL, same warm-up, same events. Each platform marks it deprecated in the way its language allows (Swift `@available`, Kotlin `@Deprecated`, Dart `@Deprecated`); no platform may make it a compile error before 1.0.
+
 ---
 
 ## 3. URL Construction
@@ -203,8 +257,10 @@ The configured base URL origin (scheme + host + port) is referred to below as th
 ### 3.2 Hub URL (WebView A)
 
 ```
-{base}/{fanzoneSlug}?tab={hubTabSlug}&chrome=0&consent=0[&locale={locale}]
+{base}/{fanzoneSlug}?tab={hubTabSlug}&chrome=0&consent=0[&locale={locale}][&theme={theme}]
 ```
+
+`fanzoneSlug` is the configured one, or the one resolved from the publishable key (§ 2.5).
 
 | Param | Value | Purpose |
 |---|---|---|
@@ -212,6 +268,7 @@ The configured base URL origin (scheme + host + port) is referred to below as th
 | `chrome` | `0` | Hides web navigation chrome (header/footer) |
 | `consent` | `0` | Marks consent as handled by the host app; the web player suppresses its own cookie banner and does not assume analytics consent |
 | `locale` | `locale` config value | Optional locale hint; omitted when not configured |
+| `theme` | `light` \| `dark` | Optional appearance hint; omitted when not configured. The web side does not read it yet, so it is inert until it ships there |
 
 Example: `https://fanzone.me/your-fanzone?tab=games&chrome=0&consent=0`
 
@@ -224,8 +281,10 @@ When the interception policy resolves `OPEN_GAME_SHEET` (§ 4), the SDK MUST loa
 | `embed` | `1` | Signals embedded rendering to the story player |
 | `utm_source` | `sdk` | Attribution of SDK-originated traffic |
 | `consent` | `0` | Same consent hint as the hub (§ 3.2), so the game player suppresses its own cookie banner |
+| `locale` | `locale` config value | Optional; omitted when not configured |
+| `theme` | `light` \| `dark` | Optional; omitted when not configured |
 
-Existing query parameters on the intercepted URL MUST be preserved; `embed`, `utm_source` and `consent` MUST NOT be duplicated if already present.
+Existing query parameters on the intercepted URL MUST be preserved, and none of the parameters above MUST be duplicated if already present. This matters for `locale` and `theme` in particular: the fanzone builds its own game links, and the host's preferences MUST NOT overwrite a value the page already put on the link.
 
 Example: intercepted `https://fanzone.me/s/summer-quiz` → loaded as `https://fanzone.me/s/summer-quiz?embed=1&utm_source=sdk&consent=0`
 
@@ -296,17 +355,23 @@ Argument: a `Map<String, Object?>`:
 
 ```json
 {
+  "publishableKey": "fpk_live_...",
+  "workspaceId": null,
+  "fanzoneSlug": null,
   "environment": "production",
-  "fanzoneSlug": "your-fanzone",
   "hubTabSlug": "games",
   "locale": "en",
+  "theme": "dark",
   "developmentBaseUrl": null
 }
 ```
 
+- Every key is always present; unset optional fields are sent as `null`, so a native side can parse a stable shape regardless of which plugin version calls it.
+- Exactly one of `publishableKey` / `fanzoneSlug` MUST be non-null (§ 2.1). The Dart side rejects the bad combinations before the channel; the native side re-checks, since a host may call the channel directly.
 - `environment` MUST be one of `"production"`, `"staging"`, `"development"`.
+- `theme` MUST be `"light"`, `"dark"` or `null`.
 - `developmentBaseUrl` MUST be present and non-null when `environment == "development"`, ignored otherwise.
-- Returns `null` on success.
+- Returns `null` on success. A rejected configuration MUST fail with `invalid_config` (§ 5.4).
 
 #### `openGames`
 
@@ -409,7 +474,7 @@ The chromeless Fanzone (`chrome=0`) applies its own `env(safe-area-inset-*)` pad
 - The SDK follows **Semantic Versioning 2.0.0** (`MAJOR.MINOR.PATCH`). The public API surface defined in § 2 and the platform channel contract in § 5 are the compatibility boundary: breaking either requires a MAJOR bump.
 - Releases are tagged `sdk-vX.Y.Z` (e.g. `sdk-v0.1.0`).
 - Distribution repository: **`KrashStudio/fastory-sdk-mobile`** (GitHub, **public, release-only**) — it receives the clean release package per version, tagged `sdk-vX.Y.Z`, with no development history (dev happens in the `fastory` monorepo). v0.1 ships the Flutter plugin; native Swift (SPM), native Kotlin (Maven), and React Native follow in later versions.
-- This spec version: **0.2.0**. The public names in § 2 and the channel contract in § 5 are locked (they ship in third-party integrations); any later normative change requires a new spec version and a coordinated SDK release. Changes since 0.1.0: stories origins added to rule 1 (§ 4); hub and game WebViews are kept warm across sessions (behavioral); the consent hint is now `consent=0` on both hub and game URLs (§ 3.2/§ 3.3) — banner suppressed without asserting analytics consent; the `hubOpened` event carries the `fanzoneSlug` (§ 5.3). Changes in 0.1.2: the default `hubTabSlug` is `games` (was `games-app`). Changes in 0.1.3: closing the game sheet discards the played WebView (fresh state guaranteed, audio stops immediately) and the SDK preloads the hub's games via a read-only discovery query (§ 11 — Non-Goals renumbered to § 12). Changes in 0.1.4: preload discovery (§ 11.1) additionally collects direct game URLs — absolute http(s) URLs with an `/s/` path — from the embedded payload, covering hubs whose tiles are plain links rather than `Experience` components. Changes in 0.2.0: presenting a game sheet releases the warm pool and abandons the load in flight, and closing rebuilds it (§ 11.2) — warm games otherwise hold memory and graphics contexts away from the game on screen. Changes in 0.1.5: the staging stories origin is `https://staging.story.tl` (§ 4, § 11.1) — the SDK previously named a host the platform does not serve, so staging games failed rule 1 and were handed to the system browser.
+- This spec version: **0.3.0**. The public names in § 2 and the channel contract in § 5 are locked (they ship in third-party integrations); any later normative change requires a new spec version and a coordinated SDK release. Changes since 0.1.0: stories origins added to rule 1 (§ 4); hub and game WebViews are kept warm across sessions (behavioral); the consent hint is now `consent=0` on both hub and game URLs (§ 3.2/§ 3.3) — banner suppressed without asserting analytics consent; the `hubOpened` event carries the `fanzoneSlug` (§ 5.3). Changes in 0.1.2: the default `hubTabSlug` is `games` (was `games-app`). Changes in 0.1.3: closing the game sheet discards the played WebView (fresh state guaranteed, audio stops immediately) and the SDK preloads the hub's games via a read-only discovery query (§ 11 — Non-Goals renumbered to § 12). Changes in 0.1.4: preload discovery (§ 11.1) additionally collects direct game URLs — absolute http(s) URLs with an `/s/` path — from the embedded payload, covering hubs whose tiles are plain links rather than `Experience` components. Changes in 0.3.0: `configure` takes a workspace publishable key, exchanged at `/sdk/auth/bootstrap` for the fanzone to open (§ 2.1, § 2.5); `fanzoneSlug` is deprecated but accepted for the whole 0.x line; an optional `theme` (`light`/`dark`) and the existing `locale` are forwarded to the hub and game URLs (§ 3.2, § 3.3); the configure channel payload gains `publishableKey`, `workspaceId` and `theme` (§ 5.2). Changes in 0.2.0: presenting a game sheet releases the warm pool and abandons the load in flight, and closing rebuilds it (§ 11.2) — warm games otherwise hold memory and graphics contexts away from the game on screen. Changes in 0.1.5: the staging stories origin is `https://staging.story.tl` (§ 4, § 11.1) — the SDK previously named a host the platform does not serve, so staging games failed rule 1 and were handed to the system browser.
 
 ---
 

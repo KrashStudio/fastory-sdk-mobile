@@ -28,9 +28,25 @@ Then two mandatory tweaks:
 
    and align `IPHONEOS_DEPLOYMENT_TARGET` to `15.0` in Xcode if needed.
 
+## Configure (optional)
+
+Without any configuration the demo runs on the placeholder fanzone slug — it builds and launches,
+but the hub has nothing real to show. To point it at a real fanzone, give it a publishable key:
+
+```bash
+cp fastory.local.example.json fastory.local.json
+# fill in FASTORY_PUBLISHABLE_KEY, keep FASTORY_ENVIRONMENT on staging
+```
+
+`fastory.local.json` is gitignored — a publishable key must never reach a commit. Create the key in
+the back-office under **Fanzone > Settings > SDK keys**: staging mints `fpk_test_` keys, production
+mints `fpk_live_` ones, and `configure` rejects a key from the other environment before any network
+call.
+
 ## Run
 
 ```bash
 flutter pub get
-flutter run
+flutter run                                          # placeholder slug
+flutter run --dart-define-from-file=fastory.local.json   # real fanzone
 ```

@@ -1,3 +1,6 @@
+# Holds a real publishable key — see fastory.local.example.json.
+fastory.local.json
+
 # Miscellaneous
 *.class
 *.log

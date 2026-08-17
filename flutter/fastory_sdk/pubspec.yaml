@@ -1,6 +1,6 @@
 name: fastory_sdk
 description: Fastory games hub SDK — opens a fanzone games hub and its games in native web views, from any Flutter app.
-version: 0.2.0
+version: 0.3.0
 homepage: https://fastory.io
 publish_to: none
 

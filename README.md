@@ -1,7 +1,7 @@
 # Fastory Mobile SDK — Integration Guide
 
 Audience: host app engineering teams integrating the SDK.
-Scope: Fastory Mobile SDK v0.2 (ultra-light, WebView-based).
+Scope: Fastory Mobile SDK v0.3.0 (ultra-light, WebView-based).
 
 Two ways to consume it, same behavior and same version:
 
@@ -68,7 +68,7 @@ dependencies:
     git:
       url: https://github.com/KrashStudio/fastory-sdk-mobile
       path: flutter/fastory_sdk
-      ref: sdk-v0.2.0
+      ref: sdk-v0.3.0
 ```
 
 Then:
@@ -83,7 +83,7 @@ In Xcode: *File > Add Package Dependencies…*, enter `https://github.com/KrashS
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/KrashStudio/fastory-sdk-mobile.git", from: "0.2.0")
+    .package(url: "https://github.com/KrashStudio/fastory-sdk-mobile.git", from: "0.3.0")
 ]
 ```
 
@@ -92,6 +92,20 @@ Each release carries two tags on the same commit: the bare version, which is the
 No extra native setup is required beyond the minimum OS versions above (iOS deployment target 15.0 in your Podfile/Xcode project, `minSdkVersion 24` in your Android Gradle config).
 
 ## Integrate in 5 lines
+
+Configure the SDK with the **publishable key** from your workspace settings. Create it with your iOS
+bundle identifier and Android package name declared — the key only works for the applications it
+lists, so a key created without them refuses every call.
+
+`fanzoneSlug` still works and will keep working for the whole 0.x line, but it is deprecated: prefer
+the key.
+
+> **Availability of the key exchange.** The endpoint the key is exchanged at is live on **staging**
+> today and reaches production later. Integrate against `environment: staging` with an `fpk_test_…`
+> key, which works now. If you have to ship to production before it deploys, configure with the
+> deprecated `fanzoneSlug` instead — that path calls no endpoint at all and is unaffected. An
+> `fpk_live_…` key pointed at production ahead of the deployment resolves nothing, so `openGames()`
+> lands on the hub's error view rather than the games.
 
 ### Flutter
 
@@ -102,7 +116,11 @@ import 'package:fastory_sdk/fastory_sdk.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  Fastory.configure(const FastoryConfig(fanzoneSlug: 'your-fanzone'));
+  Fastory.configure(const FastoryConfig(
+    publishableKey: 'fpk_live_...',
+    theme: FastoryTheme.dark,   // optional
+    locale: 'fr-FR',            // optional
+  ));
   runApp(const MyApp());
 }
 
@@ -118,7 +136,7 @@ Configure at launch, then present from the view controller of your choice:
 import FastorySDK
 
 // In your App / AppDelegate:
-Fastory.configure(FastoryConfig(fanzoneSlug: "your-fanzone"))
+Fastory.configure(FastoryConfig(publishableKey: "fpk_live_...", theme: .dark))
 
 // From your games tab or button:
 Fastory.openGames(from: presentingViewController)
@@ -132,7 +150,10 @@ The Swift API takes the presenter explicitly (`openGames(from:)`) and delivers l
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `fanzoneSlug` | `String` | yes | Your Fanzone slug, e.g. `"your-fanzone"` |
+| `publishableKey` | `String` | one of the two | Your workspace publishable key, `fpk_live_…` in production, `fpk_test_…` elsewhere |
+| `fanzoneSlug` | `String` | one of the two | **Deprecated.** Your Fanzone slug, e.g. `"your-fanzone"` — still accepted for the whole 0.x line |
+| `workspaceId` | `String?` | no | Optional cross-check: a key resolving to another workspace is rejected instead of opening it |
+| `theme` | `light` \| `dark` | no | Appearance hint forwarded to the hub and games. Not read by the web side yet |
 | `environment` | `FastoryEnvironment` | no (default `production`) | `production` (`https://fanzone.me`), `staging` (`https://staging.fanzone.me`), or `development` (uses `developmentBaseUrl`) |
 | `hubTabSlug` | `String` | no (default `"games"`) | The hidden hub tab slug |
 | `locale` | `String?` | no | Forwarded to the hub when provided; defaults to the web Fanzone's own locale resolution |
@@ -177,7 +198,7 @@ Fastory.events.listen((FastoryEvent event) {
 });
 ```
 
-The SDK itself sends no analytics in v0.1 — you own all tracking through this stream.
+The SDK sends no analytics of its own — you own all tracking through this stream.
 
 ## Behavior details
 
@@ -220,7 +241,7 @@ The SDK WebViews are laid out **edge-to-edge** (the Fanzone fills the screen top
 
 ### Offline
 
-If the **hub** fails to load (airplane mode, no network), the SDK shows a native error state with a retry action — no blank white WebView is left on screen. In v0.1 the game sheet has no error view of its own; on failure it simply remains dismissible (swipe down / back).
+If the **hub** fails to load (airplane mode, no network), the SDK shows a native error state with a retry action — no blank white WebView is left on screen. The game sheet has no error view of its own; on failure it simply remains dismissible (swipe down / back).
 
 ## FAQ
 
@@ -228,7 +249,7 @@ If the **hub** fails to load (airplane mode, no network), the SDK shows a native
 No — the two WebViews are owned and configured by the SDK (cookie sharing, URL interception, safe areas depend on it). External links respect the system default browser.
 
 **Do we need ProGuard / R8 rules?**
-No custom rules are expected for v0.1: the SDK uses the platform `android.webkit.WebView` and standard Flutter plugin registration, both covered by default Flutter/AGP keep rules. If your build uses aggressive custom shrinking and you hit an issue, keep the SDK's plugin package and report it to us.
+No custom rules are expected: the SDK uses the platform `android.webkit.WebView` and standard Flutter plugin registration, both covered by default Flutter/AGP keep rules. If your build uses aggressive custom shrinking and you hit an issue, keep the SDK's plugin package and report it to us.
 
 **What does the SDK add to app size?**
 It is intentionally ultra-light: Dart plugin glue plus thin native view controllers around system WebViews. No bundled UI frameworks, no analytics libraries, no native third-party dependencies. Expect a negligible footprint (well under 1 MB per platform).
@@ -239,9 +260,13 @@ The SDK displays the partner's own web content (your Fanzone) in a WebView, with
 **Which environments exist?**
 Production (`https://fanzone.me`) and staging (`https://staging.fanzone.me`). A development environment with a configurable base URL (`developmentBaseUrl`) is available for internal testing.
 
-## Known limitations (v0.1)
+## Known limitations
+
+All of these hold for the version documented above. None has a committed release date — ask us if
+one of them blocks you, rather than planning around a version number.
 
 - No authentication / SSO bridge — games run anonymously or with their own web-side identity.
 - No SDK-side analytics — use the event stream and your own tracker.
-- No JavaScript injection and no `postMessage` bridge between the app and the web content — a `postMessage` bridge is planned for v0.2.
+- No JavaScript injection and no `postMessage` bridge between the app and the web content.
+- The game sheet has no error view of its own: on a failed load it stays dismissible (swipe down / back).
 - Portrait and landscape are supported, but the hub content is designed mobile-first (portrait).

@@ -58,9 +58,19 @@ class FastoryHubActivity : AppCompatActivity() {
             },
         )
 
-        Fastory.notifyHubOpened(this)
-        if (webView.url == null) {
-            webView.loadUrl(config.hubUrl)
+        // Configured by publishable key, the fanzone is resolved from the API — the progress bar
+        // covers that round trip, and a rejected key lands on the same native error view as a
+        // failed page load rather than on a blank webview.
+        Fastory.resolveHub { result ->
+            result.fold(
+                onSuccess = { (url, fanzoneSlug) ->
+                    Fastory.notifyHubOpened(this, fanzoneSlug)
+                    if (webView.url == null) {
+                        webView.loadUrl(url)
+                    }
+                },
+                onFailure = { showError() },
+            )
         }
     }
 

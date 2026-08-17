@@ -30,7 +30,7 @@ dependencies:
     git:
       url: https://github.com/KrashStudio/fastory-sdk-mobile
       path: flutter/fastory_sdk
-      ref: sdk-v0.2.0
+      ref: sdk-v0.3.0
 ```
 
 Public API surface (normative in `SPEC.md §2`): **3 methods** — `Fastory.configure(FastoryConfig)`,
@@ -46,5 +46,7 @@ Minimum platforms: iOS 15.0, Android `minSdk 24`, Flutter ≥ 3.10 (Dart ≥ 3.0
   and arrive as a new tag. To adopt a fix, bump `ref:` to the newer tag.
 - The bundled iOS (`flutter/fastory_sdk/ios/`) and Android (`flutter/fastory_sdk/android/`) sources
   are internal to the plugin; host apps interact only with the Dart API.
-- v0.1 is intentionally ultra-light: no authentication, no analytics, no JS injection, no
+- The SDK is intentionally ultra-light: no user authentication, no analytics, no JS injection, no
   `postMessage` bridge (see `SPEC.md §11` for the non-goals and `README.md` for known limitations).
+  Configuring with a publishable key is not authentication — the key says which workspace an app
+  belongs to, carries no user identity, and grants no access on its own.

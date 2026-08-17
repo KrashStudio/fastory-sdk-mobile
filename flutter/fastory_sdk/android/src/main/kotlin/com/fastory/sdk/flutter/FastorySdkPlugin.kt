@@ -6,6 +6,8 @@ import com.fastory.sdk.Fastory
 import com.fastory.sdk.FastoryConfig
 import com.fastory.sdk.FastoryEnvironment
 import com.fastory.sdk.FastoryEventsListener
+import com.fastory.sdk.FastoryTheme
+import com.fastory.sdk.WorkspaceResolver
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
@@ -90,28 +92,36 @@ class FastorySdkPlugin :
     }
 
     private fun configure(call: MethodCall, result: MethodChannel.Result) {
-        val fanzoneSlug = call.argument<String>("fanzoneSlug")
-        if (fanzoneSlug.isNullOrBlank()) {
-            result.error("invalid_config", "fanzoneSlug is required", null)
-            return
-        }
         val environment = when (call.argument<String>("environment")) {
             "staging" -> FastoryEnvironment.STAGING
             "development" -> FastoryEnvironment.DEVELOPMENT
             else -> FastoryEnvironment.PRODUCTION
         }
+        val theme = when (call.argument<String>("theme")) {
+            "light" -> FastoryTheme.LIGHT
+            "dark" -> FastoryTheme.DARK
+            else -> null
+        }
         val config = try {
+            // Exactly one identifier — FastoryConfig's init enforces it. Dart already rejects the
+            // bad combinations; this covers a host calling the channel directly.
             FastoryConfig(
-                fanzoneSlug = fanzoneSlug,
+                fanzoneSlug = call.argument<String>("fanzoneSlug"),
                 environment = environment,
                 hubTabSlug = call.argument<String>("hubTabSlug") ?: "games",
                 locale = call.argument<String>("locale"),
                 developmentBaseUrl = call.argument<String>("developmentBaseUrl"),
+                publishableKey = call.argument<String>("publishableKey"),
+                workspaceId = call.argument<String>("workspaceId"),
+                theme = theme,
             )
         } catch (error: IllegalArgumentException) {
             result.error("invalid_config", error.message, null)
             return
         }
+        // The key only bootstraps for the applications it was created with, so the resolver needs
+        // the host's package name before configure() kicks the exchange off.
+        WorkspaceResolver.applicationId = applicationContext?.packageName
         Fastory.configure(config, eventsListener)
         applicationContext?.let(Fastory::preloadHub)
         result.success(null)

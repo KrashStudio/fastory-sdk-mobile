@@ -4,6 +4,43 @@ All notable changes to the Fastory Mobile SDK are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: [SemVer](https://semver.org),
 tags `sdk-vX.Y.Z`.
 
+## 0.3.0
+
+Configure the SDK with a workspace publishable key instead of a fanzone slug, and tell the web
+surfaces which appearance to render in.
+
+### Added
+
+- **`configure` by publishable key** — create one in the workspace settings and pass it as
+  `publishableKey`; the SDK exchanges it for the fanzone to open. Pass `workspaceId` too and a key
+  belonging to a different workspace is rejected instead of silently opening someone else's
+  fanzone. A malformed key, a bare prefix, or a key minted for another environment fails **at
+  configure time**, with a typed error — not later at the first network call.
+- **`theme`** — `light` or `dark`, forwarded to the hub and game URLs alongside the existing
+  `locale`. The web side does not read it yet, so setting it is inert until it ships there. Neither
+  value ever overwrites one the fanzone already put on its own game links.
+
+### Deprecated
+
+- **`fanzoneSlug`** — still accepted, and still behaving exactly as in 0.1, for the whole 0.x line.
+  Upgrading without touching your call site does not break: nothing becomes a compile error before
+  1.0. Each platform flags it the way its language allows.
+
+### Notes
+
+- **The key exchange is served on staging, not yet on production.** `environment: staging` with an
+  `fpk_test_…` key works today; an `fpk_live_…` key against production resolves nothing until the
+  endpoint deploys there, and `openGames()` shows the hub's error view. Production integrations stay
+  on the deprecated `fanzoneSlug` until then — that path calls no endpoint and is unchanged by this
+  release.
+- Configured by key, the hub cannot be warmed up before the exchange resolves — there is no URL to
+  warm yet. The hub's existing loading state covers the round trip, and a rejected key lands on the
+  existing native error view rather than a blank web view.
+- Errors carry the API's machine-readable code (`sdk_key_revoked`, `sdk_application_not_allowed`,
+  `sdk_rate_limited`, …). Branch on the code, never on the message.
+- The key only bootstraps for the application identifiers declared on it — your iOS bundle
+  identifier and Android package name. Create the key with them, or every call is refused.
+
 ## 0.2.0
 
 Native iOS apps can now consume the SDK as a Swift package, and heavy games get the whole device

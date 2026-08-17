@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name             = 'fastory_sdk'
-  s.version          = '0.2.0'
+  s.version          = '0.3.0'
   s.summary          = 'Fastory games hub SDK for Flutter.'
   s.description      = 'Opens a Fastory fanzone games hub and its games in native web views, from any Flutter app.'
   s.homepage         = 'https://fastory.io'

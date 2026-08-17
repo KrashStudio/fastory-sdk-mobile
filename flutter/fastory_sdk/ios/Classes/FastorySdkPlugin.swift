@@ -34,11 +34,14 @@ public final class FastorySdkPlugin: NSObject, FlutterPlugin {
     }
 
     private func configure(_ call: FlutterMethodCall, result: FlutterResult) {
-        guard let arguments = call.arguments as? [String: Any],
-              let fanzoneSlug = arguments["fanzoneSlug"] as? String else {
-            result(FlutterError(code: "invalid_config", message: "fanzoneSlug is required", details: nil))
+        guard let arguments = call.arguments as? [String: Any] else {
+            result(FlutterError(code: "invalid_config", message: "arguments are required", details: nil))
             return
         }
+        // Exactly one identifier, enforced by FastoryConfig.validate() below — Dart already
+        // rejects the bad combinations, this covers a host calling the channel directly.
+        let publishableKey = arguments["publishableKey"] as? String
+        let fanzoneSlug = arguments["fanzoneSlug"] as? String
         let environment: FastoryEnvironment
         switch arguments["environment"] as? String {
         case "staging":
@@ -58,18 +61,22 @@ public final class FastorySdkPlugin: NSObject, FlutterPlugin {
             environment = .production
         }
         let hubTabSlug = arguments["hubTabSlug"] as? String ?? "games"
+        let theme: FastoryTheme? = (arguments["theme"] as? String).flatMap(FastoryTheme.init(rawValue:))
+        let config = FastoryConfig(
+            environment: environment,
+            publishableKey: publishableKey,
+            workspaceId: arguments["workspaceId"] as? String,
+            fanzoneSlug: fanzoneSlug,
+            hubTabSlug: hubTabSlug,
+            locale: arguments["locale"] as? String,
+            theme: theme
+        )
         do {
-            try FastoryConfig.validate(fanzoneSlug: fanzoneSlug, hubTabSlug: hubTabSlug)
+            try config.validate()
         } catch {
             result(FlutterError(code: "invalid_config", message: "\(error)", details: nil))
             return
         }
-        let config = FastoryConfig(
-            environment: environment,
-            fanzoneSlug: fanzoneSlug,
-            hubTabSlug: hubTabSlug,
-            locale: arguments["locale"] as? String
-        )
         Fastory.configure(config)
         result(nil)
     }

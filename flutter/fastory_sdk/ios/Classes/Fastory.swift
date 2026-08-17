@@ -17,7 +17,20 @@ public enum Fastory {
     private static var memoryWarningObserver: NSObjectProtocol?
 
     public static func configure(_ config: FastoryConfig) {
+        do {
+            try config.validate()
+        } catch {
+            // Kept non-throwing for source compatibility. A rejected configuration is not
+            // stored, so openGames() reports "not configured" instead of opening someone
+            // else's fanzone or a blank hub.
+            assertionFailure("Fastory.configure(_:) rejected the configuration: \(error)")
+            return
+        }
         self.config = config
+        FastoryWorkspaceResolver.shared.reset()
+        // Configured by key, the fanzone to open is only known once the API answers. Start the
+        // exchange now so openGames() usually finds it already resolved.
+        FastoryWorkspaceResolver.shared.resolve(config: config)
         warmUpHub()
     }
 
@@ -62,12 +75,36 @@ public enum Fastory {
         FastoryGamePreloader.shared.watchHub(webView, config: config)
     }
 
+    /// Resolves the fanzone to open, and its slug — the `hubOpened` event carries it. Immediate on
+    /// the deprecated slug path; on the publishable key path it waits for
+    /// `/sdk/auth/bootstrap`, which `configure` already started.
+    static func resolveHub(
+        _ completion: @escaping (Result<(url: URL, fanzoneSlug: String), FastoryBootstrapError>) -> Void
+    ) {
+        guard let config else {
+            completion(.failure(.unreachable))
+            return
+        }
+        if let slug = config.fanzoneSlug {
+            completion(.success((url: config.hubURL(fanzoneSlug: slug), fanzoneSlug: slug)))
+            return
+        }
+        FastoryWorkspaceResolver.shared.whenResolved(config: config) { result in
+            completion(result.map {
+                (url: config.hubURL(fanzoneSlug: $0.slug), fanzoneSlug: $0.slug)
+            })
+        }
+    }
+
     private static func warmUpHub() {
         guard hubViewController == nil, let config else { return }
         FastoryGamePreloader.shared.flush()
+        // Only the slug path can warm up synchronously. On the key path the hub view controller
+        // resolves and loads on presentation — warming a webview for an unknown URL is pointless.
+        guard let hubURL = config.staticHubURL else { return }
         let webView = FastoryWebKit.makeWebView()
         FastoryGamePreloader.shared.watchHub(webView, config: config)
-        webView.load(URLRequest(url: config.hubURL))
+        webView.load(URLRequest(url: hubURL))
         warmHubWebView = webView
         observeMemoryPressureOnce()
     }

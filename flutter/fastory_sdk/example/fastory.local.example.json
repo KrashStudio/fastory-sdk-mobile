@@ -1,0 +1,7 @@
+{
+  "_comment": "Copy to `fastory.local.json` (gitignored), fill in, then run: flutter run --dart-define-from-file=fastory.local.json. Leave the key empty and the demo runs on the placeholder slug.",
+  "_environment": "`staging` or `production`. Staging is the default because that is where a new integration gets its first key.",
+  "FASTORY_ENVIRONMENT": "staging",
+  "_publishableKey": "Created in the back-office: Fanzone > Settings > SDK keys. Staging mints `fpk_test_` keys, production mints `fpk_live_` ones, and configure() rejects a key from the other environment before any network call.",
+  "FASTORY_PUBLISHABLE_KEY": ""
+}
