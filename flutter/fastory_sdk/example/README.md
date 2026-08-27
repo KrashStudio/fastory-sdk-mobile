@@ -1,12 +1,77 @@
 # fastory_sdk_example
 
-Demo app for the `fastory_sdk` plugin: a dark app with a Home / Matches / Games / Profile bottom bar.
-The **Games** item calls `Fastory.openGames()` and opens the games hub of the configured fanzone.
+The Flutter demo app, one of the SDK's three: a dark club app whose bottom bar carries **Home ·
+Calendar · Games · SDK · Profile**. Home, Calendar and Profile are decorative — they exist so the SDK
+is exercised inside something shaped like a real app rather than a button on a blank screen.
+
+**Games is an action, not a destination.** Tapping it opens the hub over the current tab and the
+selection never moves, so there is no intermediate screen and closing the hub lands back where you
+were. It is the entry a fan would use; the *SDK* tab is the one a developer uses.
+
+**The SDK tab is the reason the demo exists.** Every public method has a control in it and every
+piece of state the SDK hands back is on screen, so the whole surface can be exercised without
+editing a source file. The three demos share one structure — same tabs, same sections in the same
+order, same activity glyphs.
+
+This file ships inside the released package, but every path it names — here and below — is a path in
+the development monorepo (`KrashStudio/fastory`), where the demos live and the checks described here
+run. Read it as an account of how the demo is kept honest, not as files to open from the public repo.
+The structure above is fixed by the charter, `packages/sdk/docs/DEMO_APPS.md`: read it there before
+changing anything structural.
+
+## The SDK tab
+
+| Section | Holds | What to watch |
+|---|---|---|
+| **Runtime** | declared SDK version, environment, identifier in use, configured yes/no | `identifier` says whether you are on a publishable key or the deprecated slug |
+| **Hub** | `openGames()`, `close()`, and a toggle that fires `close()` 5 s after opening | The hub covers the screen, so `close()` is only observable when armed first |
+| **Appearance** | the `theme` hint, switchable at runtime | Switching re-runs `configure()`; the web side does not read the hint yet |
+| **Identity** | the three `identify` modes and `logout` | Only `anonymous` resolves; the two identified modes are disabled and labelled with the ticket that lands them |
+| **Bridge reply** | the standing answer `setBridgeReply` hands back, editable | Set it *before* opening the hub: the game asks while it boots |
+| **Last message** | the most recent message received from web content | A Fanzone posting `fastory:ready` lands here |
+| **Last error** | the most recent failure, as its machine-readable code | The code is what a host branches on, so the code is what is shown |
+| **Activity** | the running log | The only place the *ordering* of calls, results and events is visible |
+
+Activity glyphs, identical on the three demos: `→` call · `↩` result · `←` event · `✕` failure.
+
+A refused call never takes the app down — it lands in *Last error* with its code and in the log
+as a `✕` line.
+
+## What CI checks, and what it does not
+
+- `verify_public_surface_exercised.py` reads the public surface out of each platform's own API and
+  fails when a demo does not name a member of it — this example against the plugin's Dart API, the
+  iOS demo against the Swift core. Adding a method or an event to the SDK therefore fails the pull
+  request until both consoles offer it. The Android demo is covered by its own
+  `verifyPublicSurfaceIsExercised` Gradle task, which fails `assembleDebug` the same way. Its iOS
+  half arms itself on the presence of `docs/DEMO_APPS.md`, which has landed — so both halves run, and
+  the notice that used to announce the iOS one off is silent.
+- The same script asserts the charter's eight sections, in order, and the four activity glyphs, on
+  the demos it reads. That is the whole of the structural check: nothing verifies that the three
+  demos still *look* alike, and nothing reads the Android console's structure at all.
+- `test/console_test.dart` taps the console and asserts the calls reach the platform channel, and
+  that a refused call shows its code instead of taking the demo down — the half a static check
+  cannot see. It never ships: the release mirror excludes every `test/` directory.
+- `sync_cores.py --check` fails when the version this demo declares is not the SDK's.
+- The example is built for Android on every pull request, so a plugin that stopped building fails
+  there rather than on a release tag.
+
+## Version
+
+The version in `pubspec.yaml` and the `kDeclaredSdkVersion` constant shown in *Runtime* are both
+**generated**: `tools/sync_cores.py` stamps them from the plugin's `pubspec.yaml`. A demo compiles
+forever whether or not it still calls anything — which is how three releases shipped with no demo
+touching them, and how the version this one declared ended up five behind. After a version bump,
+run:
+
+```bash
+python3 packages/sdk/tools/sync_cores.py
+```
 
 ## Unversioned native runners
 
-Only `pubspec.yaml` and `lib/main.dart` are versioned. The `android/` and `ios/` runners are
-regenerated by `flutter create .`:
+Only `pubspec.yaml`, `lib/main.dart` and this README are versioned. The `android/` and `ios/` runners
+are regenerated by `flutter create .`:
 
 ```bash
 flutter create --org com.fastory.example --platforms android,ios .
@@ -27,6 +92,10 @@ Then two mandatory tweaks:
    ```
 
    and align `IPHONEOS_DEPLOYMENT_TARGET` to `15.0` in Xcode if needed.
+
+CI does the same for Android (`sdk-tests.yml`, *Example app builds against the plugin*), which is
+what makes a plugin that stopped building for Android fail on the pull request rather than on a
+release tag.
 
 ## Configure (optional)
 

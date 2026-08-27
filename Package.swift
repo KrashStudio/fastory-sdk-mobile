@@ -6,9 +6,10 @@ import PackageDescription
 // living under flutter/ (outside every declared target path, therefore invisible to SwiftPM).
 //
 // Deliberately not the development manifest: Tests/ never ships. The dormant v1 contracts name
-// unreleased features and internal Linear issues, and the shared fixtures describe a protocol that
-// does not exist yet. Dropping the test target also drops the only resources declaration, so this
-// package is pure sources — nothing to process, nothing to leak.
+// unreleased features and internal Linear issues, and the shared fixtures are the cross-platform
+// truth tables the suites run against — an integrator has no use for either. Dropping the test
+// target also drops the only resources declaration, so this package is pure sources — nothing to
+// process, nothing to leak.
 let package = Package(
     name: "FastorySDK",
     platforms: [

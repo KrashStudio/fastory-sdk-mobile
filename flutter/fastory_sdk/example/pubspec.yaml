@@ -1,6 +1,6 @@
 name: fastory_sdk_example
 description: Demo app for the fastory_sdk plugin.
-version: 0.1.0
+version: 0.4.0
 publish_to: none
 
 environment:

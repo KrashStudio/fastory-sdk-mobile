@@ -3,9 +3,16 @@ package com.fastory.sdk.flutter
 import android.app.Activity
 import android.content.Context
 import com.fastory.sdk.Fastory
+import com.fastory.sdk.FastoryBridgeRequestType
+import com.fastory.sdk.FastoryBridgeResponder
 import com.fastory.sdk.FastoryConfig
 import com.fastory.sdk.FastoryEnvironment
 import com.fastory.sdk.FastoryEventsListener
+import com.fastory.sdk.FastoryIdentifyException
+import com.fastory.sdk.FastoryIdentity
+import com.fastory.sdk.FastoryIdentityMode
+import com.fastory.sdk.FastoryLoadFailure
+import com.fastory.sdk.FastoryResolvedIdentity
 import com.fastory.sdk.FastoryTheme
 import com.fastory.sdk.WorkspaceResolver
 import io.flutter.embedding.engine.plugins.FlutterPlugin
@@ -34,6 +41,25 @@ class FastorySdkPlugin :
         override fun onGameOpened(slug: String) = emit(mapOf("type" to "gameOpened", "slug" to slug))
         override fun onGameClosed() = emit(mapOf("type" to "gameClosed"))
         override fun onExternalLink(url: String) = emit(mapOf("type" to "externalLink", "url" to url))
+        // `bridgeType`, not `type`: the channel's own `type` is the event discriminator (SPEC §13.4).
+        override fun onBridgeMessage(type: String, payload: Map<String, Any?>) =
+            emit(mapOf("type" to "bridgeMessage", "bridgeType" to type, "payload" to payload))
+        override fun onIdentityResolved(identity: FastoryResolvedIdentity) = emit(
+            mapOf(
+                "type" to "identityResolved",
+                "mode" to identity.mode.wireName,
+                "fanId" to identity.fanId,
+            ),
+        )
+        override fun onSurfaceLoadFailed(failure: FastoryLoadFailure) = emit(
+            mapOf(
+                "type" to "surfaceLoadFailed",
+                "surface" to failure.surface.wireName,
+                "reason" to failure.reason.wireName,
+                "code" to failure.code,
+                "statusCode" to failure.statusCode,
+            ),
+        )
     }
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -79,6 +105,9 @@ class FastorySdkPlugin :
                 Fastory.close()
                 result.success(null)
             }
+            "identify" -> identify(call, result)
+            "logout" -> Fastory.logout { result.success(null) }
+            "setBridgeReply" -> setBridgeReply(call, result)
             else -> result.notImplemented()
         }
     }
@@ -112,7 +141,6 @@ class FastorySdkPlugin :
                 locale = call.argument<String>("locale"),
                 developmentBaseUrl = call.argument<String>("developmentBaseUrl"),
                 publishableKey = call.argument<String>("publishableKey"),
-                workspaceId = call.argument<String>("workspaceId"),
                 theme = theme,
             )
         } catch (error: IllegalArgumentException) {
@@ -141,7 +169,77 @@ class FastorySdkPlugin :
         }
     }
 
+    private fun setBridgeReply(call: MethodCall, result: MethodChannel.Result) {
+        val wireName = call.argument<String>("type")
+        // The registry is re-applied here for the same reason as `configure`: a host can drive the
+        // channel directly, and a type outside it must not become a reply the SDK serves.
+        val type = FastoryBridgeRequestType.entries.firstOrNull { it.value == wireName }
+        if (type == null) {
+            result.error(
+                "invalid_bridge_request_type",
+                "unknown bridge request type: $wireName",
+                null,
+            )
+            return
+        }
+        // Absent or null clears; anything else that is not a map is a host error, never a clear. A
+        // typed `argument<Map<…>>` would instead throw a ClassCastException here, where iOS silently
+        // cleared — the two channels have to refuse the same input the same way.
+        val rawPayload = call.argument<Any>("payload")
+        if (rawPayload != null && rawPayload !is Map<*, *>) {
+            result.error(INVALID_PAYLOAD, INVALID_PAYLOAD_MESSAGE, null)
+            return
+        }
+        if (!FastoryBridgeResponder.setReply(type, rawPayload as Map<*, *>?)) {
+            result.error(INVALID_PAYLOAD, INVALID_PAYLOAD_MESSAGE, null)
+            return
+        }
+        result.success(null)
+    }
+
+    private fun identify(call: MethodCall, result: MethodChannel.Result) {
+        val wireName = call.argument<String>("mode")
+        val mode = FastoryIdentityMode.fromWireName(wireName)
+        if (mode == null) {
+            result.error(
+                FastoryIdentifyException.INVALID_IDENTITY_MODE,
+                "unknown identify mode: $wireName",
+                null,
+            )
+            return
+        }
+        val requested = when (mode) {
+            FastoryIdentityMode.ANONYMOUS -> FastoryIdentity.Anonymous
+            FastoryIdentityMode.FAN_ID -> FastoryIdentity.FanId
+            // A blank jwt is rejected by the core as invalid_host_token, not silently accepted.
+            FastoryIdentityMode.HOST_TOKEN ->
+                FastoryIdentity.HostToken(call.argument<String>("jwt") ?: "")
+        }
+        try {
+            Fastory.identify(requested) { outcome ->
+                outcome.fold(
+                    onSuccess = {
+                        result.success(mapOf("mode" to it.mode.wireName, "fanId" to it.fanId))
+                    },
+                    onFailure = { error ->
+                        val code = (error as? FastoryIdentifyException)?.code
+                            ?: FastoryIdentifyException.NETWORK_ERROR
+                        result.error(code, error.message, null)
+                    },
+                )
+            }
+        } catch (error: IllegalStateException) {
+            result.error("not_configured", error.message, null)
+        }
+    }
+
     private fun emit(event: Map<String, Any?>) {
         eventSink?.success(event)
+    }
+
+    private companion object {
+        const val INVALID_PAYLOAD = "invalid_bridge_reply_payload"
+        const val INVALID_PAYLOAD_MESSAGE =
+            "the bridge reply payload must be a JSON-encodable map, or null to clear it"
     }
 }

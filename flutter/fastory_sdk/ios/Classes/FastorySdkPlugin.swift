@@ -28,8 +28,88 @@ public final class FastorySdkPlugin: NSObject, FlutterPlugin {
         case "close":
             Fastory.close()
             result(nil)
+        case "identify":
+            identify(call, result: result)
+        case "logout":
+            Fastory.logout { result(nil) }
+        case "setBridgeReply":
+            setBridgeReply(call, result: result)
         default:
             result(FlutterMethodNotImplemented)
+        }
+    }
+
+    private func setBridgeReply(_ call: FlutterMethodCall, result: FlutterResult) {
+        let arguments = call.arguments as? [String: Any] ?? [:]
+        let wireName = arguments["type"] as? String
+        // The registry is re-applied here for the same reason as `configure`: a host can drive the
+        // channel directly, and a type outside it must not become a reply the SDK serves.
+        guard let type = wireName.flatMap(FastoryBridgeRequestType.init(rawValue:)) else {
+            result(FlutterError(
+                code: "invalid_bridge_request_type",
+                message: "unknown bridge request type: \(wireName ?? "nil")",
+                details: nil
+            ))
+            return
+        }
+        // Absent or null clears; anything else that is not an object is a host error, never a clear.
+        // `as? [String: Any]` alone would map a string or a number to nil and sign the fan out.
+        let rawPayload = arguments["payload"]
+        var payload: [String: Any]?
+        if let rawPayload, !(rawPayload is NSNull) {
+            guard let object = rawPayload as? [String: Any] else {
+                result(Self.invalidPayload)
+                return
+            }
+            payload = object
+        }
+        guard FastoryBridgeResponder.setReply(for: type, payload: payload) else {
+            result(Self.invalidPayload)
+            return
+        }
+        result(nil)
+    }
+
+    private static var invalidPayload: FlutterError {
+        FlutterError(
+            code: "invalid_bridge_reply_payload",
+            message: "the bridge reply payload must be a JSON-serialisable object, or null to clear it",
+            details: nil
+        )
+    }
+
+    private func identify(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        let arguments = call.arguments as? [String: Any] ?? [:]
+        let wireName = arguments["mode"] as? String
+        guard let mode = wireName.flatMap(FastoryIdentityMode.init(rawValue:)) else {
+            result(FlutterError(
+                code: "invalid_identity_mode",
+                message: "unknown identify mode: \(wireName ?? "nil")",
+                details: nil
+            ))
+            return
+        }
+        let requested: FastoryIdentity
+        switch mode {
+        case .anonymous:
+            requested = .anonymous
+        case .fanId:
+            requested = .fanId
+        case .hostToken:
+            // A blank jwt is rejected by the core as invalid_host_token, not silently accepted.
+            requested = .hostToken(jwt: arguments["jwt"] as? String ?? "")
+        }
+        Fastory.identify(requested) { outcome in
+            switch outcome {
+            case .success(let identity):
+                let resolved: [String: Any] = [
+                    "mode": identity.mode.rawValue,
+                    "fanId": identity.fanId ?? NSNull(),
+                ]
+                result(resolved)
+            case .failure(let error):
+                result(FlutterError(code: error.code, message: "\(error)", details: nil))
+            }
         }
     }
 
@@ -65,7 +145,6 @@ public final class FastorySdkPlugin: NSObject, FlutterPlugin {
         let config = FastoryConfig(
             environment: environment,
             publishableKey: publishableKey,
-            workspaceId: arguments["workspaceId"] as? String,
             fanzoneSlug: fanzoneSlug,
             hubTabSlug: hubTabSlug,
             locale: arguments["locale"] as? String,
@@ -149,6 +228,29 @@ extension FastorySdkPlugin: FastoryEventsDelegate {
 
     public func fastoryExternalLink(url: URL) {
         emit(["type": "externalLink", "url": url.absoluteString])
+    }
+
+    public func fastoryBridgeMessage(type: String, payload: [String: Any]) {
+        // `bridgeType`, not `type`: the channel's own `type` is the event discriminator (SPEC §13.4).
+        emit(["type": "bridgeMessage", "bridgeType": type, "payload": payload])
+    }
+
+    public func fastoryIdentityResolved(_ identity: FastoryResolvedIdentity) {
+        emit([
+            "type": "identityResolved",
+            "mode": identity.mode.rawValue,
+            "fanId": identity.fanId ?? NSNull(),
+        ])
+    }
+
+    public func fastorySurfaceLoadFailed(_ failure: FastoryLoadFailure) {
+        emit([
+            "type": "surfaceLoadFailed",
+            "surface": failure.surface.rawValue,
+            "reason": failure.reason.rawValue,
+            "code": failure.code ?? NSNull(),
+            "statusCode": failure.statusCode ?? NSNull(),
+        ])
     }
 
     private func emit(_ event: [String: Any]) {

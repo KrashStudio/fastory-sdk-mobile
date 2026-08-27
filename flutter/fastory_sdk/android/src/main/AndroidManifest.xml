@@ -4,10 +4,17 @@
     <uses-permission android:name="android.permission.INTERNET" />
 
     <application>
+        <!--
+            singleTop is the platform's own half of openGames()' idempotence: the SDK refuses a
+            second hub, and this makes the system refuse it too rather than stack one on top of the
+            first. No onNewIntent handling is needed — the intent carries nothing, so an instance
+            already on screen simply stays as it is.
+        -->
         <activity
             android:name="com.fastory.sdk.FastoryHubActivity"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode"
             android:exported="false"
+            android:launchMode="singleTop"
             android:theme="@style/Theme.Fastory.Hub" />
     </application>
 

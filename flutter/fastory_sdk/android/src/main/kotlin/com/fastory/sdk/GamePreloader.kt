@@ -8,6 +8,7 @@ import android.os.Looper
 import android.view.View
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import org.json.JSONArray
@@ -319,6 +320,22 @@ internal object GamePreloader {
                 view: WebView,
                 request: WebResourceRequest,
                 error: WebResourceError,
+            ) {
+                if (request.isForMainFrame) {
+                    finishCurrentLoad(view, success = false)
+                }
+            }
+
+            /**
+             * A game that answered an error status must not reach the pool. Its error **body**
+             * loads like any other document, so `onPageFinished` fires and the page looks warm —
+             * and the sheet that later takes it announces `gameOpened` on a page the fan sees as
+             * broken (SPEC § 9.1).
+             */
+            override fun onReceivedHttpError(
+                view: WebView,
+                request: WebResourceRequest,
+                errorResponse: WebResourceResponse,
             ) {
                 if (request.isForMainFrame) {
                     finishCurrentLoad(view, success = false)

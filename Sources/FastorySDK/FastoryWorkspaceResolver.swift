@@ -7,7 +7,6 @@ public enum FastoryBootstrapError: Error, Equatable, Sendable, CustomStringConve
     case unreachable
     case rejected(code: String)
     case malformedResponse
-    case workspaceMismatch(expected: String, resolved: String)
 
     public var description: String {
         switch self {
@@ -17,8 +16,21 @@ public enum FastoryBootstrapError: Error, Equatable, Sendable, CustomStringConve
             return "publishable key rejected: \(code)"
         case .malformedResponse:
             return "unexpected response from the Fastory API"
-        case .workspaceMismatch(let expected, let resolved):
-            return "publishable key belongs to workspace \(resolved), not \(expected)"
+        }
+    }
+
+    /// The failure as a single code, which is the shape Android's resolver already produces and the
+    /// one `FastoryLoadFailureClassifier` reads on both platforms. The two synthesised codes name
+    /// outcomes the API never answers, and the classifier turns them back into a reason rather than
+    /// letting either reach a host as something to branch on (§ 9.1).
+    var code: String {
+        switch self {
+        case .unreachable:
+            return FastoryLoadFailureClassifier.unreachableCode
+        case .rejected(let code):
+            return code
+        case .malformedResponse:
+            return FastoryLoadFailureClassifier.malformedResponseCode
         }
     }
 }
@@ -52,6 +64,12 @@ final class FastoryWorkspaceResolver {
     }
 
     private var state: State = .idle
+    /// The configuration `state` was reached for. A resolved workspace belongs to the configuration
+    /// that asked for it: served under another one, its slug builds a hub URL in the wrong
+    /// environment — the warm hub's defect reached by the resolver's route instead.
+    /// `configure` resets this resolver anyway, but it does so on a later main-loop turn (§ 2.7), and
+    /// a stamp closes the gap structurally instead of depending on that ordering.
+    private var stateConfig: FastoryConfig?
     private var waiters: [(Result<FastoryWorkspace, FastoryBootstrapError>) -> Void] = []
 
     /// Seam for unit tests: production performs the real request.
@@ -68,18 +86,32 @@ final class FastoryWorkspaceResolver {
 
     func reset() {
         state = .idle
+        stateConfig = nil
         waiters.removeAll()
+    }
+
+    /// Drops an outcome that belongs to a configuration no longer being asked about. Keeping the
+    /// stamped one for an equal configuration is **not** what decides whether a new exchange goes
+    /// out: `resolve` moves `.failed` to `.resolving`, so a cached failure re-arms on an equal
+    /// `configure` too, on both platforms — that is § 9's escape hatch, and it does not pass through
+    /// here. What an equal configuration really keeps is a cached *success*, which `configure`
+    /// discards anyway on this platform by calling `reset()` unconditionally (§ 2.1).
+    private func discardOutcomeFromAnotherConfiguration(_ config: FastoryConfig) {
+        guard let stateConfig, stateConfig != config else { return }
+        reset()
     }
 
     /// Starts the exchange if it has not run for this configuration yet.
     func resolve(config: FastoryConfig) {
         guard let key = config.publishableKey else { return }
+        discardOutcomeFromAnotherConfiguration(config)
         switch state {
         case .resolving, .resolved:
             return
         case .idle, .failed:
             state = .resolving
         }
+        stateConfig = config
 
         guard let applicationId = applicationId(), !applicationId.isEmpty else {
             finish(.failure(.rejected(code: "sdk_application_id_required")))
@@ -95,7 +127,13 @@ final class FastoryWorkspaceResolver {
         performRequest(request) { [weak self] data, response, _ in
             guard let self else { return }
             DispatchQueue.main.async {
-                self.handle(data: data, response: response, expecting: config.workspaceId)
+                // `for: config` is the other half of the stamp. Written when the request starts and
+                // never read when it lands, the stamp lets a re-configure be overtaken by its own
+                // predecessor: the exchange for the previous configuration completes late, and
+                // `finish` records *its* workspace against the current stamp and hands it to the
+                // current configuration's waiters (SPEC § 2.1). Checked at both ends, a stale
+                // exchange is simply dropped — the live one is already in flight behind it.
+                self.handle(data: data, response: response, for: config)
             }
         }
     }
@@ -105,6 +143,7 @@ final class FastoryWorkspaceResolver {
         config: FastoryConfig,
         _ completion: @escaping (Result<FastoryWorkspace, FastoryBootstrapError>) -> Void
     ) {
+        discardOutcomeFromAnotherConfiguration(config)
         switch state {
         case .resolved(let workspace):
             completion(.success(workspace))
@@ -118,7 +157,8 @@ final class FastoryWorkspaceResolver {
         }
     }
 
-    private func handle(data: Data?, response: URLResponse?, expecting workspaceId: String?) {
+    private func handle(data: Data?, response: URLResponse?, for config: FastoryConfig) {
+        guard stateConfig == config else { return }
         guard let httpResponse = response as? HTTPURLResponse, let data else {
             finish(.failure(.unreachable))
             return
@@ -139,10 +179,6 @@ final class FastoryWorkspaceResolver {
               let slug = workspace["slug"] as? String,
               !slug.isEmpty else {
             finish(.failure(.malformedResponse))
-            return
-        }
-        if let workspaceId, workspaceId != id {
-            finish(.failure(.workspaceMismatch(expected: workspaceId, resolved: id)))
             return
         }
         finish(.success(FastoryWorkspace(id: id, slug: slug)))

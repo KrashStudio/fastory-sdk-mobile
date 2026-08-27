@@ -4,6 +4,259 @@ All notable changes to the Fastory Mobile SDK are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: [SemVer](https://semver.org),
 tags `sdk-vX.Y.Z`.
 
+## 0.4.0
+
+Everything specified since 0.3.0, released at once: a message bridge between your app and the web
+content the SDK hosts, the identity surface, the bridge's reply channel, a surface that fails to load
+now telling your app so, and four defects an audit found by reading call paths (FASTORY-2900). Plus
+one removal, `workspaceId`.
+
+It arrives as one upgrade, but it is five separate capabilities and they break in different places —
+so each has its own section below, in that order, and the three source breaks are listed first.
+**Read `Breaking` and you are done**: nothing else here asks anything of you.
+
+### Breaking
+
+- **Dart: `FastoryEvent` gains three subtypes.** It is a `sealed` class, so an exhaustive `switch` with
+  no `default:` stops compiling until you add a case for **all three** — `FastoryBridgeMessage` (the
+  bridge), `FastoryIdentityResolved` (the identity surface) and `FastorySurfaceLoadFailed` (a hub or
+  game that did not load). The analyzer points at each. Deliberate, under SemVer § 4 (anything may
+  change in a `0.y.z` line), and the last such break planned before 1.0. The two native channels are
+  purely additive: each new callback is defaulted to a no-op, so an existing delegate or listener
+  keeps compiling untouched.
+- **Android: the reply channel adds a dependency and a WebView floor.** The SDK now depends on
+  `androidx.webkit`, because the reply channel needs the one Android API that reports which frame
+  posted a message and from which origin — `addJavascriptInterface`, which the receive-only channel
+  uses, reports neither. A reply carries a credential, so answering the wrong frame is not an
+  acceptable failure: an `<iframe>` inside a game must not be able to read it. On a device whose
+  WebView predates that API (Chrome 85, mid-2020) **the reply channel is simply absent** and the
+  surface falls back to anonymous — everything else works as before.
+- **`workspaceId` is gone from `FastoryConfig`**, on all three platforms. If you pass it, delete the
+  argument; there is nothing to replace it with, and nothing it protected is now unprotected. It was
+  an optional cross-check against the workspace your publishable key resolves to — but a key resolves
+  exactly one workspace, so it was asking you to confirm something the key already settles. What
+  actually stops a key opening a workspace it does not belong to is the exchange being bound to your
+  application identifier, which the API refuses unless the owning workspace declared it on that key
+  (`sdk_application_not_allowed`). That refusal is unconditional and happens on the side that holds
+  the truth; the field was an opt-in copy of it, and could only ever be weaker.
+
+### Added — the JS ↔ native bridge
+
+The web content the SDK hosts can talk to your app, through a versioned message envelope.
+
+- A Fastory web surface (the hub, or a game) can post `{"v": 1, "type": "…", "payload": {…}}` and your
+  app receives it as a **sixth event**: `FastoryBridgeMessage` on `Fastory.events` (Flutter),
+  `onBridgeMessage` (Android), `fastoryBridgeMessage(type:payload:)` (iOS). The callback is a no-op by
+  default on every platform, so upgrading without touching your call site changes nothing.
+- **Additive, and no part of navigation.** The hub, the games and the external-link routing behave
+  exactly as they did in 0.3.0 whether or not the web side posts anything.
+- **Versioned, with an allow-list.** Anything that is not envelope version `1` carrying a type the SDK
+  knows is silently ignored — so a later web release can introduce a message type without breaking an
+  app already in the stores. Malformed input never throws.
+- **One type today:** `fastory:ready`, a liveness signal meaning the embedded Fastory surface has
+  rendered and speaks this envelope. Do not depend on receiving it.
+- **No JavaScript is injected.** The entry point exists by native registration alone
+  (`window.webkit.messageHandlers.fastory` on iOS, `window.fastory` on Android).
+- **Bounded input.** A message over 65 536 characters is refused before it is parsed, and every drop
+  is traced at debug level with its reason (see `SPEC.md` § 13.6 for how to turn the diagnostics on —
+  they are off in release builds, as an SDK inside your app should be).
+- Full contract in `SPEC.md` § 13. It carries a ≤ 16 ms budget for decode plus delivery; treat that as
+  a regression tripwire rather than a latency figure, since the real cost is microseconds.
+
+### Added — the identity surface
+
+Tell the SDK who the fan is: one `identify` method with three modes, plus `logout`. Only the anonymous
+mode resolves in this release; the other two are the final signatures, reserved.
+
+- **`Fastory.identify(...)` and `Fastory.logout()`** — the whole identity surface, and it is now
+  frozen: three mutually-exclusive modes behind one method. `anonymous` is what the SDK has always
+  done (each surface's web page mints its own device visitor) and it is the only one that resolves
+  today. `fanId` (a Fastory login through the system browser) and `hostToken(jwt)` (your backend
+  asserts an identity it already authenticated, so the fan types nothing) ship in later releases and
+  reject with `identify_mode_unavailable` until then. They are declared now on purpose: adopting them
+  later must not be a breaking change for you.
+- **`identityResolved`** — emitted once per successful `identify`, before any hub or game opening
+  carrying that identity, so you never attribute a session to the wrong fan. A refused identification
+  emits nothing; its error comes back from the call.
+- **Calling `identify(anonymous)` twice gives you the same fan.** Repeated calls — across app launches,
+  or defensively before every `openGames()` — are a no-op, not a new visitor each time.
+- **An app that never calls `identify` behaves exactly as it did in 0.3.0**, and an app that starts
+  calling `identify(anonymous)` keeps the visitor it already had. Nothing about the hub, the games or
+  the URLs moves.
+- **`logout()` signs the fan out of Fastory only.** It clears the Fastory session on the fanzone and
+  story domains and nothing else: your own session, your own cookies and your own web storage are
+  never touched. Symmetrically, signing a user out of your app does not sign them out of Fastory —
+  call `logout()` for that.
+- **The documented promise that the hub and the game share a session was wrong, and is withdrawn.**
+  `SPEC.md` § 7 said the two WebViews shared a cookie store *"so the game inherits any session state
+  established in the hub"*. They cannot: the hub and the game are different sites, and the game (which
+  loads with `embed=1`) reads no storage at all. If you read that paragraph as "games already know who
+  the fan is", they do not — that is what the identity work is for. § 7 now describes what actually
+  happens, and § 7.4 specifies what a sign-out erases.
+- **The shared `WKProcessPool` is gone on iOS.** Deprecated since iOS 15 and documented by Apple as
+  having no effect, so it produced a deprecation warning and nothing else. WebKit decides process
+  sharing on its own at the SDK's iOS 15 floor. No behavior change; one less warning in your build.
+
+### Added — the bridge's reply channel
+
+The web can ask the SDK a question and get an answer. One method for you, `setBridgeReply` — and the
+first thing it unlocks is a game knowing who the fan is.
+
+- **`Fastory.setBridgeReply(type, payload)`** — declares what the SDK answers the next time an
+  embedded surface asks for something. Today there is exactly one thing it can be asked
+  (`FastoryBridgeRequestType.userToken`), and it exists because a game has no way to know the fan on
+  its own: when it runs inside a page it asks that page, and inside the SDK there is no page to ask.
+  Set the answer before opening a game and the SDK stands in for the missing host.
+- **A request always gets a reply.** If you have set nothing, if the surface asks for something this
+  SDK version does not know, or if the message is malformed, the page is told so explicitly — it is
+  never left waiting. That is deliberate: silence is indistinguishable from a hung SDK.
+- **The bridge is registered on every SDK WebView** — hub, game sheet and preloaded games — and still
+  injects no JavaScript into your users' pages. The answer travels back on the channel the question
+  arrived on, which is the platform's own return path.
+- **"The bridge is receive-only" is not the right description of it.** The SDK never speaks to a page
+  first, but it does answer one that asks. Pushing data into a page unprompted remains out of scope.
+- An app that never calls `setBridgeReply` is unaffected by this capability.
+
+### Added — a surface that does not load now tells your app
+
+Until this release, a Fastory surface that failed to load showed the fan an error screen that does not
+belong to your app, and told your app nothing at all. You could not log it, alert your team, or offer
+the fan something else.
+
+- **`FastorySurfaceLoadFailed`** on `Fastory.events` — `onSurfaceLoadFailed` on Android,
+  `fastorySurfaceLoadFailed(_:)` on iOS. It carries which surface failed (`FastorySurface.hub` or
+  `FastorySurface.game`), a `FastoryLoadFailureReason`, and the cause: the API's own `code` when the
+  refusal came from your publishable key, the HTTP `statusCode` when it came from the page itself.
+- **Branch on the reason, read the cause.** `FastoryLoadFailureReason.rejected` means something
+  answered and refused — `code` or `statusCode` says what. `network` means nothing answered: no
+  connection, DNS, timeout. `unknown` is everything else. Three cases, so a simple "is Fastory
+  reachable?" check does not have to enumerate every code we may add later.
+- **A revoked key is now distinguishable from a phone in a tunnel.** They were not: a revoked key, an
+  application identifier your workspace never declared, and no network produced one identical screen
+  and one identical silence. The API had been answering `sdk_key_unknown`, `sdk_key_revoked`,
+  `sdk_application_not_allowed` and `sdk_rate_limited` all along; the SDK was discarding them. Read
+  `sdk_rate_limited` as a signal to back off, not to retry: repeated sanctions escalate to an
+  address block with no expiry that only we can lift. With
+  the two the SDK mints itself — `http_<status>` and `sdk_application_id_required` — that is six
+  things `code` can carry and no others: five names, plus the `http_<status>` family for a refusal
+  that named no code of its own. Cover those and you have covered the field. `sdk_key_unknown`
+  is the one worth reading twice: it means we know no such key, which covers a key **deleted** in the
+  back-office and a workspace that no longer exists, not only a typo in a build you never shipped. An
+  app already in the field can meet it.
+- **The game sheet now has an error view too**, with Retry — a game that failed to load used to be a
+  black sheet. The hub has had one since 0.1.
+- **An opening event no longer fires on a surface that failed.** `hubOpened` used to go out while the
+  screen showed the error view, so an app counting it counted hubs that never loaded. It now announces
+  a surface whose page actually loaded — and a surface that never opened sends no closing event
+  either, so `hubOpened` … `hubClosed` still pair up. A hub that was pre-warmed still announces itself
+  the instant it appears; nothing about the fast path changed.
+- **Nothing is retried for you, and nothing is reported twice.** The SDK reports; you decide. A single
+  failed load produces exactly one event, cancellations the SDK causes itself when routing a game or
+  an external link produce none, and a failed image or XHR inside a page produces none.
+- **Known limitation: Retry does not recover a refused publishable key** (FASTORY-2904). The Retry
+  button reloads the page that failed, and a key the API refused never produced one — the exchange's
+  outcome is remembered for the configuration that asked for it, failure included, so Retry shows the
+  same error again without asking the API a second time. The fan cannot retry their way out of it.
+  What does re-arm the exchange is another `configure()`: **any second call, on both platforms**, with
+  the configuration already in force or a new one — you do not have to vary it. If your app wants to
+  recover from a transient failure of the exchange — a fan who opened the games in a tunnel — do it
+  there, on `FastorySurfaceLoadFailed(surface: hub)`, rather than expecting the button to — and do
+  not count on the very next open: on Android an equal `configure()` leaves the previous failure
+  readable until the new exchange answers, so an open that starts inside that window is answered
+  from it and the recovery lands on the one after. Pages
+  that failed on their own, and the whole deprecated `fanzoneSlug` path, reload on Retry exactly as
+  before.
+
+### Fixed — four defects the pre-release audit found
+
+Read by call path rather than observed on a device (FASTORY-2900). One of them lets an identity outlive
+the fan it names.
+
+- **`logout()` revokes the answer the SDK gives your games.** The value set through `setBridgeReply`
+  had no end: signing a fan out erased their web session and dropped the warm hub, and the next game
+  that asked for the fan's token was still handed the one you set for the fan who just left. The same
+  value also survived a reconfiguration, so a token minted for production could be served to a staging
+  page. It is dropped at three points — `logout()`, an `identify()` that resolves a *different* fan,
+  and a `configure()` that replaces the configuration with a different one — and the next request is
+  answered `unavailable` explicitly, never with silence.
+  - **What you have to do:** if your app sets a standing answer, set it again after any of those three
+    calls. The SDK does not announce the revocation, because all three are calls you just made.
+  - **The rule is deliberately coarse on `configure()`:** *any* difference revokes, a `theme` switch
+    included. Guessing which parts of a configuration a credential depends on would mean reading the
+    credential, and being wrong in that direction is a leak.
+  - `SPEC.md` § 13.8.6 is normative; § 2.6.1 and § 7.4 point at it. The three demo consoles show the
+    revocation on screen when it happens.
+- **Android: opening the games twice in a row no longer stacks two hubs.** `openGames()` was not
+  idempotent on this platform, and the hub `Activity` declared no launch mode — so a double tap on
+  your own "Games" tab, the most ordinary gesture there is, opened a second hub over the first. Your
+  app then received two `hubOpened` for one hub the fan could see, `close()` returned them to the hub
+  underneath instead of to your app, and the page the hidden hub kept warm on its way out overwrote
+  the other one without releasing it, leaking a WebView per stack. Asking for the games while a hub is
+  up now does nothing at all, exactly as it always has on iOS.
+  - **Nothing to change on your side**, and nothing new to catch: it is a silent no-op, not an error.
+    If you were counting `hubOpened` to drive your own UI, the count is now the one you expected.
+  - **A `close()` issued in the instant between `openGames()` and the hub appearing is honoured too** —
+    the hub finishes on arrival rather than showing up after you asked for it to be gone.
+  - `SPEC.md` § 2.1 states the rule for both platforms and § 2.3 the Android launch mode that backs it.
+- **iOS: re-configuring no longer opens the previous configuration's fanzone.** A second `configure()`
+  with a different configuration replaced the configuration but kept the hub page already warmed for
+  the old one, so the next `openGames()` showed the wrong fanzone — a multi-club app opened the wrong
+  club, a staging switch opened production. It escaped notice because the teardown sat behind the
+  warm-up, which does nothing at all when the SDK is configured by key: the fanzone to open is not
+  known until the API answers. So the path that never cleaned up was the publishable-key path — every
+  new partner, and the whole slug → key migration. Android already behaved correctly; `SPEC.md` § 2.1
+  now states the rule for both, including that re-configuring with an *equal* configuration must keep
+  the warm hub.
+  - **A warm hub is only reused for the configuration its page was loaded under**, on both platforms.
+    Dropping it at `configure()` time is not enough on its own: the hub is put back into the warm slot
+    when it is closed, so closing it *after* a re-configure returned the previous club's page to the
+    slot the teardown had just emptied. The same stamp applies to a cached publishable-key exchange, so
+    a workspace resolved for one configuration can no longer answer for another.
+  - **An equal `configure()` no longer costs you a cold hub open on iOS.** Warming up did not check
+    whether anything was already warm, so a re-configure with the same configuration flushed every
+    preloaded game and replaced the rendered page with one still loading. Android always had that
+    guard. `SPEC.md` § 2.1 now binds the warm-up path as explicitly as the teardown.
+- **`configure()` can be called from any thread, and no longer competes with your first screen.** It
+  did the most thread-restricted work of the whole surface — allocating a WebView, loading it, stopping
+  the loads in flight — and, unlike `identify()` and `logout()`, it did that work on whichever thread
+  you called it on. Nothing in the contract said the main thread was required, so initialising the SDK
+  from a background bootstrap crashed the host app at launch. It now stores your configuration on your
+  thread and schedules the restricted work itself.
+  - **The hub is warmed once your app is on screen, not during `configure()`.** Building the hub
+    WebView at `configure()` put the SDK in competition with your app's first paint — every launch, for
+    every integration on the deprecated `fanzoneSlug` path, which is every production integrator. It is
+    deferred to the first frame, and a background launch warms nothing at all. Opening the hub is
+    unchanged: this is a deferral, not a removal.
+  - **`SPEC.md` § 2.7 is new** and states which thread each method may be called from. One method still
+    requires the main thread — `openGames()` — because it takes your own `UIViewController` / `Context`,
+    so you are already in UI code when you call it. Everything else is callable from anywhere, and every
+    callback still arrives on the main thread as before.
+
+### Fixed — elsewhere
+
+- **`hubOpened` was missing on iOS whenever the hub had been pre-warmed** — which, configured by
+  `fanzoneSlug`, is every opening that goes well. The event carries the slug of the fanzone being
+  opened, and the SDK only looked that slug up on the path it skips when the page is already loaded, so
+  the better the warm-up worked the more reliably the event went missing. It now fires on every
+  presentation whose page loaded, warmed or not, and `hubOpened` … `hubClosed` pair up again — a hub
+  that fails to load sends `FastorySurfaceLoadFailed` and neither of the pair (see *a surface that
+  does not load* above). Android and Flutter on Android were never affected by the missing event.
+- **The two Android Gradle files can no longer drift apart.** The core and the Flutter plugin each
+  declare their own dependencies, and nothing compared them — a library added to one would have failed
+  to compile only on the other channel, at release time. `sync_cores.py` now fails on the difference.
+
+### Notes
+
+- **Erasure is scoped, by name and by origin, never wholesale.** On both platforms the cookie and
+  web-storage stores are shared with your app, so the SDK expires a declared list of Fastory cookies on
+  the Fastory origins rather than calling any "clear everything" API. That is a hard rule, not a
+  precaution: the convenient call would sign your users out of your own services.
+- An identity change also drops the warm hub and the preloaded games — they were rendered for the
+  previous fan. Expect the next `openGames()` after a `logout()` to be a cold open.
+- `identify` never blocks and never throws across the bridge. Every failure carries a machine-readable
+  code (`identify_mode_unavailable`, `invalid_host_token`, `not_configured`, …) and leaves the SDK in a
+  clean anonymous state — never half-identified. Branch on the code, never on the message.
+
 ## 0.3.0
 
 Configure the SDK with a workspace publishable key instead of a fanzone slug, and tell the web

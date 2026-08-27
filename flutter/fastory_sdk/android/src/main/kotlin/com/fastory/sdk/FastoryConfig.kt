@@ -56,12 +56,6 @@ data class FastoryConfig(
      * at configure time; prefer this over [fanzoneSlug].
      */
     val publishableKey: String? = null,
-    /**
-     * Optional cross-check: when set, a key resolving to a different workspace is rejected.
-     * Catches a key pasted into the wrong app rather than failing silently on someone else's
-     * fanzone.
-     */
-    val workspaceId: String? = null,
     val theme: FastoryTheme? = null,
 ) {
 
@@ -80,9 +74,6 @@ data class FastoryConfig(
         }
         if (publishableKey != null) {
             validatePublishableKey(publishableKey, environment)
-        }
-        if (workspaceId != null) {
-            require(workspaceId.isNotBlank()) { "workspaceId must not be blank when provided" }
         }
         if (environment == FastoryEnvironment.DEVELOPMENT) {
             require(!developmentBaseUrl.isNullOrBlank()) {

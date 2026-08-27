@@ -10,9 +10,9 @@ import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ProgressBar
@@ -23,7 +23,6 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.isVisible
-import com.fastory.sdk.flutter.R
 
 class FastoryHubActivity : AppCompatActivity() {
 
@@ -34,10 +33,27 @@ class FastoryHubActivity : AppCompatActivity() {
     private lateinit var errorView: LinearLayout
     private lateinit var closeButton: TextView
 
+    /**
+     * The one gate on `hubOpened` and `hubClosed`, shared with the game sheet (SPEC § 9.1). Built in
+     * [buildViews], once the WebView is known: a page the warm-up already loaded starts committed,
+     * since no further commit callback is coming for it.
+     */
+    private lateinit var load: FastorySurfaceLoad
+
+    /** The fanzone `hubOpened` names, known up front on the slug path and from the API on the key one. */
+    private var resolvedFanzoneSlug: String? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Before anything is built, so a hub the host already asked to close never renders: the
+        // reservation openGames() made is claimed here, or refused because close() got in first.
+        if (!Fastory.claimHubPresentation(this)) {
+            finish()
+            return
+        }
         val currentConfig = Fastory.config
         if (currentConfig == null) {
+            Fastory.releaseHubPresentation(this)
             finish()
             return
         }
@@ -58,18 +74,37 @@ class FastoryHubActivity : AppCompatActivity() {
             },
         )
 
-        // Configured by publishable key, the fanzone is resolved from the API — the progress bar
-        // covers that round trip, and a rejected key lands on the same native error view as a
-        // failed page load rather than on a blank webview.
+        // The Activity is on screen the moment it is created; whether the hub is *open* is the
+        // page's business, not the container's (SPEC § 9.1).
+        announce(load.present())
+        openHub()
+    }
+
+    /**
+     * Configured by publishable key, the fanzone is resolved from the API — the progress bar covers
+     * that round trip, and a rejected key lands on the same native error view as a failed page load
+     * rather than on a blank webview. A warm page is never reloaded here: that is the whole point of
+     * the warm-up.
+     */
+    private fun openHub() {
         Fastory.resolveHub { result ->
             result.fold(
                 onSuccess = { (url, fanzoneSlug) ->
-                    Fastory.notifyHubOpened(this, fanzoneSlug)
+                    resolvedFanzoneSlug = fanzoneSlug
+                    announce(load.identify())
                     if (webView.url == null) {
                         webView.loadUrl(url)
                     }
                 },
-                onFailure = { showError() },
+                onFailure = { error ->
+                    // The exchange's own code is what § 2.5 requires a host to branch on, and it was
+                    // reaching neither the host nor the screen: a revoked key, an application the
+                    // workspace never declared and a phone in a tunnel all produced this one view.
+                    val code = (error as? FastoryBootstrapException)?.code
+                        ?: FastoryLoadFailureClassifier.UNREACHABLE_CODE
+                    val (reason, surfaced) = FastoryLoadFailureClassifier.bootstrap(code)
+                    showError(reason, code = surfaced)
+                },
             )
         }
     }
@@ -77,10 +112,34 @@ class FastoryHubActivity : AppCompatActivity() {
     override fun onDestroy() {
         if (::webView.isInitialized) {
             // Keep the loaded hub warm for the next openGames() instead of reloading from scratch.
-            Fastory.stashHubWebView(webView)
-            Fastory.notifyHubClosed(this)
+            // `config`, not the SDK's current one: a re-configure may have happened while this hub
+            // was on screen, and this page still holds the fanzone it was built for.
+            Fastory.stashHubWebView(webView, config)
+            // A hub that never announced itself open owes no hubClosed: the pair brackets a session,
+            // and a close with no open in front of it reports a session that did not happen
+            // (SPEC § 5.3). The reservation comes back either way.
+            if (load.dismiss()) {
+                Fastory.notifyHubClosed(this)
+            } else {
+                Fastory.releaseHubPresentation(this)
+            }
+        } else {
+            // Finished before it built anything, so no hubOpened was emitted and no hubClosed is
+            // owed — but the reservation still has to come back, or openGames() is dead for good.
+            Fastory.releaseHubPresentation(this)
         }
         super.onDestroy()
+    }
+
+    /** Emits what the load state decided, so the two events and the failure leave through one place. */
+    private fun announce(announcement: FastorySurfaceLoad.Announcement) {
+        when (announcement) {
+            is FastorySurfaceLoad.Announcement.Nothing -> Unit
+            is FastorySurfaceLoad.Announcement.Opened ->
+                resolvedFanzoneSlug?.let { Fastory.notifyHubOpened(this, it) }
+            is FastorySurfaceLoad.Announcement.Failed ->
+                Fastory.notifySurfaceLoadFailed(announcement.failure)
+        }
     }
 
     private fun buildViews() {
@@ -90,6 +149,15 @@ class FastoryHubActivity : AppCompatActivity() {
                 ViewGroup.LayoutParams.MATCH_PARENT,
             )
         }
+        // `getUrl()` lags to the *committed* page — it is documented as not following the URL a
+        // load was started with — so a non-null one here means the warm-up's page committed. Do not
+        // copy this expression to iOS: `WKWebView.url` is the active URL, set the instant `load()`
+        // is called, so it says yes for a page that has only started loading.
+        load = FastorySurfaceLoad(
+            surface = FastorySurface.HUB,
+            isIdentified = false,
+            hasCommitted = webView.url != null,
+        )
 
         progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             layoutParams = FrameLayout.LayoutParams(
@@ -101,27 +169,10 @@ class FastoryHubActivity : AppCompatActivity() {
             isVisible = webView.progress < 100
         }
 
-        errorView = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
+        errorView = FastoryErrorView.build(this) { retry() }.apply {
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT,
-            )
-            setBackgroundColor(Color.WHITE)
-            isVisible = false
-
-            addView(
-                TextView(this@FastoryHubActivity).apply {
-                    text = getString(R.string.fastory_sdk_error_message)
-                    gravity = Gravity.CENTER
-                },
-            )
-            addView(
-                Button(this@FastoryHubActivity).apply {
-                    text = getString(R.string.fastory_sdk_retry)
-                    setOnClickListener { retry() }
-                },
             )
         }
 
@@ -195,7 +246,13 @@ class FastoryHubActivity : AppCompatActivity() {
             ): Boolean {
                 val url = request.url.toString()
                 return when (UrlPolicy.decide(url, config.baseUrl)) {
-                    NavigationDecision.ALLOW -> false
+                    NavigationDecision.ALLOW -> {
+                        // A new main-frame document: it may fail on its own account, and a failure
+                        // already reported for the previous one must not swallow that. Never a
+                        // second hubOpened — the state machine keeps that to one per presentation.
+                        if (request.isForMainFrame) load.restart()
+                        false
+                    }
                     NavigationDecision.OPEN_GAME_SHEET -> {
                         openGameSheet(url)
                         true
@@ -213,8 +270,35 @@ class FastoryHubActivity : AppCompatActivity() {
                 error: WebResourceError,
             ) {
                 if (request.isForMainFrame) {
-                    showError()
+                    showError(FastoryLoadFailureClassifier.navigation(error.errorCode))
                 }
+            }
+
+            /**
+             * `onReceivedError` never fires for an HTTP failure, so without this a 404 fanzone
+             * renders the server's error body and the fan sees neither the error view § 9 promises
+             * nor the status.
+             */
+            override fun onReceivedHttpError(
+                view: WebView,
+                request: WebResourceRequest,
+                errorResponse: WebResourceResponse,
+            ) {
+                if (request.isForMainFrame) {
+                    showError(
+                        FastoryLoadFailureReason.REJECTED,
+                        statusCode = errorResponse.statusCode,
+                    )
+                }
+            }
+
+            /**
+             * The document has been accepted for display, which is what makes the hub genuinely
+             * open. A page that 404s or never connects never reaches here, which is precisely what
+             * keeps `hubOpened` off it (SPEC § 9.1).
+             */
+            override fun onPageCommitVisible(view: WebView, url: String?) {
+                announce(load.commit())
             }
 
             override fun onPageFinished(view: WebView, url: String?) {
@@ -282,14 +366,30 @@ class FastoryHubActivity : AppCompatActivity() {
         }
     }
 
-    private fun showError() {
+    private fun showError(
+        reason: FastoryLoadFailureReason,
+        code: String? = null,
+        statusCode: Int? = null,
+    ) {
         webView.isVisible = false
         errorView.isVisible = true
+        announce(load.fail(reason, code = code, statusCode = statusCode))
     }
 
+    /**
+     * A retry may open the hub the first load could not, so the failure it follows is cleared —
+     * otherwise the surface stays permanently unable to announce itself.
+     */
     private fun retry() {
         errorView.isVisible = false
         webView.isVisible = true
-        webView.reload()
+        load.restart()
+        // A key the API refused leaves nothing loaded to reload, and `reload()` on a WebView that
+        // never got a URL does nothing at all — the exchange is what has to run again.
+        if (webView.url == null) {
+            openHub()
+        } else {
+            webView.reload()
+        }
     }
 }

@@ -43,10 +43,24 @@ final class FastoryGamePreloader: NSObject {
     private var isGameSheetPresented = false
     private var config: FastoryConfig?
     /// Seam for unit tests (network loads are not deterministic there); production always
-    /// performs the real load.
-    var startLoad: (WKWebView, URLRequest) -> Void = { webView, request in
+    /// performs the real load. Named rather than inlined so a suite that stubs it can put it back —
+    /// this is a singleton, so a stub left behind is the next suite's silent no-op.
+    static let performLoad: (WKWebView, URLRequest) -> Void = { webView, request in
         webView.load(request)
     }
+
+    var startLoad: (WKWebView, URLRequest) -> Void = FastoryGamePreloader.performLoad
+
+    /// How the stalled-load timeout is armed. A seam for the same reason as `startLoad`, and the
+    /// reason is the runner rather than convenience: it starves the main thread, so a case that
+    /// waits a wall-clock delay for this work item measures the machine's load and not the
+    /// preloader's behaviour. Named rather than inlined so a suite that stubs it can put it back.
+    static let performScheduleTimeout: (TimeInterval, DispatchWorkItem) -> Void = { seconds, work in
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
+    }
+
+    var scheduleTimeout: (TimeInterval, DispatchWorkItem) -> Void =
+        FastoryGamePreloader.performScheduleTimeout
 
     // MARK: - Hub hook
 
@@ -63,17 +77,36 @@ final class FastoryGamePreloader: NSObject {
 
     /// Pool hit: hands the prewarmed webview (loaded, or still loading — the sheet adopts
     /// the in-flight navigation) to the game sheet. Miss: returns nil.
-    func takeWebView(slug: String) -> WKWebView? {
+    ///
+    /// `hasCommitted` comes with it because the sheet cannot work it out: `WKWebView.url` is the
+    /// active URL, set the instant `load()` is called, so an adopted in-flight page already has one.
+    /// Only a load that reached `didFinish` is pooled, so a pool hit has committed by construction.
+    func takeWebView(slug: String) -> (webView: WKWebView, hasCommitted: Bool)? {
         if let webView = pool.removeValue(forKey: slug) {
-            return webView
+            return (webView, true)
         }
         if let load = currentLoad, load.slug == slug {
             cancelLoadTimeout()
             currentLoad = nil
             load.webView.navigationDelegate = nil
-            return load.webView
+            return (load.webView, false)
         }
         return nil
+    }
+
+    /// Seam for tests: hands the next `takeWebView(slug:)` a page a suite controls, so a game sheet
+    /// can be presented without loading anything. The runner never completes a real navigation
+    /// (`packages/sdk/CLAUDE.md`), so the alternative is a sheet that either waits for a load that
+    /// cannot land or asserts around one racing it.
+    ///
+    /// `hasCommitted` picks which of the two handover paths it models: the pool, whose pages have
+    /// finished loading, or the load in flight, which the sheet adopts mid-navigation.
+    func stashForTesting(_ webView: WKWebView, slug: String, hasCommitted: Bool) {
+        if hasCommitted {
+            pool[slug] = webView
+        } else {
+            currentLoad = (slug: slug, webView: webView)
+        }
     }
 
     /// Gives the game about to be played the whole budget: background loads stop, the load in
@@ -81,8 +114,8 @@ final class FastoryGamePreloader: NSObject {
     ///
     /// Releasing the pool is what matters for heavy games. A pooled WebView sits outside the
     /// view hierarchy, so WebKit throttles its timers — but it keeps its page, its textures and
-    /// its WebGL context resident, and every WebView shares one content process (and therefore
-    /// one memory limit) through `FastoryWebKit.processPool`. Three warm 3D games starve the one
+    /// its WebGL context resident, and WebKit shares one content process (and therefore one memory
+    /// limit) across same-site WebViews on its own. Three warm 3D games starve the one
     /// on screen. The sheet already took its own WebView out of the pool before this runs, so
     /// opening stays instant; `gameSheetDidClose` rebuilds the pool afterwards.
     func gameSheetWillPresent() {
@@ -336,7 +369,7 @@ final class FastoryGamePreloader: NSObject {
             self?.finishCurrentLoad(success: false)
         }
         loadTimeout = timeout
-        DispatchQueue.main.asyncAfter(deadline: .now() + loadTimeoutSeconds, execute: timeout)
+        scheduleTimeout(loadTimeoutSeconds, timeout)
     }
 
     private func cancelLoadTimeout() {
@@ -346,6 +379,25 @@ final class FastoryGamePreloader: NSObject {
 }
 
 extension FastoryGamePreloader: WKNavigationDelegate {
+    /// A game that answered an error status must not reach the pool. Its error **body** loads like
+    /// any other document, so `didFinish` fires and the page looks warm — and the sheet that later
+    /// takes it announces `gameOpened` on a page the fan sees as broken (SPEC § 9.1).
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationResponse: WKNavigationResponse,
+        decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void
+    ) {
+        guard webView === currentLoad?.webView,
+              navigationResponse.isForMainFrame,
+              let response = navigationResponse.response as? HTTPURLResponse,
+              response.statusCode >= 400 else {
+            decisionHandler(.allow)
+            return
+        }
+        decisionHandler(.cancel)
+        finishCurrentLoad(success: false)
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard webView === currentLoad?.webView else { return }
         finishCurrentLoad(success: true)

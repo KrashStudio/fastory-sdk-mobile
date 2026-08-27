@@ -11,4 +11,6 @@ example/android/
 example/ios/
 example/.metadata
 example/analysis_options.yaml
-example/test/
+# The template's own test, written by `flutter create .` and targeting a MyApp the example does not
+# have. The example's real suite (example/test/console_test.dart) is versioned and runs in CI.
+example/test/widget_test.dart

@@ -62,7 +62,6 @@ public enum FastoryConfigError: Error, Equatable, Sendable, CustomStringConverti
     case conflictingIdentifier
     case malformedPublishableKey
     case publishableKeyEnvironmentMismatch
-    case blankWorkspaceId
 
     public var description: String {
         switch self {
@@ -78,8 +77,6 @@ public enum FastoryConfigError: Error, Equatable, Sendable, CustomStringConverti
             return "publishableKey must start with fpk_live_ or fpk_test_"
         case .publishableKeyEnvironmentMismatch:
             return "publishableKey does not belong to this environment"
-        case .blankWorkspaceId:
-            return "workspaceId must not be blank when provided"
         }
     }
 }
@@ -92,10 +89,6 @@ public struct FastoryConfig: Equatable, Sendable {
     /// Identifies the workspace the host app belongs to. The fanzone to open is resolved from
     /// it at configure time; prefer this over `fanzoneSlug`.
     public let publishableKey: String?
-    /// Optional cross-check: when set, a key resolving to a different workspace is rejected.
-    /// Catches a key pasted into the wrong app rather than failing silently on someone else's
-    /// fanzone.
-    public let workspaceId: String?
     /// Deprecated identifier, kept for the whole 0.x compatibility window. `nil` when
     /// configured by publishable key.
     public let fanzoneSlug: String?
@@ -108,7 +101,6 @@ public struct FastoryConfig: Equatable, Sendable {
     init(
         environment: FastoryEnvironment,
         publishableKey: String?,
-        workspaceId: String?,
         fanzoneSlug: String?,
         hubTabSlug: String,
         locale: String?,
@@ -116,7 +108,6 @@ public struct FastoryConfig: Equatable, Sendable {
     ) {
         self.environment = environment
         self.publishableKey = publishableKey
-        self.workspaceId = workspaceId
         self.fanzoneSlug = fanzoneSlug
         self.hubTabSlug = hubTabSlug
         self.locale = locale
@@ -125,7 +116,6 @@ public struct FastoryConfig: Equatable, Sendable {
 
     public init(
         publishableKey: String,
-        workspaceId: String? = nil,
         environment: FastoryEnvironment = .production,
         hubTabSlug: String = "games",
         locale: String? = nil,
@@ -134,7 +124,6 @@ public struct FastoryConfig: Equatable, Sendable {
         self.init(
             environment: environment,
             publishableKey: publishableKey,
-            workspaceId: workspaceId,
             fanzoneSlug: nil,
             hubTabSlug: hubTabSlug,
             locale: locale,
@@ -161,7 +150,6 @@ public struct FastoryConfig: Equatable, Sendable {
         self.init(
             environment: environment,
             publishableKey: nil,
-            workspaceId: nil,
             fanzoneSlug: fanzoneSlug,
             hubTabSlug: hubTabSlug,
             locale: locale,
@@ -189,10 +177,6 @@ public struct FastoryConfig: Equatable, Sendable {
             guard !slug.isBlank else { throw FastoryConfigError.blankFanzoneSlug }
         case (.some(let key), nil):
             try Self.validatePublishableKey(key, environment: environment)
-        }
-
-        if let workspaceId, workspaceId.isBlank {
-            throw FastoryConfigError.blankWorkspaceId
         }
     }
 
