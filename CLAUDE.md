@@ -42,7 +42,7 @@ dependencies:
     git:
       url: https://github.com/KrashStudio/fastory-sdk-mobile
       path: flutter/fastory_sdk
-      ref: sdk-v0.4.0
+      ref: sdk-v0.4.1
 ```
 
 Public API surface (normative in `SPEC.md §2`): **6 methods** — `Fastory.configure(FastoryConfig)`,
@@ -78,6 +78,25 @@ analyzer reports, so the other two are the ones a host discovers at runtime or i
 
 - `SPEC.md` is the source of truth for behavior; `README.md` for integration steps. Prefer them over
   inferring behavior from the native sources.
+- **`SPEC.md` names repository paths that are not in this repository.** They belong to Fastory's
+  development monorepo, and `SPEC.md`'s own header says so. Never tell a reader to open one, and never
+  treat one as the authority for a rule: everything the specification makes normative it states in its
+  own prose — the enumerations in § 2.5 and § 9.1 in particular are closed where they are written.
+- **On the Swift channel, pin up to the next *minor*, never up to the next major.** SwiftPM's `from:`
+  means `>= x.y.z, < 1.0.0` and gives a leading zero no special meaning, so on this 0.x line it spans
+  minors the changelog itself calls source-breaking. `README.md`'s install section carries the two
+  spellings — the manifest one and Xcode's menu option — and they must stay the same constraint. The
+  Flutter channel pins an immutable tag, so the two channels do not offer the same reproducibility;
+  say which one a host has rather than describing them as equivalent.
+- **A rejected configuration does not behave the same on the two channels, and no host should meet
+  that as a surprise.** Dart's `configure()` throws a catchable `ArgumentError`; Swift's
+  `configure(_:)` is non-throwing by design and, on a **debug** build, traps and terminates the app —
+  on release it returns having changed nothing. A Swift host that wants to handle it calls
+  `try config.validate()` first. **And a refusal is never a rollback on either channel**: the
+  configuration already in force keeps applying, so only a host whose *first* `configure` is refused
+  is unconfigured — a later refusal leaves the previous fanzone opening as if nothing happened. `SPEC.md` § 2.1 is normative and
+  `README.md`'s *When `configure()` refuses your configuration* is the integrator-facing table. Never
+  tell a Swift host that `configure` throws — it cannot.
 - Do not suggest modifying files in this repository — changes ship through Fastory's release process
   and arrive as a new tag. To adopt a fix, bump `ref:` to the newer tag.
 - The bundled iOS (`flutter/fastory_sdk/ios/`) and Android (`flutter/fastory_sdk/android/`) sources

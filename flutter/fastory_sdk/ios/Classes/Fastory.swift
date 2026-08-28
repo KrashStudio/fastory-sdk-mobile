@@ -114,8 +114,10 @@ public enum Fastory {
             try config.validate()
         } catch {
             // Kept non-throwing for source compatibility. A rejected configuration is not
-            // stored, so openGames() reports "not configured" instead of opening someone
-            // else's fanzone or a blank hub.
+            // stored, so it never opens someone else's fanzone or a blank hub — but note what
+            // that leaves standing: returning here also skips the teardown below, so a
+            // configuration already in force keeps applying and openGames() opens *it*.
+            // "openGames() reports not configured" is only the first-call case (SPEC § 2.1).
             assertionFailure("Fastory.configure(_:) rejected the configuration: \(error)")
             return
         }

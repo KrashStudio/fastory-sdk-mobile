@@ -1,7 +1,7 @@
 # Fastory Mobile SDK — Integration Guide
 
 Audience: host app engineering teams integrating the SDK.
-Scope: Fastory Mobile SDK v0.4.0 (ultra-light, WebView-based).
+Scope: Fastory Mobile SDK v0.4.1 (ultra-light, WebView-based).
 
 Two ways to consume it, same behavior and same version:
 
@@ -68,7 +68,7 @@ dependencies:
     git:
       url: https://github.com/KrashStudio/fastory-sdk-mobile
       path: flutter/fastory_sdk
-      ref: sdk-v0.4.0
+      ref: sdk-v0.4.1
 ```
 
 Then:
@@ -79,13 +79,17 @@ flutter pub get
 
 ### Native iOS (Swift Package Manager)
 
-In Xcode: *File > Add Package Dependencies…*, enter `https://github.com/KrashStudio/fastory-sdk-mobile`, and pick *Up to Next Major Version*. Or declare it in your own `Package.swift`:
+In Xcode: *File > Add Package Dependencies…*, enter `https://github.com/KrashStudio/fastory-sdk-mobile`, and pick **Up to Next Minor Version**. Or declare it in your own `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/KrashStudio/fastory-sdk-mobile.git", from: "0.4.0")
+    .package(url: "https://github.com/KrashStudio/fastory-sdk-mobile.git", .upToNextMinor(from: "0.4.1"))
 ]
 ```
+
+**Pick the minor rule, not *Up to Next Major Version*, for the whole 0.x line.** SwiftPM's `from:` means *at least this version, and anything below 1.0.0* — it gives a leading zero no special meaning, unlike Cargo's or npm's caret, so it is a range across every future minor. This SDK ships source breaks in minors while it is on 0.x: *Upgrading from 0.3.0* below lists three that arrived in 0.4.0, one of which deletes a configuration field your code passes. *Up to Next Major Version* accepts all of that without asking you. The minor rule accepts patch releases — bug fixes, no API change — and stops there.
+
+The two channels are not identical on this point, and it is worth knowing which you have: the Flutter snippet above pins one immutable tag, so it never moves until you edit it, while the rule here still takes a patch release on its own. If you want the Swift channel to behave exactly like the Flutter one, use SwiftPM's `exact:` requirement with the same version, or *Exact Version* in Xcode.
 
 Each release carries two tags on the same commit: the bare version, which is the only form SwiftPM resolves, and `sdk-v<version>`, the name the Flutter channel uses.
 
@@ -172,7 +176,7 @@ The Swift API takes the presenter explicitly (`openGames(from:)`) and delivers l
 | `environment` | `FastoryEnvironment` | no (default `production`) | `production` (`https://fanzone.me`), `staging` (`https://staging.fanzone.me`), or `development` (uses `developmentBaseUrl`) |
 | `hubTabSlug` | `String` | no (default `"games"`) | The hidden hub tab slug |
 | `locale` | `String?` | no | Forwarded to the hub when provided; defaults to the web Fanzone's own locale resolution |
-| `developmentBaseUrl` | `String?` | only when `environment == development` | Custom `https` base URL for internal testing; `configure` throws if missing in development |
+| `developmentBaseUrl` | `String?` | only when `environment == development` | Custom `https` base URL for internal testing. Flutter only: `configure` refuses a `development` configuration without it. On the Swift channel the field does not exist — `FastoryEnvironment.development(baseURL:)` carries the URL, so a development environment without one cannot be written |
 
 Public methods:
 
@@ -184,6 +188,39 @@ Public methods:
 | `Fastory.identify(FastoryIdentity)` | Binds your user to a Fastory fan. See *Identity* below. |
 | `Fastory.logout()` | Signs the fan out of Fastory. Never touches your own session. |
 | `Fastory.setBridgeReply(type, payload)` | Declares what the SDK answers when an embedded surface asks. See *Answering the web content* below. |
+
+**When `configure()` refuses your configuration.** A configuration is refused locally, before any
+network call, when it supplies neither identifier or both, a blank `fanzoneSlug` or `hubTabSlug`, a
+malformed `publishableKey`, or a key minted for another environment (`fpk_live_…` outside production,
+or `fpk_test_…` in it). **The two channels do not react the same way, and the difference matters most
+on a debug build.**
+
+*On Flutter*, `Fastory.configure()` throws `ArgumentError` synchronously, before it reaches the
+platform channel. Catch it, log it, show what you like. When the offending field is the publishable
+key the message names the rule that was broken and the environment expected, and not your key.
+
+*On native iOS*, `Fastory.configure(_:)` is **non-throwing and cannot throw** — its signature has no
+`throws`, and neither do the initializers. On a **debug** build it trips an assertion, so **your app
+terminates on the spot**, with a fatal error naming the SDK's own file and the rule that was broken.
+On a **release** build it returns normally and nothing is stored. If you want to decide for yourself
+what a bad configuration does, call `try config.validate()` first: it is public, it throws
+`FastoryConfigError`, it applies the same rules, and it calls nothing.
+
+**A refused `configure()` changes nothing — including nothing you had already set.** On either
+channel the configuration already in force keeps applying. So the "nothing is stored" above is the
+whole story only for your *first* call: refuse that one and you are simply unconfigured, and
+`openGames()` says so. Refuse a *later* one — an environment switch, a re-`configure()` from a
+failure handler — and the SDK keeps running on the previous configuration, and `openGames()` opens
+**that** fanzone rather than reporting a problem. On a debug iOS build you will not get that far,
+because the assertion fires first; on release, and on Flutter if you swallow the exception, a refused
+switch looks exactly like a switch that did not happen.
+
+**This is the mistake the recommended migration path makes easiest to hit.** *Availability of the key
+exchange* above tells you to integrate against `environment: staging` with an `fpk_test_…` key and
+move to production later. That move is a two-line edit — the key and the environment — and changing
+one line and not the other is exactly the refusal above. On iOS, every debug build of your app then
+dies at launch; on Flutter you get an exception you can catch. Change both lines together, and if a
+debug build starts dying at launch right after an environment switch, this is why.
 
 **Threading (since 0.4.0).** Every method above may be called from any thread except `openGames()`,
 which needs the main thread — it takes your own `UIViewController` / `Context`, so you are already in
@@ -501,7 +538,7 @@ If a surface fails to load (airplane mode, no network, a page that answers an er
 No — the two WebViews are owned and configured by the SDK (URL interception, safe areas, and the scoped session erasure of `logout()` all depend on it). External links respect the system default browser.
 
 **Do we need ProGuard / R8 rules?**
-No. The SDK ships its own keep rule (`consumerProguardFiles`), so the bridge's JavaScript entry point survives shrinking even if your R8 configuration is hand-written rather than based on AGP's defaults. Everything else it uses — the platform `android.webkit.WebView`, standard Flutter plugin registration — is covered by default Flutter/AGP rules. If your build uses aggressive custom shrinking and you still hit an issue, keep the SDK's plugin package and report it to us.
+No. The SDK's Android module declares its keep rule with `consumerProguardFiles`, which is what makes R8 merge that rule into your application's configuration when it shrinks — whether your R8 setup is hand-written or derived from AGP's defaults. The rule keeps the bridge's JavaScript entry point, the one member R8 finds no caller for, because the WebView reaches it by reflection. Everything else the SDK uses — the platform `android.webkit.WebView`, standard Flutter plugin registration — is covered by default Flutter/AGP rules. If your build uses aggressive custom shrinking and you still hit an issue, keep the SDK's plugin package and report it to us.
 
 **What does the SDK add to app size?**
 It is intentionally ultra-light: Dart plugin glue plus thin native view controllers around system WebViews. No bundled UI frameworks, no analytics libraries, no native third-party dependencies. Expect a negligible footprint (well under 1 MB per platform).

@@ -1,5 +1,5 @@
 group = "com.fastory.sdk.flutter"
-version = "0.4.0"
+version = "0.4.1"
 
 buildscript {
     ext.kotlin_version = "1.9.22"
@@ -29,6 +29,10 @@ android {
 
     defaultConfig {
         minSdk = 24
+        // See packages/sdk/android/build.gradle.kts — same rule, same reason. Declared in both,
+        // because each channel is compiled from its own module and a rule declared once travels
+        // on one channel only. sync_cores.py --check fails when either declaration goes missing.
+        consumerProguardFiles "consumer-rules.pro"
     }
 
     compileOptions {

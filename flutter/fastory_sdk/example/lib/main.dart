@@ -17,7 +17,7 @@ const Color kClubRed = Color(0xFFE5484D);
 const String kClubPlatform = 'Flutter';
 
 // Stamped from the plugin's pubspec.yaml by tools/sync_cores.py — never edit it by hand.
-const String kDeclaredSdkVersion = '0.4.0';
+const String kDeclaredSdkVersion = '0.4.1';
 
 // Pointing the demo at a real fanzone needs a real publishable key, and a key must
 // never reach a commit. Run with `--dart-define-from-file=fastory.local.json` (that

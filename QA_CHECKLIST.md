@@ -1,4 +1,4 @@
-# Fastory SDK v0.4.0 — QA Checklist
+# Fastory SDK v0.4.1 — QA Checklist
 
 Run the full scenario list on each device of the matrix before sign-off.
 
@@ -115,8 +115,24 @@ rejected without any network call.
       carries that fanzone's slug (not one you typed anywhere).
 - [ ] *Local* — a key from the other environment (`fpk_live_…` in a staging build, or the reverse)
       is refused at `configure`, with no request sent. Verify via proxy that nothing left the device.
+      **The two channels react differently and both reactions are expected**, so record which one you
+      saw rather than filing the other as a defect: on **Flutter**, `configure()` throws a catchable
+      `ArgumentError`; on **native iOS**, `configure(_:)` cannot throw, so a **debug** build trips an
+      assertion and the app terminates on the spot, while a release build returns having changed
+      nothing. `SPEC.md` § 2.1 is the normative rule and `README.md`'s *When `configure()` refuses
+      your configuration* is the integrator-facing account of it.
+- [ ] *Local* — **a refused `configure()` leaves the previous configuration in force.** Configure
+      correctly, open the hub once, then re-`configure()` with a mismatched key and open again (iOS:
+      release build, or the app dies on the assertion): the hub must open the **previous** fanzone,
+      not report "not configured". Reporting a fresh install's behaviour here is the defect —
+      "nothing is stored" is true and "you are back to unconfigured" is not.
+- [ ] *Local* — **the refusal message never contains the key.** Read the full exception or console
+      line on all three channels: it must say which rule was broken, and must not contain the key. A
+      host logs a failed `configure`, so a key echoed here is a key in their crash reporter for
+      nothing. Only the Dart message also names the environment expected; the two native ones say
+      "this environment" — that is not a defect, do not record it as one.
 - [ ] *Local* — a malformed key, and a bare prefix with nothing after it (`fpk_test_`), are both
-      refused at `configure`.
+      refused at `configure`, with the same reactions and the same message rule as above.
 - [ ] Run the app with a bundle identifier / package name **not** declared on the key → refused with
       `sdk_application_not_allowed`. Check both platforms: iOS sends the bundle id, Android the
       package name, and a debug build with an `applicationIdSuffix` sends a different string.

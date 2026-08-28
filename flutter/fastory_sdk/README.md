@@ -5,7 +5,7 @@ Flutter plugin of the Fastory Mobile SDK. It opens a Fanzone's games hub in a fu
 browser. The real logic is native — this package is a thin bridge over the same Swift and Kotlin cores
 the native channels ship.
 
-Scope: Fastory Mobile SDK v0.4.0 (ultra-light, WebView-based).
+Scope: Fastory Mobile SDK v0.4.1 (ultra-light, WebView-based).
 
 This file is the Dart reference: every method, event and error the plugin exposes. `README.md` at the
 repository root is the full integration guide (it also covers the native iOS channel), and `SPEC.md`
@@ -33,7 +33,7 @@ dependencies:
     git:
       url: https://github.com/KrashStudio/fastory-sdk-mobile
       path: flutter/fastory_sdk
-      ref: sdk-v0.4.0
+      ref: sdk-v0.4.1
 ```
 
 ## Upgrading from 0.3.0: three source breaks
@@ -97,7 +97,19 @@ so the next `openGames()` shows the new fanzone rather than the previous one.
 Pass **exactly one** identifier: a key or the deprecated slug, never both and never neither. A
 publishable key must match its environment — `fpk_live_` in production, `fpk_test_` everywhere else —
 and `configure()` throws an `ArgumentError` on every one of these before reaching the platform channel
-or the network.
+or the network. **The message names the rule that was broken and the environment expected, never the
+key you passed**, so logging the exception — the ordinary thing to do with a failed `configure()` —
+does not put your publishable key in your crash reporter.
+
+A refused `configure()` changes nothing at all — including the configuration you had already set,
+which keeps applying. Refuse your *first* call and you are unconfigured; refuse a later one and the
+SDK keeps running on the previous configuration, so `openGames()` opens that fanzone rather than
+reporting a problem. Do not read the exception as a rollback.
+
+The native Swift channel does not behave this way, and it is worth knowing if you also ship a native
+iOS app against the same SDK: `Fastory.configure(_:)` there is non-throwing and traps on a debug
+build instead. The published integration guide's *When `configure()` refuses your configuration*
+carries both channels side by side.
 
 Two things to know before you pick the key path:
 

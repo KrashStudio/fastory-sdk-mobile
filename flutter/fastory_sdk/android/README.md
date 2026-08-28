@@ -12,7 +12,10 @@
 - `src/main/kotlin/com/fastory/sdk/flutter/FastorySdkPlugin.kt`: Flutter bridge (MethodChannel
   `fastory_sdk`, EventChannel `fastory_sdk/events`), plugin-specific — not part of the sync.
 - `src/main/res/`, `src/main/AndroidManifest.xml`, `consumer-rules.pro`: copies of the native module's
-  resources, manifest and consumer ProGuard rules.
+  resources, manifest and consumer ProGuard rules. The rules file is applied to the host application
+  by the `consumerProguardFiles` declaration in this module's `build.gradle`; both this module and
+  the native core declare it, and `sync_cores.py --check` fails if either the file or a declaration
+  goes missing on its own — a keep rule that ships without being declared is never read by R8.
 
 Any change to the core classes must be made in `packages/sdk/android`, then propagated by running
 `python3 packages/sdk/tools/sync_cores.py` and committing the result. Never edit the copies here.

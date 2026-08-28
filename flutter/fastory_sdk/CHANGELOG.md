@@ -4,6 +4,69 @@ All notable changes to the Fastory Mobile SDK are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: [SemVer](https://semver.org),
 tags `sdk-vX.Y.Z`.
 
+## 0.4.1
+
+A correction release. **No public name moves and no behaviour you depend on changes** — five defects
+found by consuming the published 0.4.0 packages from outside our own repository, four of which are
+things we told you that were not true. Nothing here asks you to change code, with one exception
+called out below: the iOS install instruction, which you should update in your own project.
+
+### Fixed
+
+- **Android: the SDK's R8 keep rule is now actually handed to your application.** The rule that keeps
+  the bridge's JavaScript entry point alive under shrinking has shipped with the Android module since
+  the bridge did — but no Gradle file declared `consumerProguardFiles`, which is the only thing that
+  passes a library's rule to the app consuming it, so R8 never read ours. **Nothing broke, and it
+  matters that you know why:** Flutter's Gradle plugin adds AGP's default rule file to every shrinking
+  release build, and that file carries an equivalent rule, so the bridge survived whatever your own R8
+  configuration said. If you read the FAQ's *Do we need ProGuard / R8 rules?* and wrote no keep rule
+  of your own, you were protected by your build chain rather than by us. You are now protected by us,
+  which is what that FAQ answer has always claimed. Nothing to change on your side.
+- **iOS: the install instructions now pin up to the next *minor*, and you should follow them again.**
+  They previously told you to pick *Up to Next Major Version*, or `from:` in your `Package.swift`.
+  Both mean `>= 0.4.0, < 1.0.0`: Swift Package Manager gives a leading zero no special meaning, unlike
+  the caret in some other ecosystems, so that range spans every future 0.x minor. This SDK ships
+  source breaks in minors while it is on 0.x — *Upgrading from 0.3.0* in the README lists three —
+  which made the recommended range one a future release could stop compiling in, without you asking
+  for it. **Change your dependency to *Up to Next Minor Version*, or `.upToNextMinor(from:)` in your
+  manifest.** If you want the Swift channel to be as immovable as the Flutter one, which pins a tag,
+  use SwiftPM's `exact:` requirement instead. The demo project we ship as "resolve it exactly as an
+  integrator does" carried the old range too, and now carries the new one.
+- **The README now says what `configure()` does with a configuration it refuses, on each channel.**
+  It said nothing at all, while its configuration table claimed `configure` *throws* when
+  `developmentBaseUrl` is missing in development — which describes the Flutter channel and cannot
+  describe the Swift one, where neither the initializers nor `configure(_:)` are declared to throw.
+  The behaviour is unchanged and deliberate; only the silence about it is fixed. On Flutter,
+  `configure()` throws a catchable `ArgumentError` before it reaches the platform channel. On native
+  iOS, `configure(_:)` cannot throw: a **debug** build trips an assertion and terminates, and a
+  release build returns having changed nothing. A Swift host that would rather handle it calls
+  `try config.validate()` first. **The same section also states what a refusal is not**: it is not a
+  rollback. The configuration already in force keeps applying on both channels, so only a host whose
+  *first* `configure()` is refused ends up unconfigured — refuse a later one and `openGames()` opens
+  the previous fanzone as though nothing had happened. The README's new *When `configure()` refuses
+  your configuration* carries both channels side by side, because the mistake this catches — a
+  publishable key and an environment that disagree — is exactly the one the staging-to-production
+  move makes easy.
+- **Flutter: a refused publishable key no longer appears in the exception message.** `configure()`
+  still throws `ArgumentError` for the same reasons; the message now names the rule that was broken
+  and the environment expected, instead of quoting your key at the end of the sentence. Logging a
+  failed `configure()` is the ordinary thing to do, and it was sending the key to your crash reporter
+  and your log aggregator for no purpose. A publishable key is not a credential — `SPEC.md` § 2.5 —
+  so nothing was exposed by this; the value was simply useless in a third party's logs, and the Swift
+  guard never did it. **If you match on the message text of this exception, it has changed** — and so
+  have its `name` and `invalidValue` properties, which are now null for this one field, because
+  `invalidValue` is where the key used to sit. The `ArgumentError` type itself, and every
+  configuration this refuses, are unchanged. The other fields `configure()` refuses — a blank
+  `fanzoneSlug` or `hubTabSlug` — still carry the offending value, deliberately: they are identifiers
+  you chose, and seeing which one was blank is the point.
+- **`SPEC.md` no longer points you at files this repository does not contain.** Four of its lines
+  named cross-platform test fixtures that live in Fastory's development repository, and one of them
+  made such a file *the* authority — § 9.1 told you to treat any unlisted failure `code` as a defect
+  to report, and then said the closed list was that file. **The table in § 9.1 is the closed list**,
+  and it always held the same values; a specification you hold now says so itself. The document also
+  gained a note at the top explaining what those repository paths are, so no line of it reads as a
+  file you were meant to open.
+
 ## 0.4.0
 
 Everything specified since 0.3.0, released at once: a message bridge between your app and the web

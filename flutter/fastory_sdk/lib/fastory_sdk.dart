@@ -85,34 +85,36 @@ class FastoryConfig {
     }
   }
 
+  /// Names the rule, never the value. `ArgumentError.value` would put the whole key in
+  /// `toString()`, and logging a failed `configure` is the ordinary thing for a host to do — so
+  /// the key would reach their crash reporter and their log aggregator for nothing. A publishable
+  /// key is not a credential (SPEC.md § 2.5), so this buys no secrecy; it removes a value a third
+  /// party has no use for, and matches what the Swift and Kotlin guards already say.
   void _validatePublishableKey(String key) {
     final bool isLive = key.startsWith(livePublishableKeyPrefix);
     final bool isTest = key.startsWith(testPublishableKeyPrefix);
     if (!isLive && !isTest) {
-      throw ArgumentError.value(
-        key,
-        'publishableKey',
-        'must start with $livePublishableKeyPrefix or $testPublishableKeyPrefix',
+      throw ArgumentError(
+        'publishableKey must start with $livePublishableKeyPrefix '
+        'or $testPublishableKeyPrefix',
       );
     }
     // A prefix alone is not a key: reject `fpk_live_` with nothing after it.
     final String prefix =
         isLive ? livePublishableKeyPrefix : testPublishableKeyPrefix;
     if (key.length <= prefix.length) {
-      throw ArgumentError.value(
-        key,
-        'publishableKey',
-        'must start with $livePublishableKeyPrefix or $testPublishableKeyPrefix',
+      throw ArgumentError(
+        'publishableKey must start with $livePublishableKeyPrefix '
+        'or $testPublishableKeyPrefix',
       );
     }
     final String expected = environment == FastoryEnvironment.production
         ? livePublishableKeyPrefix
         : testPublishableKeyPrefix;
     if (prefix != expected) {
-      throw ArgumentError.value(
-        key,
-        'publishableKey',
-        'does not belong to the ${environment.name} environment',
+      throw ArgumentError(
+        'publishableKey does not belong to the ${environment.name} environment: '
+        'it expects a key prefixed $expected',
       );
     }
   }

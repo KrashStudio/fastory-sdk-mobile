@@ -4,6 +4,13 @@ Status: **Normative** — this document is the single source of truth for the Fa
 Audience: SDK implementers (iOS, Android, Flutter) and integrators (your-fanzone app team).
 The key words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are to be interpreted as described in RFC 2119.
 
+**Repository paths named in this document — `packages/sdk/…`, `docs/sdk/…`, `fixtures/…` — are paths
+in the development monorepo (`KrashStudio/fastory`), where this SDK is built and its cross-platform
+guards run. They are not files in the package you received**, and nothing here requires you to open
+one. They are named so that a claim can be traced to what enforces it; read them as an account of how
+this specification is kept honest. **Everything this document makes normative, it states itself** — a
+file named here is a guard, never the authority.
+
 ---
 
 ## 1. Overview & Scope (v0.1)
@@ -76,7 +83,15 @@ iOS presents synchronously and has always behaved this way; Android did not unti
 
 The two native platforms MUST agree here. They did not before 0.4.0, and the divergence was recorded nowhere as a decision.
 
-Implementations MUST reject, at `configure` time and before any network call: neither identifier supplied, both supplied, a blank `fanzoneSlug`, and a `publishableKey` that is malformed or minted for another environment (§ 2.5). Rejection MUST be a typed, catchable error — never a crash, and never a configuration accepted now that fails later at the network layer.
+Implementations MUST reject, at `configure` time and before any network call: neither identifier supplied, both supplied, a blank `fanzoneSlug`, and a `publishableKey` that is malformed or minted for another environment (§ 2.5). A rejected configuration MUST NOT be stored, and MUST NOT be accepted now to fail later at the network layer.
+
+**A rejection MUST leave the configuration already in force untouched.** Not storing the rejected one is only half of it: the previous configuration keeps applying, so a `configure` that is refused is a call that changed nothing, not a call that de-configured the SDK. A host whose *first* `configure` is refused is unconfigured and `openGames()` reports `not_configured` (§ 5.4); a host that re-configures and is refused still holds the configuration it had, and `openGames()` opens **that** one. Documentation MUST NOT state the first case as though it were the general one — it is the case a host meets on day one and never again.
+
+**A typed, catchable error MUST be reachable for every rejection, and on which entry point it sits is a platform decision — which is not the same as it being reachable from `configure` itself.** The rule used to read "never a crash", and one shipped platform has never honoured that reading: Swift's `configure(_:)` is non-throwing by design (§ 2.2 — the signature is locked and both initializers are non-throwing too), so it validates and, on a **debug** build, `assertionFailure`s and terminates the process; on a release build it returns, having changed nothing. Dart's `configure` throws `ArgumentError` on the caller's thread, before the platform channel, so the native side is not reached at all. Both satisfy the requirement above, and both are correct: the catchable error a Swift host reaches is `FastoryConfig.validate()`, which is public, throws `FastoryConfigError`, applies this same rule set and calls nothing. What is normative:
+
+- Every rejection listed above MUST be reachable as a **typed, catchable error** on some public entry point of the platform's own API — `validate()` where `configure` is non-throwing, `configure` itself where the language makes that idiomatic.
+- A platform MAY additionally trap on a debug build, as an assertion about programmer error. It MUST NOT trap on a release build.
+- **Whatever a platform does, its shipped documentation MUST say so, distinguishing debug from release**, and MUST NOT attribute to one channel what another does. An integrator moving between the two channels — the migration path § 2.5's deprecation window describes — meets exactly this divergence on the single most likely configuration mistake, a key and an environment that disagree. This clause is here because the divergence shipped in 0.4.0 with no document naming it (FASTORY-3017).
 
 ### 2.2 Swift (iOS)
 
@@ -954,9 +969,10 @@ make that achievable, and both are correctness rules rather than precautions:
    cookie is `httpOnly`, so it is invisible to enumeration and can only be expired **by name**. Web
    storage needs no list — per-origin deletion removes it wholesale.
 
-The declared list is `packages/sdk/fixtures/identity-storage-keys.json`, shared by the three test
-suites. It is a **contract with the web side**, not an implementation detail: a key the web adds and
-the list does not name is a fan who survives a logout. A monorepo-only guard fails when the web
+The declared list is maintained in the development monorepo, as
+`packages/sdk/fixtures/identity-storage-keys.json`, shared by the three test suites. It is a
+**contract with the web side**, not an implementation detail: a key the web adds and the list does
+not name is a fan who survives a logout. A monorepo-only guard fails when the web
 introduces an identity-bearing cookie the fixture does not declare, so the omission surfaces as a red
 build instead of as a privacy incident.
 
@@ -1041,11 +1057,19 @@ Implementations MUST report:
     was no well-formed request to send. It refuses in the API's place rather than sending a request it
     knows will be rejected. Reachable on iOS only in practice (`Bundle.main.bundleIdentifier` is
     optional; a package name is not), but both platforms MUST classify it, and both are asserted
-    against `fixtures/surface-load-failure-cases.json`.
+    against the shared truth table `fixtures/surface-load-failure-cases.json` in the development
+    monorepo.
 
   An integrator matching `code` therefore matches § 2.5's four API names **plus the two rows above**,
-  and treats anything else in this field as a defect rather than as an extension of this rule. The fixture is the
-  closed list; a code added to it and not to this table is the same divergence in the other direction.
+  and treats anything else in this field as a defect rather than as an extension of this rule.
+  **The table above is the closed list**, and it is closed here on purpose: this is the document an
+  integrator holds, so a `switch` written against this table is written against the whole field. The
+  fixture is the guard that keeps the table honest, not a second authority — a code present there and
+  absent here is a divergence to fix **in this table**, exactly as one present here and absent there
+  is a divergence to fix in the fixture. The first direction is checked mechanically: a monorepo
+  guard fails when a code the fixture says a host can receive is named nowhere in this document. The
+  second is not, and cannot be from a fixture — this table names `http_<status>` as a family, which
+  no case list can enumerate.
 - **The event is a report, not a request.** The SDK MUST NOT retry on its own, and MUST NOT change
   what it shows because of it: the error view of § 9 comes up either way.
 - **A transient sub-resource failure MUST NOT be reported**, exactly as it must not raise the error
@@ -1077,7 +1101,8 @@ Implementations MUST report:
 - Releases are tagged `sdk-vX.Y.Z` (e.g. `sdk-v0.1.0`).
 - Distribution repository: **`KrashStudio/fastory-sdk-mobile`** (GitHub, **public, release-only**) — it receives the clean release package per version, with no development history (dev happens in the `fastory` monorepo). Each release carries **two tags on the same commit**: `sdk-vX.Y.Z`, canonical for the Flutter channel and the GitHub Release, and the bare `X.Y.Z`, which exists only because SwiftPM resolves nothing else. A host pinning `ref: sdk-v…` and a host pinning `from: "X.Y.Z"` are on the same code.
 - **Two channels ship from that repository, both live.** The **Flutter plugin** (`flutter/fastory_sdk`) since v0.1, and the **native Swift package** (root `Package.swift` + `Sources/FastorySDK`) since **v0.2.0** — `Package.swift` is at the root because SwiftPM cannot resolve a package held in a subdirectory. A native Kotlin artifact on Maven Central and a React Native wrapper follow in later versions; only those two are still unshipped.
-- This spec version: **0.4.0**. The public names in § 2 and the channel contract in § 5 are locked (they ship in third-party integrations); any later normative change requires a new spec version and a coordinated SDK release.
+- This spec version: **0.4.1**. The public names in § 2 and the channel contract in § 5 are locked (they ship in third-party integrations); any later normative change requires a new spec version and a coordinated SDK release.
+- **Changes in 0.4.1.** No public name moves and no behaviour a host depends on changes. Three normative clarifications, each written because the code already did this and the document did not say so: **a rejected configuration MUST leave the one already in force untouched** — not storing the rejected one is only half of the rule, since the previous configuration keeps applying; **a typed, catchable error MUST be reachable for every rejection**, with the entry point it sits on left to the platform; and **the failure-code table in § 9.1 is itself the closed list**, in place of the fixture files it used to name. Those fixtures are internal test tables that never reach the mirror, so a shipped document pointing at them named a source its own readers could not open — the table is now the authority and the fixtures are explicitly monorepo paths. Nothing here changes what an implementation must do; it changes what this document is willing to be read as saying.
 - **Changes in 0.4.0.** One release, **five** capabilities and one removal: everything specified since 0.3.0 arrives at once, because none of it was released separately. An integrator debugging a break still needs to know *which* capability broke them, so each is stated on its own below — the bridge, the identity surface, the reply channel, a failed load reaching the host (§ 9.1), and the four normative corrections. It was planned as four; § 9.1 entered last, which is why any statement of "four" elsewhere is out of date rather than counting something different. Read the three source breaks first: they are the only reasons an integrator who upgrades has anything to do.
   - **Source breaks.** (1) **Dart's `FastoryEvent` is `sealed`** (§ 2.4) and this version adds three subtypes, `bridgeMessage`, `identityResolved` and `surfaceLoadFailed` — an exhaustive `switch` with no `default:` stops compiling until the host adds all three cases. Deliberate, under SemVer § 4 for a `0.y.z` line, and the last such break planned before 1.0. The two native surfaces are unaffected: each new callback is defaulted to a no-op (Swift protocol extension § 2.2, Kotlin interface default body § 2.3), so an existing conformer keeps compiling. (2) **Android's reply channel needs `androidx.webkit`** and a WebView of Chrome 85 or later (§ 13.8): `addWebMessageListener` is the only API that reports the posting frame and its origin, and a reply carries a fan credential, so answering an unidentified frame is not an option. Below that floor the reply channel is simply absent and the surface stays anonymous — the rest of the SDK is unaffected. (3) **`workspaceId` is removed from `FastoryConfig`** on all three platforms and from the `configure` channel payload (§ 2.1–2.5, § 5.2). It was a host-declared cross-check against the workspace a key resolves to; a key resolves exactly one workspace, so it duplicated — opt-in, and from the side that does not hold the truth — a refusal the API already makes unconditionally through the key's declared application identifiers (§ 2.5). A host passing it deletes the argument; nothing replaces it, because nothing it protected is now unprotected.
   - **The versioned JS ↔ native bridge** (§ 13). Web surfaces post `{v, type, payload}` envelopes; the SDK ignores anything outside envelope version 1 and its type registry, traces the drop at debug level, and delivers the rest as a sixth event (`bridgeMessage`, § 5.3). Registered on every SDK WebView by native registration alone — **no JavaScript is injected**, which is what keeps § 12.1 intact. Additive in behavior: the bridge takes no part in the § 4 navigation policy, and a web surface that never posts behaves exactly as it did in 0.3.0. The `postMessage` non-goal is retired accordingly (§ 12).
@@ -1225,10 +1250,11 @@ Decoding rules, all normative:
 - The envelope version is bumped only by a coordinated web + SDK release. Because unknown versions
   are ignored on both sides, a bump is a hard cut for that message, not a negotiation.
 
-The cross-platform truth table for all of the above is
-`packages/sdk/fixtures/bridge-protocol-cases.json` (the `cases` array), run by the iOS and Android
-suites. A **request** carries the same envelope plus one field and is decoded by the same rules, with
-one deliberate difference in what a violation means — it is answered rather than ignored (§ 13.8.2).
+The rules above are what is normative. The cross-platform truth table that holds the platforms to
+them is `packages/sdk/fixtures/bridge-protocol-cases.json` (the `cases` array) in the development
+monorepo, run by the iOS and Android suites. A **request** carries the same envelope plus one field
+and is decoded by the same rules, with one deliberate difference in what a violation means — it is
+answered rather than ignored (§ 13.8.2).
 
 ### 13.2 Transports
 
@@ -1487,11 +1513,11 @@ Normative, and the reason the list is this short:
   asked for. At request time there is no one left to tell.
 - The decoder MUST NOT throw, exactly as in § 13.1.
 
-The cross-platform truth table is the `requestCases` array of
-`packages/sdk/fixtures/bridge-protocol-cases.json`, run by the iOS and Android suites; its
-`requestRegistry`, `requestAllowedOrigins`, `requestStandingPayload` and `maxRequestIdChars` are shared
-so no platform can hold a different value, and each case's `echoedType` / `echoedRequestId` pin exactly
-what the reply may name.
+The cross-platform truth table that holds the platforms to the rules above is the `requestCases`
+array of `packages/sdk/fixtures/bridge-protocol-cases.json` in the development monorepo, run by the
+iOS and Android suites; its `requestRegistry`, `requestAllowedOrigins`, `requestStandingPayload` and
+`maxRequestIdChars` are shared so no platform can hold a different value, and each case's
+`echoedType` / `echoedRequestId` pin exactly what the reply may name.
 
 #### 13.8.3 Request type registry
 
