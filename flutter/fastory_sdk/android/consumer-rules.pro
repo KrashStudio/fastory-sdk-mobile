@@ -1,8 +1,8 @@
 # Shipped with the library and applied to every host app that consumes it, through the
 # consumerProguardFiles declaration in this module's build file — so an integrator needs no rule of
-# their own, which is what packages/sdk/docs/INTEGRATION.md promises in its FAQ. That declaration is
-# the whole mechanism: without it this file still ships and R8 never reads it, which is how it sat
-# here unapplied for a release (FASTORY-3013). sync_cores.py fails when the two come apart.
+# their own, which is what the integration guide's FAQ promises. That declaration is the whole
+# mechanism: without it this file still ships and R8 never reads it, which is how it sat here
+# unapplied for a release. A release check now fails when the two come apart.
 #
 # The bridge's entry point is reached only by reflection, from the WebView. R8 sees no caller and
 # strips it, and the failure is silent and release-only: window.fastory.postMessage throws inside

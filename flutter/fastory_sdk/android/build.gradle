@@ -1,5 +1,5 @@
 group = "com.fastory.sdk.flutter"
-version = "0.4.1"
+version = "0.4.2"
 
 buildscript {
     ext.kotlin_version = "1.9.22"
@@ -29,9 +29,9 @@ android {
 
     defaultConfig {
         minSdk = 24
-        // See packages/sdk/android/build.gradle.kts — same rule, same reason. Declared in both,
-        // because each channel is compiled from its own module and a rule declared once travels
-        // on one channel only. sync_cores.py --check fails when either declaration goes missing.
+        // The keep rule ships with this module and reaches the host app only through this
+        // declaration. Each channel is compiled from its own module, so a rule declared once
+        // travels on one channel only — both declare it, and a release check holds them together.
         consumerProguardFiles "consumer-rules.pro"
     }
 
@@ -55,7 +55,6 @@ dependencies {
     implementation("com.google.android.material:material:1.12.0")
     // WebMessageListener is the only Android entry point that reports the posting frame and its
     // origin — the gate the bridge's reply channel needs, which addJavascriptInterface cannot give
-    // (SPEC §13.8.4). Kept in step with the core's build.gradle.kts by hand: sync_cores.py stamps
-    // the version field of these files, not their dependency blocks.
+    // (SPEC §13.8.4).
     implementation("androidx.webkit:webkit:1.11.0")
 }

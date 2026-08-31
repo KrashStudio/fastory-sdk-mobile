@@ -95,9 +95,9 @@ final class FastoryGamePreloader: NSObject {
     }
 
     /// Seam for tests: hands the next `takeWebView(slug:)` a page a suite controls, so a game sheet
-    /// can be presented without loading anything. The runner never completes a real navigation
-    /// (`packages/sdk/CLAUDE.md`), so the alternative is a sheet that either waits for a load that
-    /// cannot land or asserts around one racing it.
+    /// can be presented without loading anything. A unit-test host never completes a real
+    /// navigation, so the alternative is a sheet that either waits for a load that cannot land or
+    /// asserts around one racing it.
     ///
     /// `hasCommitted` picks which of the two handover paths it models: the pool, whose pages have
     /// finished loading, or the load in flight, which the sheet adopts mid-navigation.

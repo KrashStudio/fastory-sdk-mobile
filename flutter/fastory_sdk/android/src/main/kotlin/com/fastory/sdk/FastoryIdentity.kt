@@ -5,7 +5,7 @@ import android.webkit.CookieManager
 import android.webkit.WebStorage
 
 /**
- * The identity a host asks the SDK to resolve. See `docs/sdk/SPEC.md` § 2.6.
+ * The identity a host asks the SDK to resolve. See `SPEC.md` § 2.6.
  *
  * [FanId] carries no argument on purpose — it is a Fastory *login* through the system browser, not
  * an identifier the host supplies. [HostToken] is the opposite: the partner already authenticated
@@ -91,9 +91,8 @@ class FastoryIdentifyException(
  * is `httpOnly`. Erasing by name is the only way to reach it — which is also why iOS keeps the same
  * declared list, so the two platforms behave identically.
  *
- * Cross-platform source of truth: `packages/sdk/fixtures/identity-storage-keys.json`.
- * `V1IdentifyContractTest` asserts this list matches it, so a fixture edit that is not propagated
- * here fails the build.
+ * A shared truth table holds the two platforms to the same list — a name one platform expires and
+ * the other does not is a fan who survives a logout on one of them.
  */
 internal object FastoryIdentityStorage {
     val cookieNames: List<String> = listOf(

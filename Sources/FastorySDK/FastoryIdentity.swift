@@ -1,7 +1,7 @@
 import Foundation
 import WebKit
 
-/// The identity a host asks the SDK to resolve. See `docs/sdk/SPEC.md` § 2.6.
+/// The identity a host asks the SDK to resolve. See `SPEC.md` § 2.6.
 ///
 /// `fanId` carries no argument on purpose — it is a Fastory *login* through the system browser, not
 /// an identifier the host supplies. `hostToken` is the opposite: the partner already authenticated
@@ -86,9 +86,8 @@ public enum FastoryIdentifyError: Error, Equatable, Sendable {
 /// them all: the fan session cookie is `httpOnly`, which Android's `CookieManager.getCookie` never
 /// returns. Keeping both platforms on one declared list is what makes the behaviour identical.
 ///
-/// Cross-platform source of truth: `packages/sdk/fixtures/identity-storage-keys.json`.
-/// `V1IdentifyContractTests` asserts this list matches it, so a fixture edit that is not propagated
-/// here fails the build.
+/// iOS and Android declare the same list, and a shared truth table holds them to it — a name one
+/// platform expires and the other does not is a fan who survives a logout on one of them.
 enum FastoryIdentityStorage {
     static let cookieNames: [String] = [
         "fst-visitor",

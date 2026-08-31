@@ -5,7 +5,7 @@ Flutter plugin of the Fastory Mobile SDK. It opens a Fanzone's games hub in a fu
 browser. The real logic is native — this package is a thin bridge over the same Swift and Kotlin cores
 the native channels ship.
 
-Scope: Fastory Mobile SDK v0.4.1 (ultra-light, WebView-based).
+Scope: Fastory Mobile SDK v0.4.2 (ultra-light, WebView-based).
 
 This file is the Dart reference: every method, event and error the plugin exposes. `README.md` at the
 repository root is the full integration guide (it also covers the native iOS channel), and `SPEC.md`
@@ -33,7 +33,7 @@ dependencies:
     git:
       url: https://github.com/KrashStudio/fastory-sdk-mobile
       path: flutter/fastory_sdk
-      ref: sdk-v0.4.1
+      ref: sdk-v0.4.2
 ```
 
 ## Upgrading from 0.3.0: three source breaks
@@ -225,8 +225,8 @@ and tells your app what happened.
   `FastoryHubOpened` as a session, a hub that never loaded is not one.
 - **The SDK never retries by itself**, and it never reports the same failed load twice. Cancellations
   it performs itself when routing a game or an external link are not failures and are not reported.
-- **Retry does not recover a refused publishable key** (FASTORY-2904). It reloads the page that
-  failed, and a key the API refused never produced one: the exchange's outcome is remembered for the
+- **Retry does not recover a refused publishable key**, and a fix is planned. It reloads the page
+  that failed, and a key the API refused never produced one: the exchange's outcome is remembered for the
   configuration that asked for it, failure included, so Retry re-shows the same error without calling
   the API again. A page that failed on its own reloads normally, and so does everything on the
   deprecated `fanzoneSlug` path. To recover from a transient failure of the exchange, call
@@ -364,11 +364,10 @@ Dart side can see — no identifier, both identifiers, a key from the wrong envi
   (`com.fastory.sdk`).
 - iOS: `FastorySdkPlugin` delegates to the core classes in `ios/Classes/`.
 
-`android/` and `ios/` hold copies of the native SDK cores, and they are **generated**: a Flutter plugin
-ships its native code as sources its consumers compile, so the cores cannot be consumed here as
-artifacts and every Swift and Kotlin file necessarily exists twice. That is structural, not a stopgap.
-The copies are produced from the cores by a script in the development monorepo and verified by CI —
-see the sync notes at the top of `android/README.md` and `ios/README.md`. Never edit them.
+`android/` and `ios/` hold the SDK's native implementation. A Flutter plugin ships its native code as
+sources its consumers compile, so the Swift and Kotlin the plugin needs lives inside the package
+rather than being resolved as an artifact — see `android/README.md` and `ios/README.md`. Nothing in
+either directory is part of the public API: host apps interact only with the Dart surface above.
 
 The native iOS channel exists for apps that are not Flutter: the same cores ship as a Swift package
 from this repository's root. Both channels are published from the same commit and carry the same
@@ -386,6 +385,3 @@ flutter create --org com.fastory.example --platforms android,ios .
 flutter pub get
 flutter run
 ```
-
-Paths in this section name the development monorepo (`KrashStudio/fastory`), where the demo lives and
-the checks run — not files to open from the public distribution repo.

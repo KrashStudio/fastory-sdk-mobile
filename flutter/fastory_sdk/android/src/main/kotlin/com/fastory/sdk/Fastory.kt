@@ -261,7 +261,7 @@ object Fastory {
     }
 
     /**
-     * Binds the host app's user to a Fastory fan. See `docs/sdk/SPEC.md` § 2.6.
+     * Binds the host app's user to a Fastory fan. See `SPEC.md` § 2.6.
      *
      * Non-blocking: every outcome arrives in [callback], on the main thread. Only
      * [FastoryIdentity.Anonymous] resolves in this version; the two identified modes are reserved

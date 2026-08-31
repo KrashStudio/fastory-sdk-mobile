@@ -4,6 +4,24 @@ All notable changes to the Fastory Mobile SDK are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: [SemVer](https://semver.org),
 tags `sdk-vX.Y.Z`.
 
+## 0.4.2
+
+### Changed
+
+- **The published documentation now addresses only you.** Wording that only meant something inside
+  Fastory — issue identifiers, repository paths, build tooling — told you nothing you could act on,
+  and it is gone from every file this release publishes. No public name moves and no behaviour
+  changes.
+- **Known limitations are still documented, in the terms you meet them in**: what you observe, what it
+  costs you, the workaround when there is one, and whether a fix is planned. Only our own tracking
+  references are out.
+- **`QA_CHECKLIST.md` is no longer published.** It was the device-matrix sign-off sheet for our own
+  release process, never a document you were meant to run, and nothing in it described SDK behaviour
+  that `README.md` and `SPEC.md` do not already carry. A link to it on the default branch now answers
+  404; a link pinned to `sdk-v0.4.1` or earlier still resolves.
+- **The `android/` and `ios/` README files inside the plugin now say what each directory holds** — the
+  SDK's native implementation, compiled into your app — instead of how those sources are maintained.
+
 ## 0.4.1
 
 A correction release. **No public name moves and no behaviour you depend on changes** — five defects
@@ -60,19 +78,17 @@ called out below: the iOS install instruction, which you should update in your o
   `fanzoneSlug` or `hubTabSlug` — still carry the offending value, deliberately: they are identifiers
   you chose, and seeing which one was blank is the point.
 - **`SPEC.md` no longer points you at files this repository does not contain.** Four of its lines
-  named cross-platform test fixtures that live in Fastory's development repository, and one of them
-  made such a file *the* authority — § 9.1 told you to treat any unlisted failure `code` as a defect
-  to report, and then said the closed list was that file. **The table in § 9.1 is the closed list**,
-  and it always held the same values; a specification you hold now says so itself. The document also
-  gained a note at the top explaining what those repository paths are, so no line of it reads as a
-  file you were meant to open.
+  named files you have no way to open, and one of them made such a file *the* authority — § 9.1 told
+  you to treat any unlisted failure `code` as a defect to report, and then said the closed list was
+  that file. **The table in § 9.1 is the closed list**, and it always held the same values; a
+  specification you hold now says so itself.
 
 ## 0.4.0
 
 Everything specified since 0.3.0, released at once: a message bridge between your app and the web
 content the SDK hosts, the identity surface, the bridge's reply channel, a surface that fails to load
-now telling your app so, and four defects an audit found by reading call paths (FASTORY-2900). Plus
-one removal, `workspaceId`.
+now telling your app so, and four defects a pre-release audit found. Plus one removal,
+`workspaceId`.
 
 It arrives as one upgrade, but it is five separate capabilities and they break in different places —
 so each has its own section below, in that order, and the three source breaks are listed first.
@@ -216,8 +232,8 @@ the fan something else.
 - **Nothing is retried for you, and nothing is reported twice.** The SDK reports; you decide. A single
   failed load produces exactly one event, cancellations the SDK causes itself when routing a game or
   an external link produce none, and a failed image or XHR inside a page produces none.
-- **Known limitation: Retry does not recover a refused publishable key** (FASTORY-2904). The Retry
-  button reloads the page that failed, and a key the API refused never produced one — the exchange's
+- **Known limitation: Retry does not recover a refused publishable key**, and a fix is planned. The
+  Retry button reloads the page that failed, and a key the API refused never produced one — the exchange's
   outcome is remembered for the configuration that asked for it, failure included, so Retry shows the
   same error again without asking the API a second time. The fan cannot retry their way out of it.
   What does re-arm the exchange is another `configure()`: **any second call, on both platforms**, with
@@ -232,8 +248,7 @@ the fan something else.
 
 ### Fixed — four defects the pre-release audit found
 
-Read by call path rather than observed on a device (FASTORY-2900). One of them lets an identity outlive
-the fan it names.
+One of them lets an identity outlive the fan it names.
 
 - **`logout()` revokes the answer the SDK gives your games.** The value set through `setBridgeReply`
   had no end: signing a fan out erased their web session and dropped the warm hub, and the next game
@@ -306,7 +321,7 @@ the fan it names.
   does not load* above). Android and Flutter on Android were never affected by the missing event.
 - **The two Android Gradle files can no longer drift apart.** The core and the Flutter plugin each
   declare their own dependencies, and nothing compared them — a library added to one would have failed
-  to compile only on the other channel, at release time. `sync_cores.py` now fails on the difference.
+  to compile only on the other channel, at release time. A release check now fails on the difference.
 
 ### Notes
 

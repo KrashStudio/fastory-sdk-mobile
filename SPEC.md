@@ -4,12 +4,9 @@ Status: **Normative** — this document is the single source of truth for the Fa
 Audience: SDK implementers (iOS, Android, Flutter) and integrators (your-fanzone app team).
 The key words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are to be interpreted as described in RFC 2119.
 
-**Repository paths named in this document — `packages/sdk/…`, `docs/sdk/…`, `fixtures/…` — are paths
-in the development monorepo (`KrashStudio/fastory`), where this SDK is built and its cross-platform
-guards run. They are not files in the package you received**, and nothing here requires you to open
-one. They are named so that a claim can be traced to what enforces it; read them as an account of how
-this specification is kept honest. **Everything this document makes normative, it states itself** — a
-file named here is a guard, never the authority.
+**Everything this document makes normative, it states itself.** No rule here delegates its authority
+to a file outside the package you received — the enumerations in § 2.5 and § 9.1 in particular are
+closed where they are written.
 
 ---
 
@@ -77,7 +74,7 @@ iOS presents synchronously and has always behaved this way; Android did not unti
 
 - **The teardown MUST NOT be conditional on there being something to prepare in exchange.** Configured by key there is no hub URL to warm until the API answers (§ 2.5), so a teardown reached only on the way to warming up never runs for a key configuration — which is every configuration a new partner integrates with, and the whole slug → key migration path. This is the defect iOS carried until 0.4.0.
 - **A `configure` with an *equal* configuration MUST NOT discard the warm hub or the preloaded games.** Re-configuring identically has changed nothing to render, so it is not an invalidation; making it one turns a harmless call into a cold hub open. Equality is the whole configuration, field by field. This binds the *warm-up path* as much as the teardown: an implementation that re-runs its warm-up unconditionally discards by rebuilding, which is the same defect wearing the opposite sign — and it is the shape iOS carried until 0.4.0, where warming up flushed the preloader before it checked whether anything needed warming.
-- **The publishable-key exchange (§ 2.5) is deliberately outside that rule, and the two platforms diverge there — though not where this spec used to say.** A cached **failure** is re-armed by any `configure`, equal or not, on **both** platforms: each resolver skips a fresh exchange only while one is in flight or a workspace is already resolved — so a failed outcome falls through and a second request leaves the device. (A platform whose `configure` carries no application context also has nothing to send until the identifier arrives; § 9 records what that costs the escape hatch, and it costs it nothing.) Two things do still differ, and neither is that. **A cached success**: iOS discards it on every `configure` and exchanges again, Android keeps it unless the configuration changed. **And what a surface opening inside the new exchange's window is answered with**: an implementation that clears the outcome at `configure` — iOS, and Android on a *changed* configuration — makes that surface wait for the new answer, while one that leaves it in place — Android on an *equal* configuration — answers it from the previous failure until the new one lands. Both re-ran the exchange; only one of them lets the previous verdict be read once more. Until **FASTORY-2904** lands, do not "fix" either platform to match the other — widening Android adds a network round trip to every equal re-configure, and narrowing iOS is a behavior change that belongs with 2904's own reconciliation rather than with this rule. What narrowing iOS would *not* cost is § 9's escape hatch: that hatch is a failed exchange re-arming, and it already re-arms on both. **Do not read "the outcome is cached per configuration" as "an equal `configure` sends nothing"** — true of a resolved workspace, false of a failure, and § 9 rests on the second half.
+- **The publishable-key exchange (§ 2.5) is deliberately outside that rule, and the two platforms diverge there — though not where this spec used to say.** A cached **failure** is re-armed by any `configure`, equal or not, on **both** platforms: each resolver skips a fresh exchange only while one is in flight or a workspace is already resolved — so a failed outcome falls through and a second request leaves the device. (A platform whose `configure` carries no application context also has nothing to send until the identifier arrives; § 9 records what that costs the escape hatch, and it costs it nothing.) Two things do still differ, and neither is that. **A cached success**: iOS discards it on every `configure` and exchanges again, Android keeps it unless the configuration changed. **And what a surface opening inside the new exchange's window is answered with**: an implementation that clears the outcome at `configure` — iOS, and Android on a *changed* configuration — makes that surface wait for the new answer, while one that leaves it in place — Android on an *equal* configuration — answers it from the previous failure until the new one lands. Both re-ran the exchange; only one of them lets the previous verdict be read once more. Reconciling the two is deferred to the release that closes § 9's Retry gap, and neither platform is to be moved to match the other before then: widening Android adds a network round trip to every equal re-configure, and narrowing iOS is a behavior change. What narrowing iOS would *not* cost is § 9's escape hatch: that hatch is a failed exchange re-arming, and it already re-arms on both. **Do not read "the outcome is cached per configuration" as "an equal `configure` sends nothing"** — true of a resolved workspace, false of a failure, and § 9 rests on the second half.
 
 **And the teardown alone MUST NOT be the only defence.** The hub is put *back* into the warm slot when it is dismissed (§ 11), which can happen after the re-configure — so a page rendered under the previous configuration returns to the slot the teardown already emptied, and the next `openGames()` presents it. Implementations MUST therefore also make a warm hub reusable **only for the configuration its page was loaded under**: stamp it, and drop it on a mismatch whenever it is taken. The same rule applies to a cached key exchange — a workspace resolved for one configuration MUST NOT answer for another, or its slug builds a hub URL in the wrong environment. Both together are what make § 2.7's threading freedom safe: the teardown lands on a later main-thread turn, so correctness cannot rest on it having run yet.
 
@@ -91,7 +88,7 @@ Implementations MUST reject, at `configure` time and before any network call: ne
 
 - Every rejection listed above MUST be reachable as a **typed, catchable error** on some public entry point of the platform's own API — `validate()` where `configure` is non-throwing, `configure` itself where the language makes that idiomatic.
 - A platform MAY additionally trap on a debug build, as an assertion about programmer error. It MUST NOT trap on a release build.
-- **Whatever a platform does, its shipped documentation MUST say so, distinguishing debug from release**, and MUST NOT attribute to one channel what another does. An integrator moving between the two channels — the migration path § 2.5's deprecation window describes — meets exactly this divergence on the single most likely configuration mistake, a key and an environment that disagree. This clause is here because the divergence shipped in 0.4.0 with no document naming it (FASTORY-3017).
+- **Whatever a platform does, its shipped documentation MUST say so, distinguishing debug from release**, and MUST NOT attribute to one channel what another does. An integrator moving between the two channels — the migration path § 2.5's deprecation window describes — meets exactly this divergence on the single most likely configuration mistake, a key and an environment that disagree. This clause is here because the divergence shipped in 0.4.0 with no document naming it.
 
 ### 2.2 Swift (iOS)
 
@@ -491,8 +488,7 @@ ship inside third-party integrations, so they are locked exactly like the rest o
 | `fanId` | **signs in to Fastory** | The **system browser** only: `ASWebAuthenticationSession` (iOS) / Custom Tabs (Android), through the platform's reference OpenID library | reserved |
 | `hostToken(jwt)` | nothing; the host app already signed them in | The partner's backend asserts the identity as a signed JWT, which the SDK forwards for server-side verification (§ 12) | reserved |
 
-Two properties of that table are easy to get backwards — and were, in the SDK's own dormant test
-contracts before this version:
+Two properties of that table are easy to get backwards:
 
 - **`hostToken` involves no browser and no form.** It is precisely the mode in which the fan interacts
   with nothing: the partner has already authenticated them, and the account *travels* rather than being
@@ -920,15 +916,10 @@ What each surface does today, with no identity involved (§ 2.6):
 The SDK's part in this is to be **able to address** each origin's store — to scope it and to erase it
 per origin (§ 7.4) — not to merge the two.
 
-> *Informative, not normative — no part of it ships in 0.4.0.* An **identified** session reaches the
-> two surfaces as **two per-origin handoffs from one native authority**, never as a shared store: the
-> fan credential stays in Keychain / Keystore and never enters a WebView, the hub is loaded through a
-> server-side handoff URL that answers `Set-Cookie` + 302, and the game receives an origin-scoped
-> token over the § 13 bridge. A token minted for one origin is rejected on renewal at the other, so
-> per-origin tokens are the only shape that works. Two visitors for one account is not a workaround:
-> points are account-scoped, so the ledger already assumes it. The legs themselves are
-> FASTORY-2861 / 2862 (obtaining the credential) and FASTORY-2867 (renewal); this note exists so the
-> reader does not re-derive the belief the old § 7 created.
+> *Informative, not normative.* **Two visitors for one account is not a defect to work around.**
+> Points are account-scoped, so a fan recognised on both surfaces is recognised once regardless of
+> how many visitors the web minted — which is why the withdrawn requirement above bought nothing
+> even where it worked.
 
 ### 7.1 iOS
 
@@ -964,17 +955,14 @@ make that achievable, and both are correctness rules rather than precautions:
    host application, so `removeAllCookies()`, `WebStorage.deleteAllData()` or a `.default()` wipe
    would sign the partner out of *their own* services. Implementations MUST delete per origin and
    MUST NOT call any all-origins API.
-2. **Cookies MUST be erased from a declared list of names.** They cannot be discovered:
-   `CookieManager.getCookie(url)` returns only the JS-readable cookies, and the identified-fan session
-   cookie is `httpOnly`, so it is invisible to enumeration and can only be expired **by name**. Web
-   storage needs no list — per-origin deletion removes it wholesale.
+2. **Cookies MUST be erased by name, from a list the implementation declares.** They cannot be
+   discovered: `CookieManager.getCookie(url)` returns only the JS-readable cookies, and the
+   identified-fan session cookie is `httpOnly`, so it is invisible to enumeration and can only be
+   expired **by name**. Web storage needs no list — per-origin deletion removes it wholesale.
 
-The declared list is maintained in the development monorepo, as
-`packages/sdk/fixtures/identity-storage-keys.json`, shared by the three test suites. It is a
-**contract with the web side**, not an implementation detail: a key the web adds and the list does
-not name is a fan who survives a logout. A monorepo-only guard fails when the web
-introduces an identity-bearing cookie the fixture does not declare, so the omission surfaces as a red
-build instead of as a privacy incident.
+That list is a **contract with the web side**, not an implementation detail: a name the web starts
+writing and the list does not carry is a fan who survives a logout. Every platform declares the same
+names, so a fan signed out on one is signed out on all.
 
 Origins in scope: the configured Fanzone origin **and** both stories origins (§ 4). Erasing only the
 Fanzone origin leaves half the fan behind.
@@ -1011,7 +999,7 @@ The chromeless Fanzone (`chrome=0`) applies its own `env(safe-area-inset-*)` pad
 ## 9. Error & Offline Handling
 
 - If a main-frame load fails in **WebView A (the hub)** (no network, DNS failure, HTTP error ≥ 400 on the initial document), the SDK MUST hide the WebView content and show a **native error view**: a short localized message ("Something went wrong" / no-connection variant) and a **Retry** button.
-- Retry MUST reload the failed URL in the WebView. Where the failure was the publishable-key exchange (§ 2.5) there is no loaded URL to reload, and Retry MUST re-run the exchange instead — **normative and unimplemented, on both platforms, as of 0.4.0: FASTORY-2904.** What ships instead: the resolver caches its outcome per configuration, failure included (§ 2.1), so Retry after a refused or unreachable exchange re-reads that outcome and shows the same error view without sending a second request. Do not read this bullet as describing shipped behaviour on the key path, and do not close the gap by narrowing § 2.1's stamp — the two rules are held apart there on purpose. The **deprecated slug path is unaffected** (there is always a URL to reload), as is any failure of a surface's own document; the escape hatch, until 2904 lands, is another `configure` — on **both** platforms, and carrying the configuration already in force is enough, because a *failed* outcome does not stop a second exchange the way a resolved one does (§ 2.1). Two conditions come with it, both consequences of § 2.1 rather than rules of their own: the identifier the exchange needs must already be known, which on a platform whose `configure` carries no application context — Android — means the escape hatch has to follow a first `openGames()`, and it does by construction; and where an equal `configure` leaves the previous outcome in place — Android again — what recovers is an opening that **starts after the new exchange has answered**, not necessarily the next one, since one starting inside that window is still handed the outcome that is there. This is the second requirement in this spec that was normative before it had an implementation; the first is § 2.5's `code`, which 0.4.0 closes, and both existed because nothing compares a `MUST` to the code.
+- Retry MUST reload the failed URL in the WebView. Where the failure was the publishable-key exchange (§ 2.5) there is no loaded URL to reload, and Retry MUST re-run the exchange instead — **normative and unimplemented, on both platforms, as of 0.4.1; a fix is planned.** What ships instead: the resolver caches its outcome per configuration, failure included (§ 2.1), so Retry after a refused or unreachable exchange re-reads that outcome and shows the same error view without sending a second request. Do not read this bullet as describing shipped behaviour on the key path, and do not close the gap by narrowing § 2.1's stamp — the two rules are held apart there on purpose. The **deprecated slug path is unaffected** (there is always a URL to reload), as is any failure of a surface's own document; the escape hatch, until that lands, is another `configure` — on **both** platforms, and carrying the configuration already in force is enough, because a *failed* outcome does not stop a second exchange the way a resolved one does (§ 2.1). Two conditions come with it, both consequences of § 2.1 rather than rules of their own: the identifier the exchange needs must already be known, which on a platform whose `configure` carries no application context — Android — means the escape hatch has to follow a first `openGames()`, and it does by construction; and where an equal `configure` leaves the previous outcome in place — Android again — what recovers is an opening that **starts after the new exchange has answered**, not necessarily the next one, since one starting inside that window is still handed the outcome that is there. This is the second requirement in this spec that was normative before it had an implementation; the first is § 2.5's `code`, which 0.4.0 closes, and both existed because nothing compares a `MUST` to the code.
 - **Since 0.4.0 the game sheet (WebView B) renders the same error view**, with the sheet's own close affordance still reachable. Until then it showed nothing: a game that 404'd was a black sheet, and the fan had no way to tell a broken game from a slow one.
 - The error view MUST keep a way out visible — the hub's native close affordance, the sheet's own.
 - Transient sub-resource failures (images, XHR) MUST NOT trigger the error view.
@@ -1056,20 +1044,16 @@ Implementations MUST report:
   - `sdk_application_id_required` — the SDK could not read the host's application identifier, so there
     was no well-formed request to send. It refuses in the API's place rather than sending a request it
     knows will be rejected. Reachable on iOS only in practice (`Bundle.main.bundleIdentifier` is
-    optional; a package name is not), but both platforms MUST classify it, and both are asserted
-    against the shared truth table `fixtures/surface-load-failure-cases.json` in the development
-    monorepo.
+    optional; a package name is not), but both platforms MUST classify it, and both are held to one
+    shared truth table so that neither can classify it differently.
 
   An integrator matching `code` therefore matches § 2.5's four API names **plus the two rows above**,
   and treats anything else in this field as a defect rather than as an extension of this rule.
   **The table above is the closed list**, and it is closed here on purpose: this is the document an
-  integrator holds, so a `switch` written against this table is written against the whole field. The
-  fixture is the guard that keeps the table honest, not a second authority — a code present there and
-  absent here is a divergence to fix **in this table**, exactly as one present here and absent there
-  is a divergence to fix in the fixture. The first direction is checked mechanically: a monorepo
-  guard fails when a code the fixture says a host can receive is named nowhere in this document. The
-  second is not, and cannot be from a fixture — this table names `http_<status>` as a family, which
-  no case list can enumerate.
+  integrator holds, so a `switch` written against this table is written against the whole field. A
+  code an implementation can produce and this table does not name is a divergence to fix **here**:
+  this table is what an integrator holds, so it is the table that has to become complete, never the
+  field that quietly gets wider.
 - **The event is a report, not a request.** The SDK MUST NOT retry on its own, and MUST NOT change
   what it shows because of it: the error view of § 9 comes up either way.
 - **A transient sub-resource failure MUST NOT be reported**, exactly as it must not raise the error
@@ -1099,15 +1083,15 @@ Implementations MUST report:
 
 - The SDK follows **Semantic Versioning 2.0.0** (`MAJOR.MINOR.PATCH`). The public API surface defined in § 2 and the platform channel contract in § 5 are the compatibility boundary: breaking either requires a MAJOR bump.
 - Releases are tagged `sdk-vX.Y.Z` (e.g. `sdk-v0.1.0`).
-- Distribution repository: **`KrashStudio/fastory-sdk-mobile`** (GitHub, **public, release-only**) — it receives the clean release package per version, with no development history (dev happens in the `fastory` monorepo). Each release carries **two tags on the same commit**: `sdk-vX.Y.Z`, canonical for the Flutter channel and the GitHub Release, and the bare `X.Y.Z`, which exists only because SwiftPM resolves nothing else. A host pinning `ref: sdk-v…` and a host pinning `from: "X.Y.Z"` are on the same code.
+- Distribution repository: **`KrashStudio/fastory-sdk-mobile`** (GitHub, **public, release-only**) — it receives the clean release package per version, with no development history. Each release carries **two tags on the same commit**: `sdk-vX.Y.Z`, canonical for the Flutter channel and the GitHub Release, and the bare `X.Y.Z`, which exists only because SwiftPM resolves nothing else. A host pinning `ref: sdk-v…` and a host pinning `from: "X.Y.Z"` are on the same code.
 - **Two channels ship from that repository, both live.** The **Flutter plugin** (`flutter/fastory_sdk`) since v0.1, and the **native Swift package** (root `Package.swift` + `Sources/FastorySDK`) since **v0.2.0** — `Package.swift` is at the root because SwiftPM cannot resolve a package held in a subdirectory. A native Kotlin artifact on Maven Central and a React Native wrapper follow in later versions; only those two are still unshipped.
 - This spec version: **0.4.1**. The public names in § 2 and the channel contract in § 5 are locked (they ship in third-party integrations); any later normative change requires a new spec version and a coordinated SDK release.
-- **Changes in 0.4.1.** No public name moves and no behaviour a host depends on changes. Three normative clarifications, each written because the code already did this and the document did not say so: **a rejected configuration MUST leave the one already in force untouched** — not storing the rejected one is only half of the rule, since the previous configuration keeps applying; **a typed, catchable error MUST be reachable for every rejection**, with the entry point it sits on left to the platform; and **the failure-code table in § 9.1 is itself the closed list**, in place of the fixture files it used to name. Those fixtures are internal test tables that never reach the mirror, so a shipped document pointing at them named a source its own readers could not open — the table is now the authority and the fixtures are explicitly monorepo paths. Nothing here changes what an implementation must do; it changes what this document is willing to be read as saying.
+- **Changes in 0.4.1.** No public name moves and no behaviour a host depends on changes. Three normative clarifications, each written because the code already did this and the document did not say so: **a rejected configuration MUST leave the one already in force untouched** — not storing the rejected one is only half of the rule, since the previous configuration keeps applying; **a typed, catchable error MUST be reachable for every rejection**, with the entry point it sits on left to the platform; and **the failure-code table in § 9.1 is itself the closed list**, in place of the files it used to name. A shipped document must not make an authority of anything outside the package it ships in, so the table is now the authority. Nothing here changes what an implementation must do; it changes what this document is willing to be read as saying.
 - **Changes in 0.4.0.** One release, **five** capabilities and one removal: everything specified since 0.3.0 arrives at once, because none of it was released separately. An integrator debugging a break still needs to know *which* capability broke them, so each is stated on its own below — the bridge, the identity surface, the reply channel, a failed load reaching the host (§ 9.1), and the four normative corrections. It was planned as four; § 9.1 entered last, which is why any statement of "four" elsewhere is out of date rather than counting something different. Read the three source breaks first: they are the only reasons an integrator who upgrades has anything to do.
   - **Source breaks.** (1) **Dart's `FastoryEvent` is `sealed`** (§ 2.4) and this version adds three subtypes, `bridgeMessage`, `identityResolved` and `surfaceLoadFailed` — an exhaustive `switch` with no `default:` stops compiling until the host adds all three cases. Deliberate, under SemVer § 4 for a `0.y.z` line, and the last such break planned before 1.0. The two native surfaces are unaffected: each new callback is defaulted to a no-op (Swift protocol extension § 2.2, Kotlin interface default body § 2.3), so an existing conformer keeps compiling. (2) **Android's reply channel needs `androidx.webkit`** and a WebView of Chrome 85 or later (§ 13.8): `addWebMessageListener` is the only API that reports the posting frame and its origin, and a reply carries a fan credential, so answering an unidentified frame is not an option. Below that floor the reply channel is simply absent and the surface stays anonymous — the rest of the SDK is unaffected. (3) **`workspaceId` is removed from `FastoryConfig`** on all three platforms and from the `configure` channel payload (§ 2.1–2.5, § 5.2). It was a host-declared cross-check against the workspace a key resolves to; a key resolves exactly one workspace, so it duplicated — opt-in, and from the side that does not hold the truth — a refusal the API already makes unconditionally through the key's declared application identifiers (§ 2.5). A host passing it deletes the argument; nothing replaces it, because nothing it protected is now unprotected.
   - **The versioned JS ↔ native bridge** (§ 13). Web surfaces post `{v, type, payload}` envelopes; the SDK ignores anything outside envelope version 1 and its type registry, traces the drop at debug level, and delivers the rest as a sixth event (`bridgeMessage`, § 5.3). Registered on every SDK WebView by native registration alone — **no JavaScript is injected**, which is what keeps § 12.1 intact. Additive in behavior: the bridge takes no part in the § 4 navigation policy, and a web surface that never posts behaves exactly as it did in 0.3.0. The `postMessage` non-goal is retired accordingly (§ 12).
   - **The identity surface** (§ 2.6), specified and **frozen**: one `identify` method with three mutually-exclusive modes plus `logout`, their channel methods and error codes (§ 5.2, § 5.4), a seventh event `identityResolved` (§ 5.3), and the per-origin erasure contract (§ 7.4). Only `anonymous` resolves; `fanId` and `hostToken` are normative signatures that fail with `identify_mode_unavailable` until their own releases, so shipping them later is not a source-breaking change. The surface had to land before its behavior because adding an enum case or an associated value later breaks source in all three languages.
-  - **The bridge's reply channel** (§ 13.8): a web surface may ask the native side a question and receive an answer, correlated by a mandatory `requestId`, on a second entry point (`fastoryRequest`) registered on every SDK WebView. Added because the game needs it — with `embed=1` it reads no storage (§ 7) and asks its host page for the fan's identity, and in an SDK WebView there is no host page. The public surface gains one method, `setBridgeReply` (§ 2.2–2.4, § 5.2), a closed `FastoryBridgeRequestType` registry holding one type (§ 13.8.3), and one channel error code (§ 5.4). **§ 12.1 is not amended**, deliberately: both platforms answer on the channel the request arrived on (WebKit's reply handler, Android's reply proxy), so nothing is evaluated in the page and the anticipated exception for session renewal is still unspent. Pushing into a page unprompted stays out.
+  - **The bridge's reply channel** (§ 13.8): a web surface may ask the native side a question and receive an answer, correlated by a mandatory `requestId`, on a second entry point (`fastoryRequest`) registered on every SDK WebView. Added because the game needs it — with `embed=1` it reads no storage (§ 7) and asks its host page for the fan's identity, and in an SDK WebView there is no host page. The public surface gains one method, `setBridgeReply` (§ 2.2–2.4, § 5.2), a closed `FastoryBridgeRequestType` registry holding one type (§ 13.8.3), and one channel error code (§ 5.4). **§ 12.1 is not amended**, deliberately: both platforms answer on the channel the request arrived on (WebKit's reply handler, Android's reply proxy), so nothing is evaluated in the page. Pushing into a page unprompted stays out.
   - **A surface that does not load now reaches the host** (§ 9.1, new; § 5.3 gains `surfaceLoadFailed` and the ordering rule behind it). Two halves that were failing in opposite ways. The first was **already normative and unimplemented**: § 2.5 has required since 0.3.0 that a refused publishable key surface the API's machine-readable `code`, and no platform did — a revoked key, an application identifier the workspace never declared and a phone in a tunnel produced one identical error view and told the host nothing, so an integrator could not tell "revoke the key in the back-office" from "the fan is in a tunnel". The second is genuinely new surface: a hub or game whose own document fails had no contract at all, and the game sheet did not even look — it had neither a response policy nor a navigation-failure callback, so a 404 game was a black sheet nobody could see the cause of. It now renders the error view § 9 always promised the hub. The event also fixes the inverse defect: `hubOpened` used to fire on a hub showing the error view, which is worse than silence because the host concludes the opposite of the truth — an opening event now announces a surface that loaded, and a surface that never opened owes no closing event.
   - **Four normative corrections**, no surface change of their own — each closes a gap where the spec said less than the implementations needed it to. **§ 13.8.6**: the standing bridge answer is revoked by `logout()`, by an `identify` resolving a different fan, and by a `configure` replacing the configuration, with § 2.6.1 and § 7.4 pointing at it — declared "standing" and given no end, it would keep answering a game with the previous fan's token and serve a production token to a staging page. **§ 2.1 gains the re-configuration rule**: a `configure` whose configuration differs MUST first discard what the previous one produced, and MUST NOT make that teardown conditional on having something to prepare in exchange — the condition that would let the publishable-key path keep a warm hub rendering the previous fanzone. **§ 2.7 is new**: which thread a host may call from was never stated, while `identify` and `logout` returned to the main thread and `configure` did not, so a background bootstrap crashed the host app; every method is now callable from any thread except `openGames`, which takes the host's own UI object, and the hub warm-up is deferred past the host's first screen. **§ 2.1 also gains the idempotence rule for `openGames()`**, and § 2.3 the `singleTop` launch mode that backs it on Android: asking for the games while a hub was up stacked a second one, so a double tap emitted two `hubOpened` for one visible hub, `close()` finished only the top instance, and the page the hidden one stashed on its way out overwrote the other's without releasing it.
 - Changes since 0.1.0: stories origins added to rule 1 (§ 4); hub and game WebViews are kept warm across sessions (behavioral); the consent hint is now `consent=0` on both hub and game URLs (§ 3.2/§ 3.3) — banner suppressed without asserting analytics consent; the `hubOpened` event carries the `fanzoneSlug` (§ 5.3). Changes in 0.1.2: the default `hubTabSlug` is `games` (was `games-app`). Changes in 0.1.3: closing the game sheet discards the played WebView (fresh state guaranteed, audio stops immediately) and the SDK preloads the hub's games via a read-only discovery query (§ 11 — Non-Goals renumbered to § 12). Changes in 0.1.4: preload discovery (§ 11.1) additionally collects direct game URLs — absolute http(s) URLs with an `/s/` path — from the embedded payload, covering hubs whose tiles are plain links rather than `Experience` components. Changes in 0.3.0: `configure` takes a workspace publishable key, exchanged at `/sdk/auth/bootstrap` for the fanzone to open (§ 2.1, § 2.5); `fanzoneSlug` is deprecated but accepted for the whole 0.x line; an optional `theme` (`light`/`dark`) and the existing `locale` are forwarded to the hub and game URLs (§ 3.2, § 3.3); the configure channel payload gains `publishableKey`, `workspaceId` and `theme` (§ 5.2). Changes in 0.2.0: presenting a game sheet releases the warm pool and abandons the load in flight, and closing rebuilds it (§ 11.2) — warm games otherwise hold memory and graphics contexts away from the game on screen. Changes in 0.1.5: the staging stories origin is `https://staging.story.tl` (§ 4, § 11.1) — the SDK previously named a host the platform does not serve, so staging games failed rule 1 and were handed to the system browser.
@@ -1178,20 +1162,18 @@ delivers native → web data without touching this rule. It could only do so bec
 channel the request arrived on**: WebKit hands the handler a reply block, and Android's
 `WebMessageListener` hands it a reply proxy that exists only because a page posted. Both are the
 platform's own return path, so nothing is evaluated in the document. That is why the reply direction
-needed no amendment here, and it is also the line the anticipated exception below sits on the far side
-of: answering is bounded by the request, pushing is not.
+needed no amendment here, and it is the line any future exception would sit on the far side of:
+answering is bounded by the request, pushing is not.
 
 Exactly one exception exists, and it is bounded rather than general:
 
 - **The read-only preload discovery query (§ 11.1).** It reads the hub document's embedded SSR payload
   and MUST NOT mutate the DOM, register listeners, access storage, or alter page behavior in any way.
 
-One further exception is **anticipated and MUST NOT be taken before it is specified**: session renewal
-(FASTORY-2867) requires native to push a refreshed session into a surface that has already read its own
-into memory — something no cookie write can reach. If that is delivered by evaluating script, this
-section is amended in the same release, with the same bounded shape: a named payload, a stated effect,
-no general capability. Reading "renewal is coming" as permission to inject today, or widening the
-existing exception quietly, is the failure this paragraph exists to prevent.
+A future capability that cannot be built any other way is **not** licence to widen this rule ahead of
+time: it would be delivered as an amendment to this section in the same release, with the same bounded
+shape — a named payload, a stated effect, no general capability. Widening the existing exception
+quietly is the failure this paragraph exists to prevent.
 
 Any other script evaluation is a spec change, not an implementation decision.
 
@@ -1250,9 +1232,9 @@ Decoding rules, all normative:
 - The envelope version is bumped only by a coordinated web + SDK release. Because unknown versions
   are ignored on both sides, a bump is a hard cut for that message, not a negotiation.
 
-The rules above are what is normative. The cross-platform truth table that holds the platforms to
-them is `packages/sdk/fixtures/bridge-protocol-cases.json` (the `cases` array) in the development
-monorepo, run by the iOS and Android suites. A **request** carries the same envelope plus one field
+The rules above are what is normative. One cross-platform truth table holds the iOS and Android
+implementations to them, so neither can decode an envelope the other rejects. A **request** carries
+the same envelope plus one field
 and is decoded by the same rules, with one deliberate difference in what a violation means — it is
 answered rather than ignored (§ 13.8.2).
 
@@ -1308,7 +1290,7 @@ Adding a type is a spec change plus a MINOR SDK release. Removing one is a break
 **Request types live in their own registry (§ 13.8.3), and the two MUST be disjoint.** A type that
 appeared in both would be reachable on either channel, which would let one be used to reach the
 other's surface: a page could get an answer delivered as a host event, or assert an event payload by
-asking for it. Each platform's contract suite asserts the disjointness rather than assuming it.
+asking for it. Every platform is held to the disjointness rather than assuming it.
 
 ### 13.4 Delivery to the host
 
@@ -1331,19 +1313,19 @@ MUST hop to the main thread before calling the host, since both the listener and
 ### 13.5 Performance
 
 A bridge round trip — decode plus delivery to the host callback — MUST average **≤ 16 ms** per
-message (the epic's frame budget). The bound lives in the fixture (`roundTripBudgetMs`) so the three
-platforms cannot disagree on it, and each platform's contract suite asserts it. Nothing on this path
-may block: no network call, no disk access, no synchronous work beyond the decode.
+message: one frame. The three platforms are held to the same number rather than to one of their own.
+Nothing on this path may block: no network call, no disk access, no synchronous work beyond the
+decode.
 
 **The same number governs a request and its reply** — decode, decide, and encode the answer — rather
 than a second budget of its own: 16 ms is one frame whichever way the message is travelling, and two
 constants would drift. It is also what makes the standing answer of § 13.8.2 the only workable shape:
 an answer the native side had to go and fetch could not meet it.
 
-The asserted figure is a **coarse tripwire, not a measurement**: the real cost is microseconds, so
-the assertion catches an order-of-magnitude regression (someone putting I/O on the path) and nothing
-finer. It also stops at the SDK boundary — no unit test can measure the JS → native transport itself,
-which is what the § 13 QA pass on a real device is for.
+The figure is a **coarse bound, not a measurement**: the real cost is microseconds, so it exists to
+catch an order-of-magnitude regression — something blocking put on the path — and nothing finer. It
+also stops at the SDK boundary: what the JS → native transport itself costs is only observable on a
+real device.
 
 ### 13.6 Diagnostics
 
@@ -1358,7 +1340,7 @@ The same rule covers the reply channel, where it matters more, because two of it
 identical from the page: **every failed answer and every refused caller MUST be traced**, with the
 `error.code` or the refusal reason and the caller's origin. A request that got no envelope at all
 (§ 13.8.4) is otherwise indistinguishable from an SDK that never received it, and that is precisely the
-report a device QA pass has to be able to resolve.
+report an investigation on a real device has to be able to resolve.
 
 | Platform | Sink | Off by default because | Turn it on with |
 |---|---|---|---|
@@ -1468,7 +1450,7 @@ A request is the § 13.1 envelope plus one mandatory field:
 |---|---|---|---|
 | `v` | integer | yes | As § 13.1, matched just as strictly |
 | `type` | string | yes | MUST be in the **request** registry (§ 13.8.3) |
-| `requestId` | string | yes | Non-blank, at most **64 UTF-16 code units** (the fixture's `maxRequestIdChars`, inclusive). Echoed by the reply, so an unbounded one would let the page choose the size of the answer — and it is logged, so it is untrusted text |
+| `requestId` | string | yes | Non-blank, at most **64 UTF-16 code units**, inclusive. Echoed by the reply, so an unbounded one would let the page choose the size of the answer — and it is logged, so it is untrusted text |
 | `payload` | object | no | As § 13.1 |
 
 Every accepted request produces exactly one reply, a JSON object serialised to a string:
@@ -1513,11 +1495,9 @@ Normative, and the reason the list is this short:
   asked for. At request time there is no one left to tell.
 - The decoder MUST NOT throw, exactly as in § 13.1.
 
-The cross-platform truth table that holds the platforms to the rules above is the `requestCases`
-array of `packages/sdk/fixtures/bridge-protocol-cases.json` in the development monorepo, run by the
-iOS and Android suites; its `requestRegistry`, `requestAllowedOrigins`, `requestStandingPayload` and
-`maxRequestIdChars` are shared so no platform can hold a different value, and each case's
-`echoedType` / `echoedRequestId` pin exactly what the reply may name.
+The same cross-platform truth table holds the platforms to the rules above: the request registry, the
+allowed origins, the standing payload and the request-id length limit are shared values no platform
+may hold differently, and each case pins exactly what a reply may name.
 
 #### 13.8.3 Request type registry
 

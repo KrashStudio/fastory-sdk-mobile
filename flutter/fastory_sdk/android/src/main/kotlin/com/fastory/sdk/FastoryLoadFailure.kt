@@ -65,9 +65,9 @@ internal class FastoryBootstrapException(val code: String) : Exception(code)
 /**
  * Turns each platform's own failure vocabulary into the one the host reads (SPEC § 9.1).
  *
- * Pure, and mirrored case for case on iOS: the truth table lives in
- * `fixtures/surface-load-failure-cases.json` and both platforms run it, so a divergence fails a
- * suite instead of surfacing as one platform reporting `network` where the other reports `unknown`.
+ * Pure, and mirrored case for case on iOS: both platforms run one shared truth table, so a
+ * divergence fails a suite instead of surfacing as one platform reporting `network` where the other
+ * reports `unknown`.
  */
 internal object FastoryLoadFailureClassifier {
 
@@ -82,7 +82,7 @@ internal object FastoryLoadFailureClassifier {
     /**
      * Transport failures: nothing answered. Enumerated rather than "every error code", which also
      * carries refusals that did get an answer (an unsupported scheme, a blocked resource) — iOS
-     * draws the same line, and the fixture is what keeps the two lists from drifting apart.
+     * draws the same line, and a shared truth table keeps the two lists from drifting apart.
      */
     private val NETWORK_ERROR_CODES = setOf(
         WebViewClient.ERROR_HOST_LOOKUP,

@@ -50,9 +50,9 @@ public struct FastoryLoadFailure: Equatable, Sendable {
 
 /// Turns each platform's own failure vocabulary into the one the host reads (SPEC § 9.1).
 ///
-/// Pure, and mirrored case for case on Android: the truth table lives in
-/// `fixtures/surface-load-failure-cases.json` and both platforms run it, so a divergence fails a
-/// suite instead of surfacing as one platform reporting `network` where the other reports `unknown`.
+/// Pure, and mirrored case for case on Android: both platforms run one shared truth table, so a
+/// divergence fails a suite instead of surfacing as one platform reporting `network` where the other
+/// reports `unknown`.
 enum FastoryLoadFailureClassifier {
     /// Codes the resolvers mint themselves for outcomes the API never answers. They are internal
     /// markers, not API codes — they name the *shape* of a non-answer — so they become a reason and
@@ -74,7 +74,7 @@ enum FastoryLoadFailureClassifier {
 
     /// Transport failures: nothing answered. Enumerated rather than taken as the whole of
     /// `NSURLErrorDomain`, which also carries refusals that did get an answer — Android's error set
-    /// draws the same line, and the fixture is what keeps the two lists from drifting apart.
+    /// draws the same line, and a shared truth table keeps the two lists from drifting apart.
     private static let networkErrorCodes: Set<Int> = [
         NSURLErrorTimedOut,
         NSURLErrorCannotFindHost,

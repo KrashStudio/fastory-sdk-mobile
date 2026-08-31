@@ -201,6 +201,7 @@ final class FastoryHubViewController: UIViewController {
     }
 
     private func openHub(reusingPrewarmedPage: Bool = false) {
+        FastoryPerfSignposts.beginBootstrapWait()
         errorView.isHidden = true
         if !reusingPrewarmedPage || webView.isLoading {
             loadingIndicator.startAnimating()
@@ -209,12 +210,14 @@ final class FastoryHubViewController: UIViewController {
         // covers that round trip, and a rejected key lands on the same native error view as a
         // failed page load rather than on a blank webview.
         resolveHub { [weak self] result in
+            FastoryPerfSignposts.endBootstrapWait()
             guard let self else { return }
             switch result {
             case .success(let hub):
                 self.resolvedFanzoneSlug = hub.fanzoneSlug
                 self.announce(self.load.identify())
                 guard !reusingPrewarmedPage else { return }
+                FastoryPerfSignposts.beginHubLoad()
                 self.webView.load(URLRequest(url: hub.url))
             case .failure(let error):
                 // The exchange's own `code` is what § 2.5 requires a host to branch on, and it was
@@ -302,6 +305,7 @@ extension FastoryHubViewController: WKNavigationDelegate {
         if navigationResponse.isForMainFrame,
            let httpResponse = navigationResponse.response as? HTTPURLResponse,
            httpResponse.statusCode >= 400 {
+            FastoryPerfSignposts.endHubLoad()
             decisionHandler(.cancel)
             reportFailure(reason: .rejected, statusCode: httpResponse.statusCode)
             return
@@ -314,6 +318,7 @@ extension FastoryHubViewController: WKNavigationDelegate {
     /// every sub-resource. A page that 404s or never connects never commits, which is precisely
     /// what keeps `hubOpened` off it (SPEC § 9.1).
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        FastoryPerfSignposts.endHubLoad()
         announce(load.commit())
     }
 
@@ -327,10 +332,12 @@ extension FastoryHubViewController: WKNavigationDelegate {
         didFailProvisionalNavigation navigation: WKNavigation!,
         withError error: Error
     ) {
+        FastoryPerfSignposts.endHubLoad()
         handleLoadFailure(error)
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        FastoryPerfSignposts.endHubLoad()
         handleLoadFailure(error)
     }
 

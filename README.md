@@ -1,7 +1,7 @@
 # Fastory Mobile SDK — Integration Guide
 
 Audience: host app engineering teams integrating the SDK.
-Scope: Fastory Mobile SDK v0.4.1 (ultra-light, WebView-based).
+Scope: Fastory Mobile SDK v0.4.2 (ultra-light, WebView-based).
 
 Two ways to consume it, same behavior and same version:
 
@@ -68,7 +68,7 @@ dependencies:
     git:
       url: https://github.com/KrashStudio/fastory-sdk-mobile
       path: flutter/fastory_sdk
-      ref: sdk-v0.4.1
+      ref: sdk-v0.4.2
 ```
 
 Then:
@@ -83,7 +83,7 @@ In Xcode: *File > Add Package Dependencies…*, enter `https://github.com/KrashS
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/KrashStudio/fastory-sdk-mobile.git", .upToNextMinor(from: "0.4.1"))
+    .package(url: "https://github.com/KrashStudio/fastory-sdk-mobile.git", .upToNextMinor(from: "0.4.2"))
 ]
 ```
 
@@ -391,7 +391,7 @@ What to know:
   on Android an equal `configure()` leaves the previous failure readable until the new exchange
   answers, so an open that starts inside that window is answered from it and the recovery lands on
   the one after. Re-configure from the handler, then let the fan open again when they choose to.
-  Tracked as FASTORY-2904; `SPEC.md` § 9 and § 2.1 carry the normative version.
+  A fix is planned on our side; `SPEC.md` § 9 and § 2.1 carry the normative version.
 - **You will not get noise.** A failed image or XHR inside a page is not reported, and neither are the
   navigation cancellations the SDK performs itself every time it routes a game or an external link.
   One failed load is one event.
@@ -583,23 +583,23 @@ one of them blocks you, rather than planning around a version number.
 - The SDK never retries a failed load by itself. It shows an error view with Retry and reports the
   failure (`FastorySurfaceLoadFailed`); any automatic retry policy is yours to implement. **And that
   Retry does not re-run a refused publishable-key exchange** — see *When a surface does not load*
-  above for the shape and the workaround (FASTORY-2904).
+  above for the shape and the workaround. A fix is planned on our side.
 - **Two build-time warnings you will see and can ignore, on the Flutter channel.** Neither breaks the
   build and neither has a workaround on your side:
   - `flutter build apk` prints *"Your app uses the following plugins that apply Kotlin Gradle Plugin
     (KGP): fastory_sdk … upgrade to a version that supports Built-in Kotlin"*. Flutter has dated the
-    deprecation; the plugin will move before it becomes an error (FASTORY-2987).
+    deprecation; the plugin will move before it becomes an error.
   - `flutter build ios` prints *"Plugin fastory_sdk does not have Swift Package Manager support for
     ios"* and falls back to CocoaPods, which succeeds. This is about the **plugin's** iOS side only —
-    the native Swift channel described under *Install* is a real SwiftPM package and resolves normally
-    (FASTORY-2939).
+    the native Swift channel described under *Install* is a real SwiftPM package and resolves
+    normally. A fix is planned on our side.
 - **One runtime console warning on iOS, also harmless.** Calling `openGames(from:)` from a SwiftUI
   tab-bar action logs `Unbalanced calls to begin/end appearance transitions for
   <SwiftUI.TabHostingController: …>` once — UIKit noticing that a presentation started while the tab
   transition was still settling. The hub opens, your selection stays where it was, and nothing else
-  is affected; presenting from a plain button does not produce it. Tracked as FASTORY-2988 (observed
-  on iOS 26.5). It is ours to fix, so you are not expected to do anything — though if the line
-  bothers your logs, deferring the call by one runloop tick
+  is affected; presenting from a plain button does not produce it (observed on iOS 26.5). It is ours
+  to fix, so you are not expected to do anything — though if the line bothers your logs, deferring
+  the call by one runloop tick
   (`DispatchQueue.main.async { Fastory.openGames(from: …) }`) lets the tab transition settle first.
   Worth knowing before you spend an afternoon on it.
 - Portrait and landscape are supported, but the hub content is designed mobile-first (portrait).

@@ -176,7 +176,7 @@ public enum Fastory {
 
     // MARK: - Identity
 
-    /// Binds the host app's user to a Fastory fan. See `docs/sdk/SPEC.md` § 2.6.
+    /// Binds the host app's user to a Fastory fan. See `SPEC.md` § 2.6.
     ///
     /// Non-blocking and non-throwing: every outcome arrives through `completion`, on the main
     /// thread. Only `.anonymous` resolves in this version; the two identified modes are reserved

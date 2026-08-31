@@ -5,9 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show PlatformException;
 
 // Shared structure across the three demo apps (iOS native, Android native, Flutter): same four
-// tabs, same console sections in the same order, same palette, same activity glyphs. The charter is
-// `docs/DEMO_APPS.md` in the development monorepo — an integrator comparing two of them must see
-// one product.
+// tabs, same console sections in the same order, same palette, same activity glyphs — someone
+// comparing two of them must see one product.
 const Color kClubNavy = Color(0xFF0D2147);
 const Color kClubGreen = Color(0xFF29C770);
 const Color kClubBar = Color(0xFF091834);
@@ -16,8 +15,8 @@ const Color kClubRed = Color(0xFFE5484D);
 // The one deliberate difference between the three: a screenshot without it is unattributable.
 const String kClubPlatform = 'Flutter';
 
-// Stamped from the plugin's pubspec.yaml by tools/sync_cores.py — never edit it by hand.
-const String kDeclaredSdkVersion = '0.4.1';
+// Generated from the plugin's pubspec.yaml — never edit it by hand.
+const String kDeclaredSdkVersion = '0.4.2';
 
 // Pointing the demo at a real fanzone needs a real publishable key, and a key must
 // never reach a commit. Run with `--dart-define-from-file=fastory.local.json` (that
@@ -48,19 +47,19 @@ const String kGlyphFailure = '✕';
 const String kRevokedBridgeReply = 'revoked by the SDK — set it again';
 
 /// One `identify` mode as the console offers it. The two identified modes are reserved signatures —
-/// declared, final, and not shipped — so each carries the ticket that will land it and its control
-/// is disabled rather than absent: an absent control reads as an oversight, a disabled one with a
-/// ticket reads as a decision.
+/// declared, final, and not shipped — so each says why it cannot be called and its control is
+/// disabled rather than absent: an absent control reads as an oversight, a disabled one with a
+/// reason reads as a decision.
 class IdentityModeOption {
   const IdentityModeOption({
     required this.identity,
     required this.label,
-    this.blockedBy,
+    this.available = true,
   });
 
   final FastoryIdentity identity;
   final String label;
-  final String? blockedBy;
+  final bool available;
 }
 
 const List<IdentityModeOption> kIdentityModes = <IdentityModeOption>[
@@ -68,12 +67,12 @@ const List<IdentityModeOption> kIdentityModes = <IdentityModeOption>[
   IdentityModeOption(
     identity: FastoryFanId(),
     label: 'fanId',
-    blockedBy: 'FASTORY-2862',
+    available: false,
   ),
   IdentityModeOption(
     identity: FastoryHostToken(kSampleHostTokenJwt),
     label: 'hostToken',
-    blockedBy: 'FASTORY-2861',
+    available: false,
   ),
 ];
 
@@ -172,8 +171,8 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  // Four destinations and one action, in the charter's order. Games sits between them because that
-  // is where a fan looks for it, not because it is a screen.
+  // Four destinations and one action, in the order the three demos share. Games sits between them
+  // because that is where a fan looks for it, not because it is a screen.
   static const int _gamesIndex = 2;
 
   int _currentIndex = 0;
@@ -248,7 +247,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
 /// The SDK tab, and the reason the demo exists: every public method has a control here and every
 /// piece of state the SDK hands back is on screen, never only in the platform log. Sections keep the
-/// charter's order — a developer scrolling this after the iOS app should not have to hunt.
+/// order the three demos share — a developer scrolling this after the iOS app should not have to hunt.
 ///
 /// It owns the SDK interaction as well as the display, so a call, its outcome and its failure all
 /// land in the one log a tester reads. A real host app configures once from `main()` instead — see
@@ -326,8 +325,8 @@ class SdkConsoleState extends State<SdkConsole> {
         // A surface that did not load lands in Last error with a machine-readable code, which is
         // the whole point of the event: before 0.4.0 a revoked key, an undeclared application
         // identifier and a phone in a tunnel all produced the same native error view and left that
-        // section at `none`. It stays logged with the event glyph — `docs/DEMO_APPS.md` reserves
-        // `✕` for a *call or result* that failed.
+        // section at `none`. It stays logged with the event glyph: `✕` is reserved for a *call or
+        // result* that failed.
         case FastorySurfaceLoadFailed(:final surface):
           _lastFailure = SdkFailure(
             call: '${surface.name} load',
@@ -340,7 +339,7 @@ class SdkConsoleState extends State<SdkConsole> {
   }
 
   /// The API's own code when there is one, the reason otherwise. Both are machine-readable, which
-  /// is what `docs/DEMO_APPS.md` asks Last error to carry — never a sentence.
+  /// is what Last error carries — never a sentence.
   static String _failureCode(FastorySurfaceLoadFailed event) =>
       event.code ?? event.reason.name;
 
@@ -558,9 +557,9 @@ class SdkConsoleState extends State<SdkConsole> {
             _ValueLine(label: 'configured', value: _configured ? 'yes' : 'no'),
             const _ActionRow(
               children: <Widget>[
-                // Present and disabled with the reason on screen, per docs/DEMO_APPS.md: the two
-                // native consoles have this control, and an absent section reads as an oversight
-                // while a disabled one reads as a decision.
+                // Present and disabled with the reason on screen: the two native consoles have
+                // this control too, and an absent section reads as an oversight while a disabled one
+                // reads as a decision.
                 _Action(label: 'configure() off the main thread', onPressed: null),
               ],
             ),
@@ -639,10 +638,10 @@ class SdkConsoleState extends State<SdkConsole> {
               children: <Widget>[
                 for (final IdentityModeOption mode in kIdentityModes)
                   _Action(
-                    label: mode.blockedBy == null
+                    label: mode.available
                         ? mode.label
-                        : '${mode.label} · ${mode.blockedBy}',
-                    onPressed: _busy || mode.blockedBy != null
+                        : '${mode.label} · not yet available',
+                    onPressed: _busy || !mode.available
                         ? null
                         : () => unawaited(_identify(mode)),
                   ),
@@ -654,7 +653,7 @@ class SdkConsoleState extends State<SdkConsole> {
             ),
             const _Hint(
               'The two identified modes are declared with their final signature and are not '
-              'shipped, so their control is disabled and labelled with the ticket that lands it.',
+              'shipped, so their control is present and disabled rather than absent.',
             ),
           ],
         ),

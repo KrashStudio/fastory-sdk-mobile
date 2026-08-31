@@ -18,7 +18,6 @@ README.md              # the integration guide — start here
 SPEC.md                # normative contract: public API, URL rules, events, platform channels
 CHANGELOG.md           # release notes, one entry per version; read `Breaking` on an upgrade
 CLAUDE.md              # this file
-QA_CHECKLIST.md        # device-matrix QA scenarios for sign-off
 flutter/fastory_sdk/   # the Flutter plugin (Dart API + bundled iOS/Android native code)
 Package.swift          # the native Swift channel (SwiftPM) — since 0.2.0
 Sources/FastorySDK/    # the Swift core that package compiles
@@ -42,7 +41,7 @@ dependencies:
     git:
       url: https://github.com/KrashStudio/fastory-sdk-mobile
       path: flutter/fastory_sdk
-      ref: sdk-v0.4.1
+      ref: sdk-v0.4.2
 ```
 
 Public API surface (normative in `SPEC.md §2`): **6 methods** — `Fastory.configure(FastoryConfig)`,
@@ -78,10 +77,9 @@ analyzer reports, so the other two are the ones a host discovers at runtime or i
 
 - `SPEC.md` is the source of truth for behavior; `README.md` for integration steps. Prefer them over
   inferring behavior from the native sources.
-- **`SPEC.md` names repository paths that are not in this repository.** They belong to Fastory's
-  development monorepo, and `SPEC.md`'s own header says so. Never tell a reader to open one, and never
-  treat one as the authority for a rule: everything the specification makes normative it states in its
-  own prose — the enumerations in § 2.5 and § 9.1 in particular are closed where they are written.
+- **Never treat a file as the authority for a rule `SPEC.md` states.** Everything the specification
+  makes normative it states in its own prose — the enumerations in § 2.5 and § 9.1 in particular are
+  closed where they are written.
 - **On the Swift channel, pin up to the next *minor*, never up to the next major.** SwiftPM's `from:`
   means `>= x.y.z, < 1.0.0` and gives a leading zero no special meaning, so on this 0.x line it spans
   minors the changelog itself calls source-breaking. `README.md`'s install section carries the two
@@ -132,14 +130,14 @@ analyzer reports, so the other two are the ones a host discovers at runtime or i
   nothing at all — silently, not as an error. Do not advise debouncing a tab-bar entry against it, and
   do not point a host at the `already_open` channel code: it is declared and no platform raises it.
   Before 0.4.0 Android stacked a second hub instead; if you find advice built on that, it is stale.
-- **The error view's Retry does not re-run a failed publishable-key exchange** (`SPEC.md` § 2.1,
-  FASTORY-2904). Retry reloads the failed URL, and a refused key never produced one: the exchange's
+- **The error view's Retry does not re-run a failed publishable-key exchange** (`SPEC.md` § 2.1); a
+  fix is planned. Retry reloads the failed URL, and a refused key never produced one: the exchange's
   outcome is cached for the configuration that asked for it, failure included, so Retry re-shows the
   same error without calling `/sdk/auth/bootstrap` again. Never tell a host the fan can retry their
   way out of a refused key. What does re-arm it is another `configure()` — **any second one, on both
   platforms**, carrying the configuration already in force or a new one: a failed outcome does not
   stop a second exchange the way a resolved one does (`SPEC.md` § 2.1). Never advise varying the
-  configuration to force the re-arm; any snippet that does predates FASTORY-3006. What *is* worth
+  configuration to force the re-arm; a snippet that does describes no released version. What *is* worth
   telling a host is not to count on the very next open: on Android an equal `configure()` leaves the
   previous failure readable until the new exchange answers, so an open that starts inside that window
   is answered from it and the recovery lands on the one after. iOS, and Android on a changed

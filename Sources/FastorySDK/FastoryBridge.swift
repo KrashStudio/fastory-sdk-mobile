@@ -22,8 +22,7 @@ struct FastoryBridgeRequest {
 /// cannot name a type outside it — the compiler refuses before anything reaches the page.
 public enum FastoryBridgeRequestType: String, CaseIterable, Sendable {
     /// The stories-origin fan token a game asks its host page for. In an SDK WebView the game *is*
-    /// the top-level document, so there is no host page and the native side answers in its place
-    /// (`docs/SPIKE_SESSION_TRANSFER.md`, leg B).
+    /// the top-level document, so there is no host page and the native side answers in its place.
     case userToken = "fastory:user-token"
 }
 
@@ -35,13 +34,13 @@ enum BridgeEnvelope {
     /// Bumped only with a coordinated web + SDK release; a mismatch is ignored, never coerced.
     static let version = 1
 
-    /// The allow-list, so the web side can ship a new type against an older SDK. Mirrored on the two
-    /// other platforms and pinned by the fixture's `registry` — adding a type here alone fails a test
-    /// instead of dropping it silently for the platforms that were missed.
+    /// The allow-list, so the web side can ship a new type against an older SDK. The three platforms
+    /// hold the same set — adding a type here alone fails a test instead of dropping it silently for
+    /// the platforms that were missed.
     static let knownTypes: Set<String> = ["fastory:ready"]
 
-    /// The types the native side can be *asked* to answer (SPEC §13.8.3), pinned by the fixture's
-    /// `requestRegistry`. Disjoint from `knownTypes` on purpose: a request is never delivered to the
+    /// The types the native side can be *asked* to answer (SPEC §13.8.3), held on the three
+    /// platforms alike. Disjoint from `knownTypes` on purpose: a request is never delivered to the
     /// host as an event, and an event type is never answerable — so neither channel can be used to
     /// reach the other's surface.
     static let requestTypes: Set<String> = Set(FastoryBridgeRequestType.allCases.map(\.rawValue))
