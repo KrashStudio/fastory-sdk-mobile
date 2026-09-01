@@ -1,17 +1,16 @@
 # fastory_sdk_example
 
-The Flutter demo app, one of the SDK's three: a dark club app whose bottom bar carries **Home ·
-Calendar · Games · SDK · Profile**. Home, Calendar and Profile are decorative — they exist so the SDK
-is exercised inside something shaped like a real app rather than a button on a blank screen.
+The SDK's Flutter demo app: a dark club app whose bottom bar carries **Home · Calendar · Games ·
+SDK · Profile**. Home, Calendar and Profile are decorative — they exist so the SDK is exercised
+inside something shaped like a real app rather than a button on a blank screen.
 
 **Games is an action, not a destination.** Tapping it opens the hub over the current tab and the
 selection never moves, so there is no intermediate screen and closing the hub lands back where you
 were. It is the entry a fan would use; the *SDK* tab is the one a developer uses.
 
 **The SDK tab is the reason the demo exists.** Every public method has a control in it and every
-piece of state the SDK hands back is on screen, so the whole surface can be exercised without
-editing a source file. The three demos share one structure — same tabs, same sections in the same
-order, same activity glyphs.
+piece of state the SDK hands back is on screen, so the whole public API can be exercised without
+editing a source file.
 
 ## The SDK tab
 
@@ -26,15 +25,15 @@ order, same activity glyphs.
 | **Last error** | the most recent failure, as its machine-readable code | The code is what a host branches on, so the code is what is shown |
 | **Activity** | the running log | The only place the *ordering* of calls, results and events is visible |
 
-Activity glyphs, identical on the three demos: `→` call · `↩` result · `←` event · `✕` failure.
+Activity glyphs: `→` call · `↩` result · `←` event · `✕` failure.
 
 A refused call never takes the app down — it lands in *Last error* with its code and in the log
 as a `✕` line.
 
 ## Version
 
-The version in `pubspec.yaml` and the `kDeclaredSdkVersion` constant shown in *Runtime* are both
-generated, so the SDK version the console reports is always the one this package ships.
+The version in `pubspec.yaml` and the `kDeclaredSdkVersion` constant shown in *Runtime* always match
+the version this package ships, so the console never reports a stale one.
 
 ## Unversioned native runners
 

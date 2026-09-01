@@ -152,6 +152,15 @@ object Fastory {
     }
 
     /**
+     * The fan asked again from the error view (SPEC § 9). Kept apart from [resolveHub] so that only
+     * this caller can discard a remembered failure — [WorkspaceResolver.rearmAfterFailure] carries
+     * why that separation matters. A no-op on the deprecated slug path, where nothing is exchanged.
+     */
+    internal fun retryHubResolution() {
+        WorkspaceResolver.rearmAfterFailure()
+    }
+
+    /**
      * Resolves the hub URL and the fanzone slug — [FastoryEventsListener.onHubOpened] carries it.
      * Immediate on the deprecated slug path; on the publishable key path it waits for
      * `/sdk/auth/bootstrap`, which [configure] already started.

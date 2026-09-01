@@ -91,8 +91,8 @@ class FastoryIdentifyException(
  * is `httpOnly`. Erasing by name is the only way to reach it — which is also why iOS keeps the same
  * declared list, so the two platforms behave identically.
  *
- * A shared truth table holds the two platforms to the same list — a name one platform expires and
- * the other does not is a fan who survives a logout on one of them.
+ * Both platforms declare the same list — a name one platform expires and the other does not is a
+ * fan who survives a logout on one of them.
  */
 internal object FastoryIdentityStorage {
     val cookieNames: List<String> = listOf(

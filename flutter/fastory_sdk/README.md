@@ -5,7 +5,7 @@ Flutter plugin of the Fastory Mobile SDK. It opens a Fanzone's games hub in a fu
 browser. The real logic is native — this package is a thin bridge over the same Swift and Kotlin cores
 the native channels ship.
 
-Scope: Fastory Mobile SDK v0.4.2 (ultra-light, WebView-based).
+Scope: Fastory Mobile SDK v0.4.3 (ultra-light, WebView-based).
 
 This file is the Dart reference: every method, event and error the plugin exposes. `README.md` at the
 repository root is the full integration guide (it also covers the native iOS channel), and `SPEC.md`
@@ -33,7 +33,7 @@ dependencies:
     git:
       url: https://github.com/KrashStudio/fastory-sdk-mobile
       path: flutter/fastory_sdk
-      ref: sdk-v0.4.2
+      ref: sdk-v0.4.3
 ```
 
 ## Upgrading from 0.3.0: three source breaks
@@ -190,14 +190,14 @@ SDK sends no analytics of its own — you own all tracking through this stream.
 ## When a surface does not load (since 0.4.0)
 
 A fanzone that does not exist, a key you revoked, a game that was taken down, a fan in a tunnel: the
-SDK shows its own error screen with a Retry button — the game sheet has one too since this release —
+SDK shows its own error screen with a Retry button — the game sheet has one too since 0.4.0 —
 and tells your app what happened.
 
 - **`surface`** is `FastorySurface.hub` or `FastorySurface.game`.
 - **`reason`** is what you branch on. `FastoryLoadFailureReason.rejected` — something answered and
   refused. `FastoryLoadFailureReason.network` — nothing answered: no connection, DNS, timeout.
   `FastoryLoadFailureReason.unknown` — everything else. Three cases on purpose, so "is Fastory
-  reachable?" does not make you enumerate every code we may add later.
+  reachable?" is one branch rather than a match over the codes below.
 - **`code`** is non-null only when your publishable key was refused, and it is the field worth
   alerting on — a configuration problem, not a flaky connection. Branch on the code, never on a
   message. Only six things can appear there — five names and the `http_<status>` family. Four of the
@@ -206,9 +206,10 @@ and tells your app what happened.
   no longer exists, so an app already in the field can meet it), `sdk_key_revoked` (403 — the key
   existed and was withdrawn), `sdk_application_not_allowed` (403 — this bundle identifier / package
   name is not declared on the key) and `sdk_rate_limited` (429 — **not always transient**: repeated
-  sanctions escalate to an address block with no expiry that only we can lift, so back off rather
-  than retry in a loop). **The other two the SDK mints**, so that a refusal is never reported as a
-  blank: `http_<status>` when the refusal named no code of its own, and `sdk_application_id_required`
+  sanctions escalate to an address block with no expiry that is lifted only on request — ask your
+  Fastory contact — so back off rather than retry in a loop). **The other two the SDK mints**, so that
+  a refusal is never reported as a blank: `http_<status>` when the refusal named no code of its own,
+  and `sdk_application_id_required`
   when the SDK could not read your app's identifier at all and had no well-formed request to send
   (iOS only in practice — an Android package name always exists).
 
@@ -225,21 +226,23 @@ and tells your app what happened.
   `FastoryHubOpened` as a session, a hub that never loaded is not one.
 - **The SDK never retries by itself**, and it never reports the same failed load twice. Cancellations
   it performs itself when routing a game or an external link are not failures and are not reported.
-- **Retry does not recover a refused publishable key**, and a fix is planned. It reloads the page
-  that failed, and a key the API refused never produced one: the exchange's outcome is remembered for the
-  configuration that asked for it, failure included, so Retry re-shows the same error without calling
-  the API again. A page that failed on its own reloads normally, and so does everything on the
-  deprecated `fanzoneSlug` path. To recover from a transient failure of the exchange, call
-  `Fastory.configure()` again from your `FastorySurfaceLoadFailed(surface: FastorySurface.hub)`
-  handler — **any second call re-arms it, on both platforms**, with the configuration already in
-  force or a new one. You do not have to vary it to force the retry. What you cannot count on is the
-  very next open: on Android an equal `configure()` leaves the previous failure readable until the
-  new exchange answers, so an open that starts inside that window is answered from it and the
-  recovery lands on the one after.
+- **Retry recovers a refused publishable key too**, since 0.4.3. It used to be the one place the
+  button fell short: Retry reloaded the page that failed, a key we refused had never produced one,
+  and the fan stayed stuck until they killed the app. The button now re-runs the key exchange, so a
+  fan who lost signal at launch taps Retry and the hub opens — no `Fastory.configure()` call from you,
+  and no restart. A page that failed on its own reloads normally, and so does everything on the
+  deprecated `fanzoneSlug` path.
+- **The codes worth alerting on are unchanged by that.** `sdk_key_unknown`, `sdk_key_revoked` and
+  `sdk_application_not_allowed` refuse the second exchange exactly as they refused the first, so no
+  amount of tapping gets the fan in. Retry recovers a bad minute on the network, not a configuration
+  we have refused.
+- **`sdk_rate_limited` is the exception: Retry does not even ask again**, because that code's sanction
+  counts requests from your users' address rather than from your key, and a third one blocks the
+  address with no expiry. The error view stays and no request leaves the device.
 
 ## Identity (since 0.4.0)
 
-One method, three mutually-exclusive modes, plus a sign-out. **This surface is final** — the two modes
+One method, three mutually-exclusive modes, plus a sign-out. **This API is final** — the two modes
 that do not resolve yet are declared with their real signatures, so adopting them later is not a
 breaking change for you.
 

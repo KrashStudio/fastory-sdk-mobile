@@ -232,10 +232,15 @@ final class FastoryHubViewController: UIViewController {
     /// A retry may open the hub the first load could not, so the failure it follows is cleared —
     /// otherwise the surface stays permanently unable to announce itself.
     ///
+    /// Configured by key there is no loaded URL to reload, so what has to run again is the exchange
+    /// (§ 9) — and it does not restart on its own: `FastoryWorkspaceResolver.rearmAfterFailure`
+    /// carries why, and which refusals it declines to re-arm.
+    ///
     /// Internal rather than private so a suite can drive the error view's own button: the view is
     /// built in code, and reaching it through a tap would need the hub actually presented.
     func retryHub() {
         load.restart()
+        Fastory.retryHubResolution()
         openHub()
     }
 

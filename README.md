@@ -1,7 +1,7 @@
 # Fastory Mobile SDK — Integration Guide
 
 Audience: host app engineering teams integrating the SDK.
-Scope: Fastory Mobile SDK v0.4.2 (ultra-light, WebView-based).
+Scope: Fastory Mobile SDK v0.4.3 (ultra-light, WebView-based).
 
 Two ways to consume it, same behavior and same version:
 
@@ -68,7 +68,7 @@ dependencies:
     git:
       url: https://github.com/KrashStudio/fastory-sdk-mobile
       path: flutter/fastory_sdk
-      ref: sdk-v0.4.2
+      ref: sdk-v0.4.3
 ```
 
 Then:
@@ -83,7 +83,7 @@ In Xcode: *File > Add Package Dependencies…*, enter `https://github.com/KrashS
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/KrashStudio/fastory-sdk-mobile.git", .upToNextMinor(from: "0.4.2"))
+    .package(url: "https://github.com/KrashStudio/fastory-sdk-mobile.git", .upToNextMinor(from: "0.4.3"))
 ]
 ```
 
@@ -99,7 +99,7 @@ No extra native setup is required beyond the minimum OS versions above (iOS depl
 
 Everything specified since 0.3.0 ships as 0.4.0, so all three arrive in one upgrade. Nothing else in this release asks anything of you.
 
-**1. Dart: `FastoryEvent` gains three subtypes.** It is `sealed`, so an exhaustive `switch` with **no** `default:` stops compiling until you add a case for **all three** — `FastoryBridgeMessage`, `FastoryIdentityResolved` and `FastorySurfaceLoadFailed`. See *Events* below. The two native surfaces are unaffected — each new callback has a no-op default, so an existing delegate or listener keeps compiling.
+**1. Dart: `FastoryEvent` gains three subtypes.** It is `sealed`, so an exhaustive `switch` with **no** `default:` stops compiling until you add a case for **all three** — `FastoryBridgeMessage`, `FastoryIdentityResolved` and `FastorySurfaceLoadFailed`. See *Events* below. The two native API surfaces are unaffected — each new callback has a no-op default, so an existing delegate or listener keeps compiling.
 
 **2. Android: an `androidx.webkit` dependency and a WebView floor.** The reply channel needs the one Android API that reports which frame posted a message and from which origin, because a reply carries a fan credential. Below that API (Chrome 85, mid-2020) the reply channel is simply absent and the surface stays anonymous. Nothing to change in your code. See *Known limitations*.
 
@@ -137,7 +137,8 @@ import 'package:fastory_sdk/fastory_sdk.dart';
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   Fastory.configure(const FastoryConfig(
-    publishableKey: 'fpk_live_...',
+    publishableKey: 'fpk_test_...',
+    environment: FastoryEnvironment.staging,   // see *Availability of the key exchange* above
     theme: FastoryTheme.dark,   // optional
     locale: 'fr-FR',            // optional
   ));
@@ -156,7 +157,7 @@ Configure at launch, then present from the view controller of your choice:
 import FastorySDK
 
 // In your App / AppDelegate:
-Fastory.configure(FastoryConfig(publishableKey: "fpk_live_...", theme: .dark))
+Fastory.configure(FastoryConfig(publishableKey: "fpk_test_...", environment: .staging, theme: .dark))
 
 // From your games tab or button:
 Fastory.openGames(from: presentingViewController)
@@ -176,7 +177,7 @@ The Swift API takes the presenter explicitly (`openGames(from:)`) and delivers l
 | `environment` | `FastoryEnvironment` | no (default `production`) | `production` (`https://fanzone.me`), `staging` (`https://staging.fanzone.me`), or `development` (uses `developmentBaseUrl`) |
 | `hubTabSlug` | `String` | no (default `"games"`) | The hidden hub tab slug |
 | `locale` | `String?` | no | Forwarded to the hub when provided; defaults to the web Fanzone's own locale resolution |
-| `developmentBaseUrl` | `String?` | only when `environment == development` | Custom `https` base URL for internal testing. Flutter only: `configure` refuses a `development` configuration without it. On the Swift channel the field does not exist — `FastoryEnvironment.development(baseURL:)` carries the URL, so a development environment without one cannot be written |
+| `developmentBaseUrl` | `String?` | only when `environment == development` | Custom `https` base URL, for testing against a Fanzone you serve yourself. Flutter only: `configure` refuses a `development` configuration without it. On the Swift channel the field does not exist — `FastoryEnvironment.development(baseURL:)` carries the URL, so a development environment without one cannot be written |
 
 Public methods:
 
@@ -244,7 +245,7 @@ Under the hood the plugin uses a `MethodChannel` named `fastory_sdk` (`configure
 
 ## Identity
 
-One method, three mutually-exclusive modes, plus a sign-out. **This surface is final** — the two modes
+One method, three mutually-exclusive modes, plus a sign-out. **This API is final** — the two modes
 that do not resolve yet are declared with their real signatures so that adopting them later is not a
 breaking change for you.
 
@@ -355,7 +356,7 @@ What to know:
 - **`surface` is `FastorySurface.hub` or `FastorySurface.game`** — which of the two did not load.
 - **Branch on `reason`, read `code` and `statusCode` for the cause.** `rejected` means something
   answered and refused; `network` means nothing answered; `unknown` is everything else. Three cases
-  on purpose, so "is Fastory reachable?" does not require you to enumerate every code we may add.
+  on purpose, so "is Fastory reachable?" is one branch rather than a match over the codes below.
 - **`code` appears only when your publishable key was refused**, and it is the one field worth
   alerting on: it means a configuration problem on your side or ours, not a flaky connection. Only
   six things can appear there: four names from our API, one the SDK mints, and the `http_<status>`
@@ -366,7 +367,7 @@ What to know:
   | `sdk_key_unknown` | 401 | We know no such key. Not only a typo in a build you never shipped: a key **deleted** in the back-office, and a workspace that no longer exists, both land here — so an app already in the field can meet it after a change it never saw. Ask us to re-issue a key; nothing in your app will fix it. |
   | `sdk_key_revoked` | 403 | The key existed and was withdrawn. A different back-office fact from the row above — keep them apart in your alerting, or a deleted key gets chased as a revoked one. |
   | `sdk_application_not_allowed` | 403 | The key is fine; this bundle identifier / package name is not declared on it. A debug build with an `applicationIdSuffix` is the usual cause. |
-  | `sdk_rate_limited` | 429 | Too many exchanges from this key or this address. **Back off — do not retry in a loop.** A single burst clears on its own, but the third sanction adds your address to a block list **with no expiry**, and every later exchange from it answers this same code until we lift it by hand. Looping is what earns the permanent form. Surface it rather than absorb it, and tell us if it persists. |
+  | `sdk_rate_limited` | 429 | Too many exchanges from this key or this address. **Back off — do not retry in a loop.** A single burst clears on its own, but the third sanction adds your address to a block list **with no expiry**, and every later exchange from it answers this same code until the block is lifted, which you ask your Fastory contact for. Looping is what earns the permanent form. Surface it rather than absorb it. |
 
   **The other two the SDK mints itself**, so that a refusal is never reported as a blank:
   `http_<status>` when the refusal named no code of its own (a proxy in front of our API, typically),
@@ -379,19 +380,27 @@ What to know:
 - **No opening event is emitted for a surface that failed**, and no closing event either. If you count
   `hubOpened` as a session, a failed hub is not one — and `hubOpened` … `hubClosed` still pair up.
 - **The SDK never retries by itself.** The fan has a Retry button; your app decides everything else.
-- **Retry does not recover a refused publishable key** — the one place the button falls short, so
-  plan around it rather than discovering it. Retry reloads the page that failed, and a key the API
-  refused never produced one: the SDK remembers the exchange's outcome for the configuration that
-  asked for it, failure included, and shows the same error again without calling the API twice. A page
-  that failed on its own (a 404, a connection dropped mid-load) *does* reload, and so does everything
-  on the deprecated `fanzoneSlug` path. To recover from a transient failure of the **exchange**, call
-  `configure()` again from your `FastorySurfaceLoadFailed(surface: hub)` handler — **any second call
-  re-arms it, on both platforms**, and the configuration you pass may be the one already in force.
-  You do not have to vary it to force the retry. **What you cannot count on is the very next open**:
-  on Android an equal `configure()` leaves the previous failure readable until the new exchange
-  answers, so an open that starts inside that window is answered from it and the recovery lands on
-  the one after. Re-configure from the handler, then let the fan open again when they choose to.
-  A fix is planned on our side; `SPEC.md` § 9 and § 2.1 carry the normative version.
+- **Retry recovers a refused publishable key too**, since 0.4.3. It used to be the one place the
+  button fell short: Retry reloaded the page that failed, a key we refused had never produced one,
+  and the fan was stuck until they killed the app. The button now re-runs the key exchange, so a fan
+  who lost signal at launch taps Retry and the hub opens — no `configure()` call from you, and no
+  restart. A page that failed on its own (a 404, a connection dropped mid-load) still reloads, and so
+  does everything on the deprecated `fanzoneSlug` path.
+- **What that does not change: every code in the table above is still worth alerting on.**
+  `sdk_key_unknown`, `sdk_key_revoked` and `sdk_application_not_allowed` refuse the second exchange
+  exactly as they refused the first, so the fan can tap Retry all afternoon without getting in — the
+  hub opens once one of us fixes the configuration, not because they persisted. Retry recovers a bad
+  minute on the network, never a key we have refused.
+- **`sdk_rate_limited` is the exception: Retry does not even ask us again.** The error view stays and
+  no request leaves the device. That code's sanction counts requests from your users' **address**, not
+  from your key — everyone behind one carrier NAT or one venue's wifi shares it, and a third sanction
+  blocks that address with no expiry. A button that re-asked would make the SDK the looping client the
+  table above tells you not to be. `SPEC.md` § 9 carries the normative version of all of this.
+- **If you call `configure()` again anyway** — behind your own error UI, say — that still re-runs a
+  failed exchange, on both platforms, with the configuration already in force. One caveat if you do:
+  on Android the previous failure stays readable until the new answer lands, so an open that starts
+  inside that window is answered from it and the recovery lands on the open after. Re-configure, then
+  let the fan open again when they choose to.
 - **You will not get noise.** A failed image or XHR inside a page is not reported, and neither are the
   navigation cancellations the SDK performs itself every time it routes a game or an external link.
   One failed load is one event.
@@ -485,7 +494,7 @@ Every navigation decision is made natively, per URL:
 
 | Rule | Condition | Decision |
 |---|---|---|
-| 1 | Origin = Fanzone base, **or** a Fastory stories domain (`https://story.tl` or `https://staging.story.tl` — both, whichever environment you configured) AND path starts with `/s/` | Open the game bottom sheet (WebView B) |
+| 1 | Origin = Fanzone base **or** a Fastory stories domain (`https://story.tl` or `https://staging.story.tl` — both, whichever environment you configured) — **and**, in either case, path starts with `/s/` | Open the game bottom sheet (WebView B) |
 | 2 | Origin = Fanzone base, any other path | Allow — navigate inside the current WebView |
 | 3 | Any other `http(s)` origin | Open in the system browser |
 | 4 | Non-`http(s)` scheme (`mailto:`, `tel:`, `intent:`, `market:`, …) | Hand off to the system (external) |
@@ -547,7 +556,7 @@ It is intentionally ultra-light: Dart plugin glue plus thin native view controll
 The SDK displays the partner's own web content (your Fanzone) in a WebView, with no payments, no OAuth, no account creation, and no downloadable code beyond regular web pages. This is standard partner-content embedding. Prize-based games remain subject to the usual App Store Review Guidelines on contests (the contest organizer is the partner/Fastory, not Apple — state this in your contest rules as usual).
 
 **Which environments exist?**
-Production (`https://fanzone.me`) and staging (`https://staging.fanzone.me`). A development environment with a configurable base URL (`developmentBaseUrl`) is available for internal testing.
+Production (`https://fanzone.me`) and staging (`https://staging.fanzone.me`). A development environment takes a base URL of your own (`developmentBaseUrl`), for testing against a Fanzone you serve yourself.
 
 **Which hosts does the SDK contact? (network allow-lists)**
 Three kinds, and the API one is the one people miss:
@@ -581,9 +590,9 @@ one of them blocks you, rather than planning around a version number.
 - On Android the reply channel needs a WebView from Chrome 85 (mid-2020) or later. Below that it is
   simply absent and surfaces stay anonymous; nothing else about the SDK is affected.
 - The SDK never retries a failed load by itself. It shows an error view with Retry and reports the
-  failure (`FastorySurfaceLoadFailed`); any automatic retry policy is yours to implement. **And that
-  Retry does not re-run a refused publishable-key exchange** — see *When a surface does not load*
-  above for the shape and the workaround. A fix is planned on our side.
+  failure (`FastorySurfaceLoadFailed`); any automatic retry policy is yours to implement. The fan's
+  Retry does re-run a refused publishable-key exchange, since 0.4.3 — see *When a surface does not
+  load* above for what it recovers and what it cannot.
 - **Two build-time warnings you will see and can ignore, on the Flutter channel.** Neither breaks the
   build and neither has a workaround on your side:
   - `flutter build apk` prints *"Your app uses the following plugins that apply Kotlin Gradle Plugin

@@ -19,6 +19,17 @@ public enum FastoryBootstrapError: Error, Equatable, Sendable, CustomStringConve
         }
     }
 
+    /// Whether a retry must not send a second exchange on this failure.
+    ///
+    /// One code only, and it is not an optimisation: § 2.5 requires that `sdk_rate_limited` not be
+    /// presented as transient, and its sanction ladder counts requests from the caller's address.
+    /// Every other refusal costs one request per tap, which is the fan's own business — this one
+    /// costs everyone behind the same address a block with no expiry.
+    var forbidsRetry: Bool {
+        guard case .rejected(let code) = self else { return false }
+        return code == FastoryLoadFailureClassifier.rateLimitedCode
+    }
+
     /// The failure as a single code, which is the shape Android's resolver already produces and the
     /// one `FastoryLoadFailureClassifier` reads on both platforms. The two synthesised codes name
     /// outcomes the API never answers, and the classifier turns them back into a reason rather than
@@ -56,6 +67,11 @@ final class FastoryWorkspaceResolver {
     static let keyHeader = "x-fastory-publishable-key"
     static let applicationHeader = "x-fastory-application-id"
 
+    /// How long the exchange waits before it is declared failed. Set explicitly rather than left to
+    /// `URLSession`'s 60 s default, which was four times Android's and made the same dead network
+    /// two very different waits for the fan depending on the phone they held.
+    static let exchangeTimeout: TimeInterval = 15
+
     private enum State {
         case idle
         case resolving
@@ -84,21 +100,57 @@ final class FastoryWorkspaceResolver {
     /// applications it was created with, so this must match what the workspace declared.
     var applicationId: () -> String? = { Bundle.main.bundleIdentifier }
 
+    /// Drops everything this resolver holds — and **answers** the waiters rather than forgetting
+    /// them, which is the part that is not housekeeping.
+    ///
+    /// A waiter is a surface sitting on its loading state with nothing else to hear back from: a hub
+    /// whose completion is discarded keeps spinning with its error view hidden, so the fan can
+    /// neither see what happened nor press Retry again, and the host is told nothing either. The
+    /// window is real because `configure` resets on the caller's schedule, not on the exchange's,
+    /// and it widened the day Retry started parking a waiter of its own. Reported as unreachable:
+    /// the exchange never answered, which is what § 9.1's `network` row describes, and it leaves the
+    /// surface recoverable.
+    ///
+    /// State first, waiters after, so a callback coming back through `whenResolved` finds this
+    /// resolver already clean rather than half-reset.
     func reset() {
         state = .idle
         stateConfig = nil
+        let abandoned = waiters
         waiters.removeAll()
+        abandoned.forEach { $0(.failure(.unreachable)) }
     }
 
     /// Drops an outcome that belongs to a configuration no longer being asked about. Keeping the
     /// stamped one for an equal configuration is **not** what decides whether a new exchange goes
     /// out: `resolve` moves `.failed` to `.resolving`, so a cached failure re-arms on an equal
-    /// `configure` too, on both platforms — that is § 9's escape hatch, and it does not pass through
-    /// here. What an equal configuration really keeps is a cached *success*, which `configure`
-    /// discards anyway on this platform by calling `reset()` unconditionally (§ 2.1).
+    /// `configure` too, on both platforms. What an equal configuration really keeps is a cached
+    /// *success*, which `configure` discards anyway on this platform by calling `reset()`
+    /// unconditionally (§ 2.1).
     private func discardOutcomeFromAnotherConfiguration(_ config: FastoryConfig) {
         guard let stateConfig, stateConfig != config else { return }
         reset()
+    }
+
+    /// Re-arms a cached **failure** so the next resolution sends a new request — the fan pressing
+    /// Retry on the error view, and nothing else (§ 9).
+    ///
+    /// The distinction this draws is the whole point. `whenResolved` hands a cached outcome straight
+    /// back to every ordinary caller, which is what keeps a re-configure that changed nothing from
+    /// paying for a round trip (§ 2.1); an explicit retry is the one caller that is asking for the
+    /// opposite. Only `.failed` moves: a resolved workspace stays resolved, and an exchange already
+    /// in flight is left to land, so a fan tapping Retry twice still sends one request.
+    ///
+    /// **And one refusal is never re-armed**, which is the difference between a button and a loop.
+    /// `sdk_rate_limited` is the one code § 2.5 forbids presenting as transient, and its sanction
+    /// escalates on the caller's *address* — shared by everyone behind one CGNAT or one stadium's
+    /// wifi — until a third one blocks it with no expiry. A refusal answers in milliseconds, so the
+    /// button is back under the fan's thumb at once: honouring the tap here is precisely how the SDK
+    /// would become the looping client § 2.5 tells a host not to write. The error view stays and
+    /// nothing leaves the device.
+    func rearmAfterFailure() {
+        guard case .failed(let error) = state, !error.forbidsRetry else { return }
+        state = .idle
     }
 
     /// Starts the exchange if it has not run for this configuration yet.
@@ -120,6 +172,7 @@ final class FastoryWorkspaceResolver {
 
         var request = URLRequest(url: config.environment.bootstrapURL)
         request.httpMethod = "POST"
+        request.timeoutInterval = Self.exchangeTimeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(key, forHTTPHeaderField: Self.keyHeader)
         request.setValue(applicationId, forHTTPHeaderField: Self.applicationHeader)

@@ -26,7 +26,12 @@ internal object WorkspaceResolver {
     // Spelled exactly as the API declares them in validate_publishable_key.ts.
     private const val KEY_HEADER = "x-fastory-publishable-key"
     private const val APPLICATION_HEADER = "x-fastory-application-id"
-    private const val TIMEOUT_MS = 15_000
+    /**
+     * How long the exchange waits before it is declared failed. The same number on both native
+     * platforms, deliberately: left to each one's own default it was 15 s here and 60 s on iOS, so
+     * the same dead network kept the fan waiting four times longer depending on the phone.
+     */
+    internal const val EXCHANGE_TIMEOUT_MS = 15_000
 
     internal data class Workspace(val id: String, val slug: String)
 
@@ -60,25 +65,65 @@ internal object WorkspaceResolver {
     internal var performRequest: (String, String, String) -> Pair<Int, String?> =
         { url, key, appId -> httpPost(url, key, appId) }
 
+    /**
+     * Drops everything this resolver holds — and **answers** the waiters rather than forgetting
+     * them, which is the part that is not housekeeping.
+     *
+     * A waiter is a surface sitting on its loading state with nothing else to hear back from: a hub
+     * whose callback is discarded keeps its progress bar up with its error view hidden, so the fan
+     * can neither see what happened nor press Retry again, and the host is told nothing either. The
+     * window is real because [Fastory.configure] resets on the caller's schedule, not on the
+     * exchange's, and it widened the day Retry started parking a waiter of its own. Reported as
+     * unreachable: the exchange never answered, which is what SPEC § 9.1's `network` row describes,
+     * and it leaves the surface recoverable.
+     *
+     * State first, waiters after, so a callback coming back through [whenResolved] finds this
+     * resolver already clean rather than half-reset.
+     */
     internal fun reset() {
         outcome = null
         isResolving = false
         stateConfig = null
+        val abandoned = waiters.toList()
         waiters.clear()
+        abandoned.forEach { it(Outcome.Failure(FastoryLoadFailureClassifier.UNREACHABLE_CODE)) }
     }
 
     /**
      * Drops an outcome that belongs to a configuration no longer being asked about. Keeping the
      * stamped one for an equal configuration is **not** what decides whether a new exchange goes
      * out: [resolve] falls through anything but a success, so a cached failure re-arms on an equal
-     * `configure` too, on both platforms — that is § 9's escape hatch, and it does not pass through
-     * here. What an equal configuration really keeps is a cached *success* (SPEC § 2.1), and the
-     * window [whenResolved] opens by reading [outcome] before [isResolving]: the previous failure
-     * stays answerable until the new one lands.
+     * `configure` too, on both platforms. What an equal configuration really keeps is a cached
+     * *success* (SPEC § 2.1), and the window [whenResolved] opens by reading [outcome] before
+     * [isResolving]: the previous failure stays answerable until the new one lands.
      */
     private fun discardOutcomeFromAnotherConfiguration(config: FastoryConfig) {
         val stamped = stateConfig ?: return
         if (stamped != config) reset()
+    }
+
+    /**
+     * Re-arms a cached **failure** so the next resolution sends a new request — the fan pressing
+     * Retry on the error view, and nothing else (SPEC § 9).
+     *
+     * The distinction this draws is the whole point. [whenResolved] hands a cached outcome straight
+     * back to every ordinary caller, which is what keeps a re-configure that changed nothing from
+     * paying for a round trip (SPEC § 2.1); an explicit retry is the one caller asking for the
+     * opposite. Only a failure is dropped: a resolved workspace stays resolved, and an exchange
+     * already in flight is left to land, so a fan tapping Retry twice still sends one request.
+     *
+     * **And one refusal is never re-armed**, which is the difference between a button and a loop.
+     * `sdk_rate_limited` is the one code § 2.5 forbids presenting as transient, and its sanction
+     * escalates on the caller's *address* — shared by everyone behind one CGNAT or one stadium's
+     * wifi — until a third one blocks it with no expiry. A refusal answers in milliseconds, so the
+     * button is back under the fan's thumb at once: honouring the tap here is precisely how the SDK
+     * would become the looping client § 2.5 tells a host not to write. The error view stays and
+     * nothing leaves the device.
+     */
+    internal fun rearmAfterFailure() {
+        val failure = outcome as? Outcome.Failure ?: return
+        if (failure.code == FastoryLoadFailureClassifier.RATE_LIMITED_CODE) return
+        outcome = null
     }
 
     internal fun resolve(config: FastoryConfig) {
@@ -151,8 +196,8 @@ internal object WorkspaceResolver {
         val connection = URL(url).openConnection() as HttpURLConnection
         return try {
             connection.requestMethod = "POST"
-            connection.connectTimeout = TIMEOUT_MS
-            connection.readTimeout = TIMEOUT_MS
+            connection.connectTimeout = EXCHANGE_TIMEOUT_MS
+            connection.readTimeout = EXCHANGE_TIMEOUT_MS
             connection.setRequestProperty("Content-Type", "application/json")
             connection.setRequestProperty(KEY_HEADER, key)
             connection.setRequestProperty(APPLICATION_HEADER, appId)

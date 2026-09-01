@@ -50,15 +50,19 @@ public struct FastoryLoadFailure: Equatable, Sendable {
 
 /// Turns each platform's own failure vocabulary into the one the host reads (SPEC § 9.1).
 ///
-/// Pure, and mirrored case for case on Android: both platforms run one shared truth table, so a
-/// divergence fails a suite instead of surfacing as one platform reporting `network` where the other
-/// reports `unknown`.
+/// Pure, and mirrored case for case on Android: the two platforms classify the same failure the
+/// same way, so one never reports `network` where the other reports `unknown`.
 enum FastoryLoadFailureClassifier {
     /// Codes the resolvers mint themselves for outcomes the API never answers. They are internal
     /// markers, not API codes — they name the *shape* of a non-answer — so they become a reason and
     /// are never handed to a host as a code to branch on.
     static let unreachableCode = "sdk_unreachable"
     static let malformedResponseCode = "sdk_malformed_response"
+
+    /// The API's own code, named here because the retry path has to recognise it: § 2.5 forbids
+    /// presenting this refusal as transient, and the sanction behind it escalates on the caller's
+    /// address rather than on the key — an address a whole stadium can share.
+    static let rateLimitedCode = "sdk_rate_limited"
 
     /// A publishable-key exchange that did not resolve (§ 2.5).
     static func bootstrap(code: String) -> (reason: FastoryLoadFailureReason, code: String?) {
@@ -74,7 +78,7 @@ enum FastoryLoadFailureClassifier {
 
     /// Transport failures: nothing answered. Enumerated rather than taken as the whole of
     /// `NSURLErrorDomain`, which also carries refusals that did get an answer — Android's error set
-    /// draws the same line, and a shared truth table keeps the two lists from drifting apart.
+    /// draws the same line.
     private static let networkErrorCodes: Set<Int> = [
         NSURLErrorTimedOut,
         NSURLErrorCannotFindHost,

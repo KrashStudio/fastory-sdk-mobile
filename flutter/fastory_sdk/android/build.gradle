@@ -1,5 +1,5 @@
 group = "com.fastory.sdk.flutter"
-version = "0.4.2"
+version = "0.4.3"
 
 buildscript {
     ext.kotlin_version = "1.9.22"

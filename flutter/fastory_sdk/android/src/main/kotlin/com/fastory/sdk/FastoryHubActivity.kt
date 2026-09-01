@@ -167,6 +167,9 @@ class FastoryHubActivity : AppCompatActivity() {
             )
             max = 100
             isVisible = webView.progress < 100
+            // Nothing has reported progress yet on a cold open, and the exchange is a round trip
+            // before there is any document to report it — the same state Retry lands in.
+            isIndeterminate = webView.progress == 0
         }
 
         errorView = FastoryErrorView.build(this) { retry() }.apply {
@@ -310,6 +313,7 @@ class FastoryHubActivity : AppCompatActivity() {
 
         webView.webChromeClient = object : WebChromeClient() {
             override fun onProgressChanged(view: WebView, newProgress: Int) {
+                progressBar.isIndeterminate = false
                 progressBar.progress = newProgress
                 progressBar.isVisible = newProgress < 100
             }
@@ -373,20 +377,32 @@ class FastoryHubActivity : AppCompatActivity() {
     ) {
         webView.isVisible = false
         errorView.isVisible = true
+        // Nothing is loading any more, and a bar left over the error view reads as one that is.
+        progressBar.isVisible = false
         announce(load.fail(reason, code = code, statusCode = statusCode))
     }
 
     /**
      * A retry may open the hub the first load could not, so the failure it follows is cleared —
      * otherwise the surface stays permanently unable to announce itself.
+     *
+     * Configured by key there is no loaded URL to reload, so what has to run again is the exchange
+     * (SPEC § 9) — and it does not restart on its own: [WorkspaceResolver.rearmAfterFailure] carries
+     * why, and which refusals it declines to re-arm.
      */
     private fun retry() {
         errorView.isVisible = false
         webView.isVisible = true
         load.restart()
-        // A key the API refused leaves nothing loaded to reload, and `reload()` on a WebView that
-        // never got a URL does nothing at all — the exchange is what has to run again.
+        // `reload()` on a WebView that never got a URL does nothing at all, so this is also where a
+        // refused exchange lands.
         if (webView.url == null) {
+            Fastory.retryHubResolution()
+            // The exchange is a round trip now that it really runs again, and the fan is looking at
+            // an empty WebView for its duration. Indeterminate because there is no document to
+            // report progress on yet; `onProgressChanged` takes it back the moment one does.
+            progressBar.isIndeterminate = true
+            progressBar.isVisible = true
             openHub()
         } else {
             webView.reload()

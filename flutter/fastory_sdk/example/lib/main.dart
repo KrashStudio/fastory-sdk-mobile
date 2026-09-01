@@ -4,19 +4,18 @@ import 'package:fastory_sdk/fastory_sdk.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show PlatformException;
 
-// Shared structure across the three demo apps (iOS native, Android native, Flutter): same four
-// tabs, same console sections in the same order, same palette, same activity glyphs — someone
-// comparing two of them must see one product.
+// A club app shaped like a real one: four tabs, one action, and a console whose sections follow
+// the SDK surface in a fixed order.
 const Color kClubNavy = Color(0xFF0D2147);
 const Color kClubGreen = Color(0xFF29C770);
 const Color kClubBar = Color(0xFF091834);
 const Color kClubRed = Color(0xFFE5484D);
 
-// The one deliberate difference between the three: a screenshot without it is unattributable.
+// Names the platform this build runs on, so a screenshot of the console is attributable.
 const String kClubPlatform = 'Flutter';
 
-// Generated from the plugin's pubspec.yaml — never edit it by hand.
-const String kDeclaredSdkVersion = '0.4.2';
+// The SDK version this package ships, kept in step with the plugin's pubspec.yaml.
+const String kDeclaredSdkVersion = '0.4.3';
 
 // Pointing the demo at a real fanzone needs a real publishable key, and a key must
 // never reach a commit. Run with `--dart-define-from-file=fastory.local.json` (that
@@ -37,7 +36,7 @@ const String kSampleHostTokenJwt =
 // The hub covers the whole screen, so close() is unobservable unless it is armed beforehand.
 const Duration kAutoCloseDelay = Duration(seconds: 5);
 
-// Activity log glyphs, identical across the three demos.
+// Activity log glyphs.
 const String kGlyphCall = '→';
 const String kGlyphResult = '↩';
 const String kGlyphEvent = '←';
@@ -77,7 +76,7 @@ const List<IdentityModeOption> kIdentityModes = <IdentityModeOption>[
 ];
 
 /// One line of the activity log. The log is the only place where the ordering of calls, results and
-/// events is visible, which is what a parity investigation reads first.
+/// events is visible.
 class ActivityEntry {
   const ActivityEntry({
     required this.glyph,
@@ -171,8 +170,8 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  // Four destinations and one action, in the order the three demos share. Games sits between them
-  // because that is where a fan looks for it, not because it is a screen.
+  // Four destinations and one action. Games sits between them because that is where a fan looks
+  // for it, not because it is a screen.
   static const int _gamesIndex = 2;
 
   int _currentIndex = 0;
@@ -246,8 +245,8 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 /// The SDK tab, and the reason the demo exists: every public method has a control here and every
-/// piece of state the SDK hands back is on screen, never only in the platform log. Sections keep the
-/// order the three demos share — a developer scrolling this after the iOS app should not have to hunt.
+/// piece of state the SDK hands back is on screen, never only in the platform log. Sections keep a
+/// fixed order, so a control stays where it was found.
 ///
 /// It owns the SDK interaction as well as the display, so a call, its outcome and its failure all
 /// land in the one log a tester reads. A real host app configures once from `main()` instead — see
@@ -557,16 +556,15 @@ class SdkConsoleState extends State<SdkConsole> {
             _ValueLine(label: 'configured', value: _configured ? 'yes' : 'no'),
             const _ActionRow(
               children: <Widget>[
-                // Present and disabled with the reason on screen: the two native consoles have
-                // this control too, and an absent section reads as an oversight while a disabled one
-                // reads as a decision.
+                // Present and disabled with the reason on screen: an absent control reads as an
+                // oversight, a disabled one reads as a decision.
                 _Action(label: 'configure() off the main thread', onPressed: null),
               ],
             ),
             const _Hint(
               'SPEC § 2.7 is a contract with the native cores, and there is no Dart side to it: a '
               'platform-channel call already arrives on the platform thread, and Dart has no host '
-              'thread to call from. The iOS and Android consoles carry the live control.',
+              'thread to call from. On a native host the same control is live.',
             ),
           ],
         ),
@@ -731,8 +729,7 @@ class SdkConsoleState extends State<SdkConsole> {
   }
 }
 
-// Title plus the platform badge: the three demos are pixel-siblings, so the
-// badge is the only way to tell at a glance which integration is running.
+// Title plus the platform badge, which names the platform this build is running on.
 class _ClubHeader extends StatelessWidget {
   const _ClubHeader();
 

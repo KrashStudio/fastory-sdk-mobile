@@ -86,8 +86,8 @@ public enum FastoryIdentifyError: Error, Equatable, Sendable {
 /// them all: the fan session cookie is `httpOnly`, which Android's `CookieManager.getCookie` never
 /// returns. Keeping both platforms on one declared list is what makes the behaviour identical.
 ///
-/// iOS and Android declare the same list, and a shared truth table holds them to it — a name one
-/// platform expires and the other does not is a fan who survives a logout on one of them.
+/// iOS and Android declare the same list — a name one platform expires and the other does not is a
+/// fan who survives a logout on one of them.
 enum FastoryIdentityStorage {
     static let cookieNames: [String] = [
         "fst-visitor",

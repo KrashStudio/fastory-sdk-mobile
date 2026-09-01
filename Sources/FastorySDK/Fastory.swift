@@ -340,6 +340,13 @@ public enum Fastory {
         }
     }
 
+    /// The fan asked again from the error view (§ 9). Kept apart from `resolveHub` so that only this
+    /// caller can discard a remembered failure — `FastoryWorkspaceResolver.rearmAfterFailure` carries
+    /// why that separation matters. A no-op on the deprecated slug path, where nothing is exchanged.
+    static func retryHubResolution() {
+        FastoryWorkspaceResolver.shared.rearmAfterFailure()
+    }
+
     /// Warms the hub only once the host application is on screen.
     ///
     /// Allocating a `WKWebView` starts a WebKit content process and `load()` starts a network fetch,
