@@ -18,8 +18,8 @@ enum FastoryWebKit {
     }
 }
 
-/// Pure classification, kept independent of any view controller instance so it is directly
-/// testable (`@testable import`) without spinning up a `FastoryHubViewController`.
+/// Pure classification, kept independent of any view controller instance so the decision can be
+/// exercised on its own, without spinning up a `FastoryHubViewController`.
 enum NavigationErrorClassifier {
     static func isBenign(_ error: Error) -> Bool {
         let nsError = error as NSError

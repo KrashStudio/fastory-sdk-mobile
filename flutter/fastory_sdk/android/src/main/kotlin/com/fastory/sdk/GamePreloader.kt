@@ -30,9 +30,9 @@ import org.json.JSONTokener
  * - The game the player closed last always outranks hub order: it is re-preloaded first
  *   and never evicted before untouched games.
  *
- * A few members below are `internal` rather than `private` solely so pool-state tests
- * (GamePreloaderPoolTest) can drive and inspect them directly; production never reads them
- * from outside this object.
+ * A few members below are `internal` rather than `private` solely so the pool's state can be
+ * driven and inspected without going through a real load; production never reads them from outside
+ * this object.
  */
 internal object GamePreloader {
 

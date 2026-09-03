@@ -4,6 +4,48 @@ All notable changes to the Fastory Mobile SDK are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: [SemVer](https://semver.org),
 tags `sdk-vX.Y.Z`.
 
+## 0.4.4
+
+Documentation only. The sole change to the shipped Swift and Kotlin is comments — no public name
+moves, no behaviour changes, and upgrading changes nothing your app does. What changes is what the
+documentation tells you, and one of those things was wrong in a way that could have cost you a
+planning decision.
+
+### Fixed
+
+- **The guide no longer tells you the publishable-key exchange is staging-only.** It said the
+  endpoint was live on staging and would reach production later, and advised shipping to production
+  on the deprecated `fanzoneSlug` path until it deployed. That has not been true for some time: the
+  exchange answers in production, verified end to end with a live key. If you deferred the key path
+  or built a fallback because of that note, you need neither. Four places carried it — the
+  availability note, both quickstart snippets and the configuration reference — and all four now say
+  the same thing: keys are minted per environment (`fpk_live_…` for production, `fpk_test_…`
+  elsewhere), and `configure()` refuses a pair that disagrees before any network call, so move the
+  key and the `environment` together. A live key that still does not resolve is a workspace
+  provisioning question for your Fastory contact, and the `code` on `FastorySurfaceLoadFailed` names
+  which refusal you hit.
+- **Three entries below now say when they stopped being true.** A changelog is usually read by
+  landing in the middle of it, and three notes described a state of the world that has since changed:
+  0.4.0's workaround for Retry after a refused key, which 0.4.3 made unnecessary; 0.3.0's warning
+  that live keys would not resolve, superseded by the deployment above; and the staging host named in
+  0.1.1, which became `https://staging.story.tl` in 0.2.0. Each keeps its original text as the record
+  of the release that shipped it, and carries a note saying what superseded it.
+
+### Changed
+
+- **The failure-code reference lists only codes you can actually receive.** It used to name two that
+  never reach a host and explain why they were absent — which put them in the list. If you see
+  `sdk_application_id_required`, it is always the SDK refusing before it forms a request, never an
+  answer from our API; a missing or malformed key never leaves the device either. Every code you can
+  observe, and the behaviour behind it, is unchanged.
+- **Two long entries below are easier to read.** The 0.4.0 notes on the Retry limitation and on
+  `configure()` threading each said in one paragraph what four short ones say better. Nothing was
+  removed but repetition.
+- **Comments in the shipped Swift and Kotlin describe the code, not our test arrangement.** Four of
+  them explained which of our own test classes needed a member to be visible. They now say what a
+  reader of the source needs — why a member is reachable inside the module rather than private —
+  which is the part that stays true when our tests are rearranged.
+
 ## 0.4.3
 
 One defect, on the path every new integration takes. **No public name moves and nothing you call
@@ -55,10 +97,8 @@ changes** — the fix is behind the error view's own button.
   behaviour changes.
 - **Known limitations are still documented, in the terms you meet them in**: what you observe, what it
   costs you, the workaround when there is one, and whether a fix is planned.
-- **`QA_CHECKLIST.md` is no longer published.** It was the device-matrix sign-off sheet for our own
-  release process, never a document you were meant to run, and nothing in it described SDK behaviour
-  that `README.md` and `SPEC.md` do not already carry. A link to it on the default branch now answers
-  404; a link pinned to `sdk-v0.4.1` or earlier still resolves.
+- **`QA_CHECKLIST.md` is no longer published.** Nothing in it described SDK behaviour that
+  `README.md` and `SPEC.md` do not already carry. A link to it on the default branch now answers 404.
 - **The `android/` and `ios/` README files inside the plugin now say what each directory holds** — the
   SDK's native implementation, compiled into your app — instead of how those sources are maintained.
 
@@ -273,19 +313,21 @@ the fan something else.
 - **Nothing is retried for you, and nothing is reported twice.** The SDK reports; you decide. A single
   failed load produces exactly one event, cancellations the SDK causes itself when routing a game or
   an external link produce none, and a failed image or XHR inside a page produces none.
-- **Known limitation: Retry does not recover a refused publishable key**, and a fix is planned. The
-  Retry button reloads the page that failed, and a key the API refused never produced one — the exchange's
-  outcome is remembered for the configuration that asked for it, failure included, so Retry shows the
-  same error again without asking the API a second time. The fan cannot retry their way out of it.
-  What does re-arm the exchange is another `configure()`: **any second call, on both platforms**, with
-  the configuration already in force or a new one — you do not have to vary it. If your app wants to
-  recover from a transient failure of the exchange — a fan who opened the games in a tunnel — do it
-  there, on `FastorySurfaceLoadFailed(surface: hub)`, rather than expecting the button to — and do
-  not count on the very next open: on Android an equal `configure()` leaves the previous failure
-  readable until the new exchange answers, so an open that starts inside that window is answered
-  from it and the recovery lands on the one after. Pages
-  that failed on their own, and the whole deprecated `fanzoneSlug` path, reload on Retry exactly as
-  before.
+- **Known limitation: Retry does not recover a refused publishable key.** A fix is planned.
+  - *What you see.* The hub fails on a refused key exchange, the fan taps Retry, and the same error
+    screen comes back. No request leaves the device: Retry reloads the page that failed, and a hub
+    configured by key never produced one — the exchange's outcome is remembered per configuration,
+    failure included.
+  - *What it costs you.* A fan whose exchange failed on a bad connection cannot retry their way out.
+    Pages that failed on their own, and the deprecated `fanzoneSlug` path, reload on Retry as before.
+  - *The workaround.* Call `configure()` again from your `FastorySurfaceLoadFailed(surface: hub)`
+    handler — **any second call, on both platforms**, with the configuration already in force or a
+    new one. On Android an equal `configure()` leaves the previous failure readable until the new
+    exchange answers, so the recovery can land on the open after next.
+
+  **No longer true.** It was accurate for 0.4.0 and is left as the record of that release: since
+  0.4.3 Retry re-runs the exchange itself, and the `configure()` workaround above is no longer
+  needed. Read the current guide, not this note.
 
 ### Fixed — four defects the pre-release audit found
 
@@ -335,21 +377,18 @@ One of them lets an identity outlive the fan it names.
     whether anything was already warm, so a re-configure with the same configuration flushed every
     preloaded game and replaced the rendered page with one still loading. Android always had that
     guard. `SPEC.md` § 2.1 now binds the warm-up path as explicitly as the teardown.
-- **`configure()` can be called from any thread, and no longer competes with your first screen.** It
-  did the most thread-restricted work of the whole surface — allocating a WebView, loading it, stopping
-  the loads in flight — and, unlike `identify()` and `logout()`, it did that work on whichever thread
-  you called it on. Nothing in the contract said the main thread was required, so initialising the SDK
-  from a background bootstrap crashed the host app at launch. It now stores your configuration on your
-  thread and schedules the restricted work itself.
+- **`configure()` can be called from any thread, and no longer competes with your first screen.**
+  Initialising the SDK from a background bootstrap used to crash the host app at launch: `configure()`
+  allocated a WebView and loaded it on whichever thread you called it on. It now stores your
+  configuration on your thread and schedules that work itself.
   - **The hub is warmed once your app is on screen, not during `configure()`.** Building the hub
-    WebView at `configure()` put the SDK in competition with your app's first paint — every launch, for
-    every integration on the deprecated `fanzoneSlug` path. It is deferred to the first frame, and a
-    background launch warms nothing at all. Opening the hub is unchanged: this is a deferral, not a
-    removal.
-  - **`SPEC.md` § 2.7 is new** and states which thread each method may be called from. One method still
-    requires the main thread — `openGames()` — because it takes your own `UIViewController` / `Context`,
-    so you are already in UI code when you call it. Everything else is callable from anywhere, and every
-    callback still arrives on the main thread as before.
+    WebView at `configure()` competed with your app's first paint on every launch, for every
+    integration on the deprecated `fanzoneSlug` path. It is deferred to the first frame, and a
+    background launch warms nothing. Opening the hub is unchanged — a deferral, not a removal.
+  - **`SPEC.md` § 2.7 is new** and states which thread each method may be called from. Only
+    `openGames()` still requires the main thread: it takes your own `UIViewController` / `Context`, so
+    you are already in UI code. Everything else is callable from anywhere, and every callback still
+    arrives on the main thread as before.
 
 ### Fixed — elsewhere
 
@@ -405,6 +444,9 @@ surfaces which appearance to render in.
   endpoint deploys there, and `openGames()` shows the hub's error view. Production integrations stay
   on the deprecated `fanzoneSlug` until then — that path calls no endpoint and is unchanged by this
   release.
+  **No longer true.** It was accurate for 0.3.0 and is left as the record of that release: the
+  exchange has since been deployed, and live keys are no longer refused for want of the endpoint.
+  Read the current guide, not this note.
 - Configured by key, the hub cannot be warmed up before the exchange resolves — there is no URL to
   warm yet. The hub's existing loading state covers the round trip, and a rejected key lands on the
   existing native error view rather than a blank web view.
@@ -519,6 +561,9 @@ Faster opens (warm hub and game WebViews), stories-domain game links, and a corr
 - Game links served from the Fastory stories domains (`https://story.tl`, `https://test.story.tl`)
   with an `/s/` path now open in the game sheet; any other stories-domain path still opens in the
   system browser. (Spec §4.)
+
+  **No longer true.** The staging host named here is the one 0.1.1 shipped; it became
+  `https://staging.story.tl` in 0.2.0.
 - Game URLs now carry the `consent` hint like the hub, so the story player no longer shows its own
   cookie banner inside the game sheet.
 - The `hubOpened` event now carries the `fanzoneSlug` (`FastoryHubOpened(fanzoneSlug)` /

@@ -5,7 +5,7 @@ Flutter plugin of the Fastory Mobile SDK. It opens a Fanzone's games hub in a fu
 browser. The real logic is native — this package is a thin bridge over the same Swift and Kotlin cores
 the native channels ship.
 
-Scope: Fastory Mobile SDK v0.4.3 (ultra-light, WebView-based).
+Scope: Fastory Mobile SDK v0.4.4 (ultra-light, WebView-based).
 
 This file is the Dart reference: every method, event and error the plugin exposes. `README.md` at the
 repository root is the full integration guide (it also covers the native iOS channel), and `SPEC.md`
@@ -33,7 +33,7 @@ dependencies:
     git:
       url: https://github.com/KrashStudio/fastory-sdk-mobile
       path: flutter/fastory_sdk
-      ref: sdk-v0.4.3
+      ref: sdk-v0.4.4
 ```
 
 ## Upgrading from 0.3.0: three source breaks
@@ -117,9 +117,11 @@ Two things to know before you pick the key path:
   presents the feature instead of listing keys, and creating or revoking one answers
   `403 sdk_addon_required`. The add-on gates management only: a key already shipped in an app keeps
   resolving if it is later removed.
-- **The endpoint the key is exchanged at is live on staging and reaches production later.** Integrate
-  against `environment: staging` with an `fpk_test_…` key. If you must ship to production before it
-  deploys, configure with `fanzoneSlug` — that path calls no endpoint at all and is unaffected.
+- **The key exchange runs in production as well as on staging**, so build on the key from the start.
+  Keys are minted per environment — `fpk_live_…` for production, `fpk_test_…` elsewhere — and
+  `configure()` refuses a key that disagrees with the `environment` you pass, before any network call.
+  Change the two together. If a live key does not resolve, ask your Fastory contact whether its
+  workspace is provisioned.
 
 ## Methods
 
@@ -213,12 +215,7 @@ and tells your app what happened.
   when the SDK could not read your app's identifier at all and had no well-formed request to send
   (iOS only in practice — an Android package name always exists).
 
-  Two codes our API declares never reach you, and they are named here so their absence from the six
-  is not mistaken for an oversight: `sdk_key_required`, because `configure` rejects a blank or
-  malformed key before any request exists, and the API's **own** `sdk_application_id_required` — the
-  one you may see under that name is always the SDK's, minted as just described, never the
-  endpoint's, because the SDK refuses in its place rather than send a request without your app's
-  identifier. Anything else appearing here is a bug to report. Nothing answered at all → `code` is
+  Anything else appearing here is a bug to report. Nothing answered at all → `code` is
   null, and `reason` says so: an unknown key, a revoked key and a fan with no signal are three different
   situations and only the last is the connection.
 - **`statusCode`** is the HTTP status the page itself answered, when the page is what failed.

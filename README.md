@@ -1,7 +1,7 @@
 # Fastory Mobile SDK — Integration Guide
 
 Audience: host app engineering teams integrating the SDK.
-Scope: Fastory Mobile SDK v0.4.3 (ultra-light, WebView-based).
+Scope: Fastory Mobile SDK v0.4.4 (ultra-light, WebView-based).
 
 Two ways to consume it, same behavior and same version:
 
@@ -68,7 +68,7 @@ dependencies:
     git:
       url: https://github.com/KrashStudio/fastory-sdk-mobile
       path: flutter/fastory_sdk
-      ref: sdk-v0.4.3
+      ref: sdk-v0.4.4
 ```
 
 Then:
@@ -83,7 +83,7 @@ In Xcode: *File > Add Package Dependencies…*, enter `https://github.com/KrashS
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/KrashStudio/fastory-sdk-mobile.git", .upToNextMinor(from: "0.4.3"))
+    .package(url: "https://github.com/KrashStudio/fastory-sdk-mobile.git", .upToNextMinor(from: "0.4.4"))
 ]
 ```
 
@@ -120,12 +120,13 @@ lists, so a key created without them refuses every call.
 `fanzoneSlug` still works and will keep working for the whole 0.x line, but it is deprecated: prefer
 the key.
 
-> **Availability of the key exchange.** The endpoint the key is exchanged at is live on **staging**
-> today and reaches production later. Integrate against `environment: staging` with an `fpk_test_…`
-> key, which works now. If you have to ship to production before it deploys, configure with the
-> deprecated `fanzoneSlug` instead — that path calls no endpoint at all and is unaffected. An
-> `fpk_live_…` key pointed at production ahead of the deployment resolves nothing, so `openGames()`
-> lands on the hub's error view rather than the games.
+> **Pair the key with its environment.** The exchange runs in production as well as on staging, so
+> build on the key from the start — there is no staging-only window to plan around. Keys are minted
+> per environment (`fpk_live_…` for production, `fpk_test_…` elsewhere) and `configure()` refuses a
+> key that disagrees with the `environment` you pass, locally, before any network call. So the two
+> always move together: changing one and not the other is the refusal described under *Configuration
+> reference* below. If a live key of yours does not resolve, ask your Fastory contact whether its
+> workspace is provisioned — the `code` on `FastorySurfaceLoadFailed` tells you which refusal you hit.
 
 ### Flutter
 
@@ -138,7 +139,7 @@ void main() {
   WidgetsFlutterBinding.ensureInitialized();
   Fastory.configure(const FastoryConfig(
     publishableKey: 'fpk_test_...',
-    environment: FastoryEnvironment.staging,   // see *Availability of the key exchange* above
+    environment: FastoryEnvironment.staging,   // pair the key with its environment
     theme: FastoryTheme.dark,   // optional
     locale: 'fr-FR',            // optional
   ));
@@ -148,6 +149,10 @@ void main() {
 // In your footer tap handler:
 onTap: () => Fastory.openGames(),
 ```
+
+Both snippets on this page show a staging setup, because that is where most teams do their first
+integration. Production is the same two lines with an `fpk_live_…` key and
+`FastoryEnvironment.production`, which is also the default when you pass no environment at all.
 
 ### Native iOS
 
@@ -216,12 +221,12 @@ failure handler — and the SDK keeps running on the previous configuration, and
 because the assertion fires first; on release, and on Flutter if you swallow the exception, a refused
 switch looks exactly like a switch that did not happen.
 
-**This is the mistake the recommended migration path makes easiest to hit.** *Availability of the key
-exchange* above tells you to integrate against `environment: staging` with an `fpk_test_…` key and
-move to production later. That move is a two-line edit — the key and the environment — and changing
-one line and not the other is exactly the refusal above. On iOS, every debug build of your app then
-dies at launch; on Flutter you get an exception you can catch. Change both lines together, and if a
-debug build starts dying at launch right after an environment switch, this is why.
+**An environment switch is the edit that hits this most easily.** Moving between staging and
+production is a two-line change — the key and the environment — and changing one line and not the
+other is exactly the refusal above, because a key is minted for one environment and `configure()`
+checks the pair before it calls anything. On iOS, every debug build of your app then dies at launch;
+on Flutter you get an exception you can catch. Change both lines together, and if a debug build
+starts dying at launch right after an environment switch, this is why.
 
 **Threading (since 0.4.0).** Every method above may be called from any thread except `openGames()`,
 which needs the main thread — it takes your own `UIViewController` / `Context`, so you are already in

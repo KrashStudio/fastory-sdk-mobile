@@ -70,13 +70,13 @@ The SDK exposes **six operations** — `configure`, `openGames`, `close` (since 
 
 **The count is per presentation, and a platform rebuilding its own container is not one.** Android destroys and recreates an `Activity` for a configuration change outside its declared `configChanges` — a locale switch, a density change, *Don't keep activities* — and the implementation surfaces that today as a `hubClosed` immediately followed by a `hubOpened`, for one hub the fan never saw leave. The pair is honest about the container and wrong about the presentation. It is written down rather than hidden because a host counting events has to know: suppressing it means telling a recreation apart from a real dismissal at the point the event is emitted, which is its own change and is **not** in 0.4.0.
 
-iOS presents synchronously and has always behaved this way; Android did not until 0.4.0, and the divergence was recorded nowhere as a decision.
+iOS presents synchronously and has always behaved this way; Android did not until 0.4.0.
 
 **A `configure` whose configuration differs from the one in force MUST first discard everything the previous one produced** (since 0.4.0): the warm hub WebView and the preloaded games (§ 11), and the standing bridge answer (§ 13.8.6). Otherwise the next `openGames()` presents the *previous* configuration's fanzone under the new configuration — a multi-club app opens the wrong club, and an environment switch opens the wrong environment. Two consequences implementations get wrong in opposite directions, so both are normative:
 
 - **The teardown MUST NOT be conditional on there being something to prepare in exchange.** Configured by key there is no hub URL to warm until the API answers (§ 2.5), so a teardown reached only on the way to warming up never runs for a key configuration — which is every configuration that names a publishable key rather than a fanzone slug. This is the defect iOS carried until 0.4.0.
 - **A `configure` with an *equal* configuration MUST NOT discard the warm hub or the preloaded games.** Re-configuring identically has changed nothing to render, so it is not an invalidation; making it one turns a harmless call into a cold hub open. Equality is the whole configuration, field by field. This binds the *warm-up path* as much as the teardown: an implementation that re-runs its warm-up unconditionally discards by rebuilding, which is the same defect wearing the opposite sign — and it is the shape iOS carried until 0.4.0, where warming up flushed the preloader before it checked whether anything needed warming.
-- **The publishable-key exchange (§ 2.5) is deliberately outside that rule, and the two platforms diverge there — though not where this spec used to say.** A cached **failure** is re-armed by any `configure`, equal or not, on **both** platforms: each resolver skips a fresh exchange only while one is in flight or a workspace is already resolved — so a failed outcome falls through and a second request leaves the device. It is also re-armed by the fan's Retry, which is the one caller that discards it without a `configure` at all (§ 9). Two things do still differ, and neither is that. **A cached success**: iOS discards it on every `configure` and exchanges again, Android keeps it unless the configuration changed. **And what a surface opening inside the new exchange's window is answered with**: an implementation that clears the outcome at `configure` — iOS, and Android on a *changed* configuration — makes that surface wait for the new answer, while one that leaves it in place — Android on an *equal* configuration — answers it from the previous failure until the new one lands. Both re-ran the exchange; only one of them lets the previous verdict be read once more. Reconciling those two is still open, and neither platform is to be moved to match the other until it is decided: widening Android adds a network round trip to every equal re-configure, and narrowing iOS is a behavior change. Neither costs the fan anything now that § 9's Retry re-runs the exchange itself — a `configure` is no longer the only way back from a refused key. **Do not read "the outcome is cached per configuration" as "an equal `configure` sends nothing"** — true of a resolved workspace, false of a failure.
+- **The publishable-key exchange (§ 2.5) is deliberately outside that rule, and the two platforms diverge there.** A cached **failure** is re-armed by any `configure`, equal or not, on **both** platforms: each resolver skips a fresh exchange only while one is in flight or a workspace is already resolved — so a failed outcome falls through and a second request leaves the device. It is also re-armed by the fan's Retry, which is the one caller that discards it without a `configure` at all (§ 9). Two things do still differ, and neither is that. **A cached success**: iOS discards it on every `configure` and exchanges again, Android keeps it unless the configuration changed. **And what a surface opening inside the new exchange's window is answered with**: an implementation that clears the outcome at `configure` — iOS, and Android on a *changed* configuration — makes that surface wait for the new answer, while one that leaves it in place — Android on an *equal* configuration — answers it from the previous failure until the new one lands. Both re-ran the exchange; only one of them lets the previous verdict be read once more. Reconciling those two is still open, and neither platform is to be moved to match the other until it is decided: widening Android adds a network round trip to every equal re-configure, and narrowing iOS is a behavior change. Neither costs the fan anything now that § 9's Retry re-runs the exchange itself — a `configure` is no longer the only way back from a refused key. **Do not read "the outcome is cached per configuration" as "an equal `configure` sends nothing"** — true of a resolved workspace, false of a failure.
 
 **And the teardown alone MUST NOT be the only defence.** The hub is put *back* into the warm slot when it is dismissed (§ 11), which can happen after the re-configure — so a page rendered under the previous configuration returns to the slot the teardown already emptied, and the next `openGames()` presents it. Implementations MUST therefore also make a warm hub reusable **only for the configuration its page was loaded under**: stamp it, and drop it on a mismatch whenever it is taken. The same rule applies to a cached key exchange — a workspace resolved for one configuration MUST NOT answer for another, or its slug builds a hub URL in the wrong environment. Both together are what make § 2.7's threading freedom safe: the teardown lands on a later main-thread turn, so correctness cannot rest on it having run yet.
 
@@ -86,11 +86,11 @@ Implementations MUST reject, at `configure` time and before any network call: ne
 
 **A rejection MUST leave the configuration already in force untouched.** Not storing the rejected one is only half of it: the previous configuration keeps applying, so a `configure` that is refused is a call that changed nothing, not a call that de-configured the SDK. A host whose *first* `configure` is refused is unconfigured and `openGames()` reports `not_configured` (§ 5.4); a host that re-configures and is refused still holds the configuration it had, and `openGames()` opens **that** one. Documentation MUST NOT state the first case as though it were the general one — it is the case a host meets on day one and never again.
 
-**A typed, catchable error MUST be reachable for every rejection, and on which entry point it sits is a platform decision — which is not the same as it being reachable from `configure` itself.** The rule used to read "never a crash", and one shipped platform has never honoured that reading: Swift's `configure(_:)` is non-throwing by design (§ 2.2 — the signature is locked and both initializers are non-throwing too), so it validates and, on a **debug** build, `assertionFailure`s and terminates the process; on a release build it returns, having changed nothing. Dart's `configure` throws `ArgumentError` on the caller's thread, before the platform channel, so the native side is not reached at all. Both satisfy the requirement above, and both are correct: the catchable error a Swift host reaches is `FastoryConfig.validate()`, which is public, throws `FastoryConfigError`, applies this same rule set and calls nothing. What is normative:
+**A typed, catchable error MUST be reachable for every rejection, and on which entry point it sits is a platform decision — which is not the same as it being reachable from `configure` itself.** The two shipped channels put it in different places: Swift's `configure(_:)` is non-throwing by design (§ 2.2 — the signature is locked and both initializers are non-throwing too), so it validates and, on a **debug** build, `assertionFailure`s and terminates the process; on a release build it returns, having changed nothing. Dart's `configure` throws `ArgumentError` on the caller's thread, before the platform channel, so the native side is not reached at all. Both satisfy the requirement above, and both are correct: the catchable error a Swift host reaches is `FastoryConfig.validate()`, which is public, throws `FastoryConfigError`, applies this same rule set and calls nothing. What is normative:
 
 - Every rejection listed above MUST be reachable as a **typed, catchable error** on some public entry point of the platform's own API — `validate()` where `configure` is non-throwing, `configure` itself where the language makes that idiomatic.
 - A platform MAY additionally trap on a debug build, as an assertion about programmer error. It MUST NOT trap on a release build.
-- **Whatever a platform does, its shipped documentation MUST say so, distinguishing debug from release**, and MUST NOT attribute to one channel what another does. An integrator moving between the two channels — the migration path § 2.5's deprecation window describes — meets exactly this divergence on the single most likely configuration mistake, a key and an environment that disagree. This clause is here because the divergence shipped in 0.4.0 with no document naming it.
+- **Whatever a platform does, its shipped documentation MUST say so, distinguishing debug from release**, and MUST NOT attribute to one channel what another does. An integrator moving between the two channels — the migration path § 2.5's deprecation window describes — meets exactly this divergence on the single most likely configuration mistake, a key and an environment that disagree.
 
 ### 2.2 Swift (iOS)
 
@@ -467,9 +467,9 @@ A publishable key identifies the workspace a host application belongs to. It is 
   - `sdk_application_not_allowed` (403) — the key exists and this application identifier is not declared on it.
   - `sdk_rate_limited` (429) — too many exchanges from this key or this address. **It is not always transient, and an implementation MUST NOT present it as such.** Repeated sanctions escalate: at the third the caller's address is added to a block list with no expiry, and every later exchange from it answers this same code until the block is lifted, which the integrator asks their Fastory contact for. A host that retries in a loop is therefore the host most likely to earn the permanent form of it. Back off, and surface it rather than absorb it.
 
-  **Two more the endpoint declares are unreachable here, and for the same reason twice — the SDK refuses before a request exists.** `sdk_key_required`: a configuration with no key, or a blank or malformed one, is rejected at `configure` (§ 2.1). `sdk_application_id_required`: where the identifier cannot be read, the implementation refuses in the API's place rather than send a request without it, so the code a host sees under that name is always the SDK's own, never the endpoint's.
+  **Two refusals never leave the device, for the same reason twice — the SDK stops before a request exists.** A configuration with no key, or a blank or malformed one, is rejected at `configure` (§ 2.1). And where the application identifier cannot be read, the implementation refuses rather than send a request without it, so the `sdk_application_id_required` a host sees under that name is always the SDK's own.
 
-  With § 9.1's two synthesised codes, a host therefore matches **the four names above, plus `sdk_application_id_required` — always the SDK's, never the endpoint's, per the paragraph above — plus the `http_<status>` family**, and nothing else. Both unreachable codes are named here on purpose rather than left out: an absence would not say whether the code does not exist or whether nobody looked. None of them is the fan's connection — that is `reason=network`, with no code at all (§ 9.1). They are not one class either, and a host that alerts on `code` should not treat them as one: `sdk_key_unknown`, `sdk_key_revoked` and `sdk_application_not_allowed` are back-office or configuration facts, `sdk_application_id_required` is a build problem, `sdk_rate_limited` is a traffic condition, and `http_<status>` is usually something between the SDK and the API rather than the API itself.
+  With § 9.1's two synthesised codes, a host therefore matches **the four names above, plus `sdk_application_id_required` — always the SDK's, never the endpoint's, per the paragraph above — plus the `http_<status>` family**, and nothing else. `sdk_application_id_required` is named here on purpose rather than left out: an absence would not say whether the code does not exist or whether nobody looked. None of them is the fan's connection — that is `reason=network`, with no code at all (§ 9.1). They are not one class either, and a host that alerts on `code` should not treat them as one: `sdk_key_unknown`, `sdk_key_revoked` and `sdk_application_not_allowed` are back-office or configuration facts, `sdk_application_id_required` is a build problem, `sdk_rate_limited` is a traffic condition, and `http_<status>` is usually something between the SDK and the API rather than the API itself.
 
   **The channel that carries these codes is § 9.1's failure event**, which every platform gained in 0.4.0: this rule has been normative since 0.3.0 and no implementation honoured it, because none of them had anywhere to put the code — the key was refused, the native error view came up, and the host was told nothing at all. A code the SDK synthesises for an outcome the API never answered (an unreachable endpoint, an unreadable response) is **not** a code and MUST NOT be surfaced as one; it becomes a `reason` instead (§ 9.1).
 - **A key resolves exactly one workspace, and the SDK MUST NOT ask the host to confirm which.** The workspace is a property of the key, so an implementation has no second opinion to check it against: what stops a key opening a workspace it does not belong to is the exchange being bound to the host's application identifier, which the API refuses unless the owning workspace declared it on that key. That refusal is unconditional and arrives as `sdk_application_not_allowed`. Implementations MUST surface it like any other failure code and MUST NOT open a hub on the resolved fanzone. Removed in 0.4.0: `workspaceId`, a host-declared cross-check that duplicated this opt-in and could only ever be weaker.
@@ -557,8 +557,8 @@ anonymous is the idempotency above — the same fan across calls — not a value
 Which thread a host may call from was **implicit until 0.4.0**, and the implementations disagreed with
 each other about it: `identify` and `logout` returned to the main thread before doing anything, while
 `configure` — the entry point doing the most main-thread-only work — ran on whatever thread it was
-called on. Nothing here said so, so an integrator initialising the SDK from a background bootstrap,
-which is a common pattern, had no way to know it was forbidden. This section closes that.
+called on. Initialising the SDK from a background bootstrap, which is a common pattern, therefore
+crashed the host app at launch. This section closes that.
 
 | Method | Thread the host may call it from |
 |---|---|
@@ -895,7 +895,7 @@ iOS has no system back button; the hub MUST provide a native close affordance, a
 
 ---
 
-## 7. Session & Web-Storage Model (rewritten in 0.4.0)
+## 7. Session & Web-Storage Model
 
 **The two WebViews do not share a session, and no store configuration can make them.** The hub and
 the game are different sites (`fanzone.me`, `story.tl`), and they do not even agree on what a session
@@ -903,10 +903,9 @@ the game are different sites (`fanzone.me`, `story.tl`), and they do not even ag
 at all**. It asks its host page for a token, and in an SDK WebView the game *is* the top-level
 document, so it has no host page. A shared cookie jar therefore shares nothing that matters.
 
-Up to 0.3.0 this section required that sharing *"so the game inherits any session state established in
-the hub"*. That requirement is **withdrawn**: the mechanism cannot serve the stated purpose, so an
-implementation following it to the letter was a correct implementation of something that did nothing —
-and a reader came away believing the game was already session-aware. What replaces it is below.
+**A shared store does not make the game session-aware.** Following that design to the letter is a
+correct implementation of something that has no effect, and it leaves a reader believing the game
+already knows the fan.
 
 What each surface does today, with no identity involved (§ 2.6):
 
@@ -920,18 +919,17 @@ per origin (§ 7.4) — not to merge the two.
 
 > *Informative, not normative.* **Two visitors for one account is not a defect to work around.**
 > Points are account-scoped, so a fan recognised on both surfaces is recognised once regardless of
-> how many visitors the web minted — which is why the withdrawn requirement above bought nothing
-> even where it worked.
+> how many visitors the web minted — which is why sharing the store would buy nothing even where it
+> worked.
 
 ### 7.1 iOS
 
 - Both `WKWebView` instances MUST use `WKWebViewConfiguration.websiteDataStore = WKWebsiteDataStore.default()`.
 - The SDK MUST NOT assume this store is its own: it is shared with every other `WKWebView` in the
   host app. That is what makes § 7.4's erasure rules mandatory rather than merely careful.
-- The SDK MUST NOT set a shared `WKProcessPool`. Up to 0.3.0 this section mandated a single static
-  one; `WKProcessPool` has been deprecated since iOS 15 and "no longer has any effect", so the
-  requirement was a no-op the compiler warns about — and a `MUST` in that shape gets cargo-culted into
-  every new platform core. WebKit decides process sharing on its own at the SDK's iOS 15 floor.
+- The SDK MUST NOT set a shared `WKProcessPool`. It has been deprecated since iOS 15 and "no longer
+  has any effect", so setting one is a no-op the compiler warns about. WebKit decides process sharing
+  on its own at the SDK's iOS 15 floor.
 
 ### 7.2 Android
 
@@ -1003,7 +1001,7 @@ The chromeless Fanzone (`chrome=0`) applies its own `env(safe-area-inset-*)` pad
 - If a main-frame load fails in **WebView A (the hub)** (no network, DNS failure, HTTP error ≥ 400 on the initial document), the SDK MUST hide the WebView content and show a **native error view**: a short localized message ("Something went wrong" / no-connection variant) and a **Retry** button.
 - Retry MUST reload the failed URL in the WebView. Where the failure was the publishable-key exchange (§ 2.5) there is no loaded URL to reload, and Retry MUST re-run the exchange instead. **Holding this rule and § 2.1's together is what the implementation actually has to do, so it is written down here rather than left to be re-derived.** The resolver remembers the exchange's outcome per configuration, failure included, and that memory is not a defect: it is what keeps a `configure` carrying the configuration already in force from paying for a round trip and from throwing away a warm hub that has nothing wrong with it (§ 2.1). An explicit retry is therefore told apart from every other caller asking for the same resolution — the fan's retry discards a **failed** outcome, an `openGames()` reads it. The consequences of drawing the line there, rather than at "stop remembering failures": only a failure is discarded, so a resolved workspace stays resolved and a page-level retry on it sends nothing; an exchange already in flight MUST be left to land rather than duplicated, so a fan tapping Retry twice still sends one request; and neither the warm hub nor the preloaded games are touched, because a retry is a request the fan asked for and not an invalidation of what is already rendered.
 
-  **And `sdk_rate_limited` MUST NOT be re-armed at all** — the error view stays and no request leaves the device. This is § 2.5's "MUST NOT present it as such" applied to the one surface that could contradict it: a refusal answers in milliseconds, so the button is back under the fan's thumb at once, and the sanction behind that code escalates on the caller's **address** rather than on the key. Everyone behind one carrier NAT or one venue's wifi shares that address, and a third sanction blocks it with no expiry. A button that spends a request there makes the SDK itself the looping client § 2.5 tells a host not to be. The other refusals cost one request per tap and may legitimately change while the app runs — a key re-issued, an application identifier declared — so they are re-armed. Narrowing § 2.1's stamp is the wrong way to reach the same place — the two rules are held apart there on purpose. The **deprecated slug path is unaffected** (there is always a URL to reload), as is any failure of a surface's own document. This was the second requirement in this spec that was normative before it had an implementation; the first was § 2.5's `code`, and both existed because nothing compares a `MUST` to the code.
+  **And `sdk_rate_limited` MUST NOT be re-armed at all** — the error view stays and no request leaves the device. This is § 2.5's "MUST NOT present it as such" applied to the one surface that could contradict it: a refusal answers in milliseconds, so the button is back under the fan's thumb at once, and the sanction behind that code escalates on the caller's **address** rather than on the key. Everyone behind one carrier NAT or one venue's wifi shares that address, and a third sanction blocks it with no expiry. A button that spends a request there makes the SDK itself the looping client § 2.5 tells a host not to be. The other refusals cost one request per tap and may legitimately change while the app runs — a key re-issued, an application identifier declared — so they are re-armed. Narrowing § 2.1's stamp is the wrong way to reach the same place — the two rules are held apart there on purpose. The **deprecated slug path is unaffected** (there is always a URL to reload), as is any failure of a surface's own document.
 - **Since 0.4.0 the game sheet (WebView B) renders the same error view**, with the sheet's own close affordance still reachable. Until then it showed nothing: a game that 404'd was a black sheet, and the fan had no way to tell a broken game from a slow one.
 - The error view MUST keep a way out visible — the hub's native close affordance, the sheet's own.
 - Transient sub-resource failures (images, XHR) MUST NOT trigger the error view.
@@ -1168,12 +1166,10 @@ Goal: tapping a game tile presents an **already-rendered** game (like the warm h
 
 ---
 
-## 12. Non-Goals (rewritten in 0.4.0)
+## 12. Non-Goals
 
-What the SDK does not do. Up to 0.3.0 this section was titled *"Non-Goals (v0.1)"* and framed as
-"candidates for v0.2+" — by this version it described a perimeter that no longer existed, since two of its
-rows had shipped. A non-goal tied to a version decays into a roadmap; this table states what the SDK
-does not do, full stop, and § 10 carries what changed when.
+What the SDK does not do. A non-goal tied to a version decays into a roadmap, so this table states
+what the SDK does not do, full stop; § 10 carries what changed when.
 
 | Non-goal | Notes |
 |---|---|
@@ -1190,13 +1186,13 @@ does not do, full stop, and § 10 carries what changed when.
 
 **The SDK MUST NOT inject or evaluate behavior-modifying JavaScript in any WebView it owns.**
 
-This is not a v0.1 limitation and not a scoping choice — it is a durable constraint, and it used to be
-a row in the dated table above, which understated it. It has two independent reasons: a WebView
-container that runs script inside a third party's page assumes that page's security responsibility, and
-doing so is a documented ground for rejection in store review. So the rule outranks convenience: where
-a feature could be built either by injecting script or by a native mechanism, **the native mechanism is
-the design**, at a higher cost if necessary. The § 13 bridge is the worked example — both platforms
-expose it by native registration alone and inject nothing.
+This is not a v0.1 limitation and not a scoping choice — it is a durable constraint, stated here
+rather than as a row in the table above, which would understate it. It has two independent reasons:
+a WebView container that runs script inside a third party's page assumes that page's security
+responsibility, and doing so is a documented ground for rejection in store review. So the rule
+outranks convenience: where a feature could be built either by injecting script or by a native
+mechanism, **the native mechanism is the design**, at a higher cost if necessary. The § 13 bridge is
+the worked example — both platforms expose it by native registration alone and inject nothing.
 
 Its reply channel (§ 13.8, since 0.4.0) is the second worked example, and the sharper one, because it
 delivers native → web data without touching this rule. It could only do so because it answers **on the

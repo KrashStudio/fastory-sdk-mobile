@@ -42,7 +42,7 @@ dependencies:
     git:
       url: https://github.com/KrashStudio/fastory-sdk-mobile
       path: flutter/fastory_sdk
-      ref: sdk-v0.4.3
+      ref: sdk-v0.4.4
 ```
 
 Public API surface (normative in `SPEC.md §2`): **6 methods** — `Fastory.configure(FastoryConfig)`,
@@ -158,8 +158,9 @@ analyzer reports, so the other two are the ones a host discovers at runtime or i
   last one in a loop: repeated sanctions escalate to an address block with no expiry that is lifted
   only on request, which means asking your Fastory contact; the SDK mints the other two,
   `http_<status>` for a refusal that named no code — a family, not a single name — and
-  `sdk_application_id_required` when it cannot read the application identifier. The endpoint's `sdk_key_required`, and its own
-  `sdk_application_id_required`, never reach a host: the SDK refuses before forming the request.
+  `sdk_application_id_required` when it cannot read the application identifier. A host that sees that
+  last code is always reading the SDK's own refusal, never an answer: the SDK stops before forming the
+  request. Same for a missing or malformed key, which never leaves the device either.
   `sdk_key_unknown` means the API knows no such key — a key **deleted** in the back-office and a
   workspace that no longer exists both land there, so an app already in the field can meet it. Do not
   present it as a synonym of `sdk_key_revoked` (that key existed and was withdrawn) or as a flaky

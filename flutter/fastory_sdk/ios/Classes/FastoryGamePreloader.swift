@@ -22,8 +22,9 @@ final class FastoryGamePreloader: NSObject {
     // bounds background data usage on large hubs. Both flushed under memory pressure.
     private let livePoolCapacity = 3
     private let maxPreloadCount = 12
-    /// Seam for unit tests: real loads never stall for 30s in a test run. `internal` (not
-    /// `private`) and mutable so `@testable` tests can shrink it before triggering a load.
+    /// How long a preload may sit without progress before it is abandoned. Reachable and mutable
+    /// inside the module rather than `private` so the budget can be shortened where waiting 30 s
+    /// would serve no purpose.
     var loadTimeoutSeconds: TimeInterval = 30
 
     /// Live prewarmed webviews keyed by game slug, never presented yet (fresh state).
@@ -298,8 +299,8 @@ final class FastoryGamePreloader: NSObject {
 
     // MARK: - Sequential loading
 
-    /// `internal` (not `private`) so tests can drive pool/eviction/rank scenarios directly,
-    /// without a real WKWebView JS-evaluation round trip (see FastoryGamePreloaderTests).
+    /// Reachable inside the module so pool, eviction and rank behaviour can be driven directly,
+    /// without a real WKWebView JS-evaluation round trip.
     func schedule(_ games: [(slug: String, url: URL)]) {
         guard !games.isEmpty else { return }
         hubOrder = games.map(\.slug)
