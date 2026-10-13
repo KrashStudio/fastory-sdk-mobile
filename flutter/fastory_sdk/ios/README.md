@@ -7,6 +7,9 @@ nothing here to configure beyond the iOS 15 deployment target the podspec declar
 - `Classes/*.swift`: the SDK itself — the hub view controller, the game sheet, the URL policy and the
   message bridge — plus `FastorySdkPlugin.swift`, the bridge to Dart (MethodChannel `fastory_sdk`,
   EventChannel `fastory_sdk/events`).
+- `Resources/*.lproj`: the string tables of the native error view, one per language. The view
+  follows the first of the fan's device languages the SDK carries, then the `locale` you configured
+  when it is one, and falls back to English.
 - `fastory_sdk.podspec`: the pod definition CocoaPods resolves.
 
 **The SDK's public API is the Dart one.** Nothing in this directory is meant to be called from a host

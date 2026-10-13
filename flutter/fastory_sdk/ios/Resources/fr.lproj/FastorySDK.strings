@@ -1,0 +1,17 @@
+/* The error view's message when the surface could not be loaded for a reason other than the connection. */
+"error.generic" = "Une erreur est survenue.";
+
+/* The error view's message when nothing answered: no connection, DNS failure, timeout. */
+"error.noConnection" = "Pas de connexion internet.";
+
+/* The error view's primary action. */
+"action.retry" = "Réessayer";
+
+/* The game sheet's way out of the error view, and the hub's close affordance for a screen reader. */
+"action.close" = "Fermer";
+
+/* The loading indicator's label while the hub or a game is being fetched — what a screen reader says when Retry is pressed. */
+"status.loading" = "Chargement…";
+
+/* Announced when the page Retry waited for has loaded. */
+"status.loaded" = "Contenu chargé.";

@@ -15,7 +15,7 @@ const Color kClubRed = Color(0xFFE5484D);
 const String kClubPlatform = 'Flutter';
 
 // The SDK version this package ships, kept in step with the plugin's pubspec.yaml.
-const String kDeclaredSdkVersion = '0.4.4';
+const String kDeclaredSdkVersion = '0.4.5';
 
 // Pointing the demo at a real fanzone needs a real publishable key, and a key must
 // never reach a commit. Run with `--dart-define-from-file=fastory.local.json` (that
@@ -25,6 +25,9 @@ const String kPlaceholderFanzoneSlug = 'your-fanzone';
 const String kPublishableKey = String.fromEnvironment('FASTORY_PUBLISHABLE_KEY');
 const String kEnvironmentName =
     String.fromEnvironment('FASTORY_ENVIRONMENT', defaultValue: 'staging');
+const String kDevelopmentBaseUrl =
+    String.fromEnvironment('FASTORY_DEVELOPMENT_BASE_URL');
+const String kLocale = String.fromEnvironment('FASTORY_LOCALE');
 
 // Prefilled so the bridge control works without typing anything, and so does the reserved
 // hostToken mode the day it ships: the point is to reach the SDK, not to hold a real credential.
@@ -41,6 +44,8 @@ const String kGlyphCall = '→';
 const String kGlyphResult = '↩';
 const String kGlyphEvent = '←';
 const String kGlyphFailure = '✕';
+
+const String kGlyphFontFamily = 'DemoGlyphs';
 
 /// What the 'standing answer' line reads once the SDK has dropped the value (SPEC § 13.8.6).
 const String kRevokedBridgeReply = 'revoked by the SDK — set it again';
@@ -106,6 +111,8 @@ FastoryEnvironment get kEnvironment {
       return FastoryEnvironment.production;
     case 'staging':
       return FastoryEnvironment.staging;
+    case 'development':
+      return FastoryEnvironment.development;
     // Failing here beats silently running against the wrong platform: a typo would otherwise look
     // like "the key is rejected" hours later. The console reports it as a refused configure()
     // rather than taking the app down.
@@ -113,7 +120,7 @@ FastoryEnvironment get kEnvironment {
       throw ArgumentError.value(
         kEnvironmentName,
         'FASTORY_ENVIRONMENT',
-        "must be 'staging' or 'production'",
+        "must be 'staging', 'production' or 'development'",
       );
   }
 }
@@ -125,11 +132,17 @@ FastoryConfig demoConfig({FastoryTheme? theme}) => kPublishableKey.isEmpty
     ? FastoryConfig(
         fanzoneSlug: kPlaceholderFanzoneSlug,
         environment: kEnvironment,
+        locale: kLocale.isEmpty ? null : kLocale,
+        developmentBaseUrl:
+            kDevelopmentBaseUrl.isEmpty ? null : kDevelopmentBaseUrl,
         theme: theme,
       )
     : FastoryConfig(
         publishableKey: kPublishableKey,
         environment: kEnvironment,
+        locale: kLocale.isEmpty ? null : kLocale,
+        developmentBaseUrl:
+            kDevelopmentBaseUrl.isEmpty ? null : kDevelopmentBaseUrl,
         theme: theme,
       );
 
@@ -155,6 +168,10 @@ class ExampleApp extends StatelessWidget {
           brightness: Brightness.dark,
         ).copyWith(surface: kClubNavy),
         scaffoldBackgroundColor: kClubNavy,
+        // Flutter's text engine hands every emoji-capable codepoint to the colour emoji font,
+        // whatever its default presentation, so `↩` would render as an emoji tile instead of a
+        // text arrow like its three neighbours. The bundled font carries that one glyph as text.
+        fontFamilyFallback: const <String>[kGlyphFontFamily],
         useMaterial3: true,
       ),
       home: const HomeScreen(),
@@ -528,6 +545,17 @@ class SdkConsoleState extends State<SdkConsole> {
     }
   }
 
+  /// An empty token is not an absent one: the web would be served it as an answer, where an unset
+  /// type is answered `unavailable`. Refused here, before the SDK is asked anything.
+  Future<void> _setUserToken() async {
+    final String token = _replyController.text.trim();
+    if (token.isEmpty) {
+      _fail('setBridgeReply', 'empty_token');
+      return;
+    }
+    await _setBridgeReply(<String, Object?>{'token': token});
+  }
+
   Future<void> _setBridgeReply(Map<String, Object?>? payload) async {
     final bool ok = await _call(
       'setBridgeReply',
@@ -553,6 +581,7 @@ class SdkConsoleState extends State<SdkConsole> {
             const _ValueLine(label: 'sdk version', value: kDeclaredSdkVersion),
             const _ValueLine(label: 'environment', value: kEnvironmentName),
             _ValueLine(label: 'identifier', value: kIdentifierInUse),
+            _ValueLine(label: 'locale', value: kLocale.isEmpty ? '—' : kLocale),
             _ValueLine(label: 'configured', value: _configured ? 'yes' : 'no'),
             const _ActionRow(
               children: <Widget>[
@@ -667,11 +696,7 @@ class SdkConsoleState extends State<SdkConsole> {
               children: <Widget>[
                 _Action(
                   label: 'set',
-                  onPressed: _busy
-                      ? null
-                      : () => unawaited(_setBridgeReply(<String, Object?>{
-                            'token': _replyController.text,
-                          })),
+                  onPressed: _busy ? null : () => unawaited(_setUserToken()),
                 ),
                 _Action(
                   label: 'clear',

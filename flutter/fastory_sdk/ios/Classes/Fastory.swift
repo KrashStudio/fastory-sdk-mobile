@@ -73,8 +73,13 @@ public enum Fastory {
     /// Retained because `WKWebView.navigationDelegate` is weak, and an unretained one would leave the
     /// warm-up unwatched again the moment it went out of scope (§ 9.1).
     private static var warmUpObserver: FastoryWarmUpObserver?
+    private static var failedWarmHubWebViews: [WKWebView] = []
     private static var memoryWarningObserver: NSObjectProtocol?
     private static var didBecomeActiveObserver: NSObjectProtocol?
+    private static var identityGeneration = 0
+    static var eraseWebsiteData: ([URL], @escaping () -> Void) -> Void = {
+        FastoryWebsiteDataEraser.erase(origins: $0, completion: $1)
+    }
 
     /// The identity the SDK currently carries: `nil` until the first successful `identify`, and
     /// again after `logout()`.
@@ -122,20 +127,6 @@ public enum Fastory {
             return
         }
         let previous = store(config: config)
-        // A configure that replaces the configuration invalidates what the previous one produced,
-        // before anything new is prepared (SPEC § 2.1):
-        //
-        //  - the warm hub renders the previous fanzone, so keeping it makes the next openGames()
-        //    present the old configuration's page under the new one;
-        //  - the standing bridge answer was minted for the previous environment and workspace, so
-        //    serving it under the next one hands a production token to a staging page (§ 13.8.6).
-        //
-        // Here rather than inside warmUpHub(), which is the trap this closes: warming up returns
-        // early when there is nothing to warm — the whole publishable-key path — so a teardown that
-        // lived past that guard would never run on the very configurations that need it.
-        //
-        // Nothing to invalidate on the first call, and a host may legitimately set the standing
-        // answer before configuring, so revoking there would drop a value it never got to use.
         let replacesConfiguration = previous != nil && previous != config
         if replacesConfiguration {
             FastoryBridgeResponder.revokeAll()
@@ -171,7 +162,7 @@ public enum Fastory {
     public static func close() {
         // Callable from any thread, unlike `openGames`: a host closing the hub is often doing it from
         // a completion handler it does not control the queue of.
-        onMain { hubViewController?.dismiss(animated: true) }
+        onMain { hubViewController?.fastoryDismissPresentedThenSelf(animated: true) }
     }
 
     // MARK: - Identity
@@ -240,19 +231,13 @@ public enum Fastory {
             then()
             return
         }
+        identityGeneration += 1
         // Both were built before this transition, so they hold the previous fan's rendered page.
         discardWarmHub()
-        FastoryWebsiteDataEraser.erase(
-            origins: FastoryIdentityStorage.origins(for: config),
-            completion: then
-        )
+        eraseWebsiteData(FastoryIdentityStorage.origins(for: config), then)
     }
 
     // MARK: - Hub keep-alive
-
-    // The hub WebView is created and loaded at configure() and retained across sessions, so
-    // openGames() presents an already-rendered page instead of reloading every time. Dropped on
-    // re-configure (the hub URL may change) and under memory pressure.
 
     /// The warm page and whether it has committed, handed over together: they are one fact about one
     /// page, and reading the second anywhere else would let it answer for a different one.
@@ -293,16 +278,18 @@ public enum Fastory {
         warmHubDidCommit = hasCommitted
     }
 
-    /// Drops the warm page only if the slot still holds it. The warm-up's observer reports a failure
-    /// a main-thread turn late, and a presentation can take the page inside that turn — discarding
-    /// then would flush the preloader for the hub that is opening.
-    static func discardWarmHub(ifStillHolding webView: WKWebView) {
+    static func warmHubPageDidFail(_ webView: WKWebView) {
         guard warmHubWebView === webView else { return }
         discardWarmHub()
+        failedWarmHubWebViews.append(webView)
     }
 
-    /// Read-only view of the warm slot. `takeWarmHubWebView()` empties it, so a case that has to
-    /// check the slot *and* leave it as it found it has nothing else to read.
+    static func releaseFailedWarmHubWebView(_ webView: WKWebView) {
+        failedWarmHubWebViews.removeAll { $0 === webView }
+    }
+
+    /// Read-only view of the warm slot: `takeWarmHubWebView()` empties it, so this is the only way to
+    /// look at the slot and leave it as it was.
     static var warmHubWebViewForTesting: WKWebView? { warmHubWebView }
 
     /// The warm-up's page committed a document — reported by the observer watching that load, which
@@ -347,17 +334,6 @@ public enum Fastory {
         FastoryWorkspaceResolver.shared.rearmAfterFailure()
     }
 
-    /// Warms the hub only once the host application is on screen.
-    ///
-    /// Allocating a `WKWebView` starts a WebKit content process and `load()` starts a network fetch,
-    /// and a host configures the SDK from `application(_:didFinishLaunchingWithOptions:)` — the exact
-    /// moment the club app is drawing its first screen. Done inline, the SDK competes with that first
-    /// paint against a budget (16 ms) it has no way to honour there. Deferred to `didBecomeActive`,
-    /// the work lands after the first frame, and a **background launch** — a common way to reach
-    /// `configure` — warms nothing at all until there is a screen to be fast for.
-    ///
-    /// One observer, re-read at fire time rather than captured: the configuration in force when the
-    /// app comes to the foreground is the one to warm, not the one that armed the observer.
     private static func warmUpHubOnceTheHostIsOnScreen() {
         guard !hostIsOnScreen() else {
             warmUpHub()
@@ -377,9 +353,8 @@ public enum Fastory {
         }
     }
 
-    /// Whether the host application has a screen up. Seam for tests: a suite cannot foreground its
-    /// own test host, and a case that skipped itself on that account would assert nothing on the one
-    /// runner that matters.
+    /// Whether the host application has a screen up. Replaceable because the warm-up gates on it and
+    /// the platform's own answer cannot be set from outside.
     static var hostIsOnScreen: () -> Bool = { UIApplication.shared.applicationState == .active }
 
     /// The SDK's own main-thread hop, used by every entry point the host may call from any thread
@@ -405,9 +380,40 @@ public enum Fastory {
         // as a cold open. Android's `preloadHub` has always carried this guard; iOS did not.
         guard warmHubWebView == nil else { return }
         FastoryGamePreloader.shared.flush()
-        // Only the slug path can warm up synchronously. On the key path the hub view controller
-        // resolves and loads on presentation — warming a webview for an unknown URL is pointless.
-        guard let hubURL = config.staticHubURL else { return }
+        if let hubURL = config.staticHubURL {
+            prepareWarmHub(at: hubURL, for: config)
+            return
+        }
+        guard config.publishableKey != nil else { return }
+        let generation = identityGeneration
+        FastoryWorkspaceResolver.shared.whenResolved(config: config) { result in
+            guard case .success(let workspace) = result else { return }
+            warmUpHub(
+                resolvedAt: config.hubURL(fanzoneSlug: workspace.slug),
+                for: config,
+                identityGeneration: generation
+            )
+        }
+    }
+
+    private static func warmUpHub(
+        resolvedAt hubURL: URL,
+        for config: FastoryConfig,
+        identityGeneration generation: Int
+    ) {
+        guard config == Fastory.config,
+              hubViewController == nil,
+              warmHubWebView == nil,
+              generation == identityGeneration else { return }
+        guard hostIsOnScreen() else {
+            warmUpHubOnceTheHostIsOnScreen()
+            return
+        }
+        FastoryGamePreloader.shared.flush()
+        prepareWarmHub(at: hubURL, for: config)
+    }
+
+    private static func prepareWarmHub(at hubURL: URL, for config: FastoryConfig) {
         let webView = FastoryWebKit.makeWebView()
         FastoryGamePreloader.shared.watchHub(webView, config: config)
         // A warm-up nobody watches keeps whatever it loaded, error page included (§ 9.1). The
@@ -424,10 +430,6 @@ public enum Fastory {
         observeMemoryPressureOnce()
     }
 
-    /// Drops the warm hub and every preloaded game. Named rather than inlined in the memory-pressure
-    /// observer because an identity transition needs the same teardown (§ 7.4) — a warm hub is built
-    /// at `configure()`, necessarily before any `identify()`, so it always carries the previous
-    /// session's rendered state.
     static func discardWarmHub() {
         warmHubWebView = nil
         warmHubConfig = nil
@@ -452,16 +454,14 @@ public enum Fastory {
         FastoryBridgeResponder.setReply(for: type, payload: payload)
     }
 
-    // MARK: - Test seam
+    // MARK: - Reset
 
-    /// Hands the next suite an unconfigured SDK.
+    /// Puts the SDK back to its unconfigured state.
     ///
     /// `config`, `identity` and the standing bridge answers are process-wide, and the public
     /// contract has no "unconfigure" — deliberately: a host that could drop a configuration would
-    /// have a way to leave the SDK half-alive. So a suite that configures cannot undo it, and every
-    /// test asserting *pre-configure* behaviour would silently depend on running before the first
-    /// one that configures. That is not a hypothetical: the invalidation cases of § 13.8.2 configure
-    /// by key, and they sort before the identify contracts.
+    /// have a way to leave the SDK half-alive. This is the one entry point that undoes a
+    /// configuration, and it is not part of the public surface.
     static func resetForTesting() {
         stateLock.lock()
         storedConfig = nil
@@ -471,13 +471,19 @@ public enum Fastory {
         warmHubConfig = nil
         warmHubDidCommit = false
         warmUpObserver = nil
-        // Both seams below are process-wide and are the ones a suite is most likely to stub and
-        // forget: left stubbed, every later case that expects a load — or a deferred discard —
-        // silently gets none.
+        failedWarmHubWebViews.removeAll()
         FastoryWarmUpObserver.scheduleDiscard = { work in DispatchQueue.main.async(execute: work) }
         FastoryGamePreloader.shared.startLoad = FastoryGamePreloader.performLoad
         FastoryGamePreloader.shared.scheduleTimeout = FastoryGamePreloader.performScheduleTimeout
         FastoryGamePreloader.shared.flush()
+        FastoryWorkspaceResolver.shared.performRequest = { request, completion in
+            URLSession.shared.dataTask(with: request) { data, response, error in
+                completion(data, response, error)
+            }.resume()
+        }
+        FastoryWorkspaceResolver.shared.applicationId = { Bundle.main.bundleIdentifier }
+        identityGeneration = 0
+        eraseWebsiteData = { FastoryWebsiteDataEraser.erase(origins: $0, completion: $1) }
         hostIsOnScreen = { UIApplication.shared.applicationState == .active }
         if let observer = didBecomeActiveObserver {
             NotificationCenter.default.removeObserver(observer)

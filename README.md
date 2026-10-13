@@ -1,7 +1,7 @@
 # Fastory Mobile SDK — Integration Guide
 
 Audience: host app engineering teams integrating the SDK.
-Scope: Fastory Mobile SDK v0.4.4 (ultra-light, WebView-based).
+Scope: Fastory Mobile SDK v0.4.5 (ultra-light, WebView-based).
 
 Two ways to consume it, same behavior and same version:
 
@@ -10,8 +10,12 @@ Two ways to consume it, same behavior and same version:
 | **Flutter plugin** | Flutter apps | git dependency on this repo, `path: flutter/fastory_sdk` |
 | **Swift package** | Native iOS apps | Swift Package Manager, this repo's root package |
 
-A native Kotlin artifact on Maven Central follows. The real logic is native in both channels — the
-Flutter plugin is a thin bridge over the same Swift and Kotlin cores.
+A native Android app has no channel of its own yet, and no supported path in the meantime: the Kotlin
+core ships only inside the Flutter plugin, for Flutter apps, and embedding it any other way is
+neither documented nor tested here. A native Kotlin artifact on Maven Central follows, with no date
+attached — if a native Android integration is what blocks you, ask us rather than planning around a
+version number (see *Known limitations*). The real logic is native in both channels — the Flutter
+plugin is a thin bridge over the same Swift and Kotlin cores.
 
 ## Overview
 
@@ -68,7 +72,7 @@ dependencies:
     git:
       url: https://github.com/KrashStudio/fastory-sdk-mobile
       path: flutter/fastory_sdk
-      ref: sdk-v0.4.4
+      ref: sdk-v0.4.5
 ```
 
 Then:
@@ -83,7 +87,7 @@ In Xcode: *File > Add Package Dependencies…*, enter `https://github.com/KrashS
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/KrashStudio/fastory-sdk-mobile.git", .upToNextMinor(from: "0.4.4"))
+    .package(url: "https://github.com/KrashStudio/fastory-sdk-mobile.git", .upToNextMinor(from: "0.4.5"))
 ]
 ```
 
@@ -170,6 +174,16 @@ Fastory.openGames(from: presentingViewController)
 
 The Swift API takes the presenter explicitly (`openGames(from:)`) and delivers lifecycle events through `Fastory.eventsDelegate`, a `FastoryEventsDelegate`. Each channel follows its own platform idiom rather than a lowest-common-denominator signature — the behavior behind them is identical.
 
+Observed on iOS 26.5: opening the hub from a SwiftUI `TabView` entry — a selection binding that
+refuses the tab and calls `openGames(from:)` instead — works, and the call alone logs nothing. If
+the same tap also changes state that the view owning the `TabView` reads in its `body` — an
+`@ObservedObject`, `@EnvironmentObject`, `@StateObject` or `@Observable` model you update from the
+selection binding — that view re-renders mid-switch and UIKit logs `Unbalanced calls to begin/end
+appearance transitions for <SwiftUI.TabHostingController: …>`. The hub still opens and your
+selection stays put. To avoid the line, read that state in the tabs' content rather than in the
+view that owns the `TabView`, or in any view above it; deferring the call by one runloop tick does
+not remove it.
+
 ## Configuration reference
 
 `FastoryConfig`:
@@ -181,7 +195,7 @@ The Swift API takes the presenter explicitly (`openGames(from:)`) and delivers l
 | `theme` | `light` \| `dark` | no | Appearance hint forwarded to the hub and games. Not read by the web side yet |
 | `environment` | `FastoryEnvironment` | no (default `production`) | `production` (`https://fanzone.me`), `staging` (`https://staging.fanzone.me`), or `development` (uses `developmentBaseUrl`) |
 | `hubTabSlug` | `String` | no (default `"games"`) | The hidden hub tab slug |
-| `locale` | `String?` | no | Forwarded to the hub when provided; defaults to the web Fanzone's own locale resolution |
+| `locale` | `String?` | no | Forwarded to the hub and game URLs when provided, and the error view's fallback language (see *Offline*); unset, the web Fanzone resolves its own locale |
 | `developmentBaseUrl` | `String?` | only when `environment == development` | Custom `https` base URL, for testing against a Fanzone you serve yourself. Flutter only: `configure` refuses a `development` configuration without it. On the Swift channel the field does not exist — `FastoryEnvironment.development(baseURL:)` carries the URL, so a development environment without one cannot be written |
 
 Public methods:
@@ -210,7 +224,9 @@ key the message names the rule that was broken and the environment expected, and
 terminates on the spot**, with a fatal error naming the SDK's own file and the rule that was broken.
 On a **release** build it returns normally and nothing is stored. If you want to decide for yourself
 what a bad configuration does, call `try config.validate()` first: it is public, it throws
-`FastoryConfigError`, it applies the same rules, and it calls nothing.
+`FastoryConfigError`, it applies the same rules, and it calls nothing. `FastoryConfigError` is a
+`LocalizedError`, so `error.localizedDescription` names the rule that was broken — the same sentence
+you get by interpolating the error.
 
 **A refused `configure()` changes nothing — including nothing you had already set.** On either
 channel the configuration already in force keeps applying. So the "nothing is stored" above is the
@@ -229,9 +245,12 @@ on Flutter you get an exception you can catch. Change both lines together, and i
 starts dying at launch right after an environment switch, this is why.
 
 **Threading (since 0.4.0).** Every method above may be called from any thread except `openGames()`,
-which needs the main thread — it takes your own `UIViewController` / `Context`, so you are already in
-UI code when you call it. `configure()` in particular is safe from a background bootstrap: it stores
-your configuration before returning and schedules its own WebView work on the main thread. Every
+which needs the main thread — it takes your own `UIViewController` / `Context` to present from, so
+you are already in UI code when you call it. That it takes a platform object is not what makes it
+main-thread-only; presenting is: on Android `configure(context, …)` takes a `Context` too, presents
+nothing and keeps only the application context, so it stays callable from any thread. `configure()`
+in particular is safe from a background bootstrap: it stores your configuration before returning and
+schedules its own WebView work on the main thread. Every
 callback and event still arrives on the main thread. `SPEC.md` § 2.7 is the normative table. From
 Flutter this is nothing you have to think about: platform-channel calls already land on the platform
 thread.
@@ -244,7 +263,9 @@ return the fan to the hub underneath instead of to your app. `SPEC.md` § 2.1 is
 
 **Startup cost (since 0.4.0).** `configure()` no longer builds the hub WebView while your app is
 drawing its first screen — it waits for the first frame, and warms nothing at all on a background
-launch. Opening the hub is as fast as before.
+launch. Opening the hub is as fast as before, on both paths: configured by slug the page is prepared
+right after that first frame, and configured by key it is prepared as soon as the
+exchange resolves, so the first tap finds it ready like every later one.
 
 Under the hood the plugin uses a `MethodChannel` named `fastory_sdk` (`configure`, `openGames`, `close`, `identify`, `logout`, `setBridgeReply`) and an `EventChannel` named `fastory_sdk/events`.
 
@@ -375,7 +396,8 @@ What to know:
   | `sdk_rate_limited` | 429 | Too many exchanges from this key or this address. **Back off — do not retry in a loop.** A single burst clears on its own, but the third sanction adds your address to a block list **with no expiry**, and every later exchange from it answers this same code until the block is lifted, which you ask your Fastory contact for. Looping is what earns the permanent form. Surface it rather than absorb it. |
 
   **The other two the SDK mints itself**, so that a refusal is never reported as a blank:
-  `http_<status>` when the refusal named no code of its own (a proxy in front of our API, typically),
+  `http_<status>` when the refusal named no code of its own — whatever its body looked like: JSON
+  without a `code`, an HTML error page from a proxy in front of our API, or nothing at all —
   and `sdk_application_id_required` when the SDK could not read your app's identifier at all and so
   had no well-formed request to send — iOS only in practice, since an Android package name always
   exists. Those six are the whole of it; treat anything else in `code` as a bug to report. When
@@ -507,16 +529,18 @@ Every navigation decision is made natively, per URL:
 ### Consent
 
 The hub and game URLs carry `consent=0`. The web player reads this as "the host app handles consent",
-so it does not show its own cookie banner, and it does not assume analytics consent. If your app runs
-its own consent flow and wants Fastory analytics enabled, contact us — a per-session consent value is
-on the roadmap.
+so it does not show its own cookie banner, and it does not assume analytics consent. The value is
+fixed: the SDK always sends `consent=0`, and no configuration field changes it in this version.
 
 ### Sessions and stored data
 
 The hub and the games are **different sites** (`fanzone.me` and `story.tl`), so they do not share a
 session, and no store configuration can make them: the hub reads a cookie, and a game loaded with
-`embed=1` reads no storage at all. Each surface keeps its own persisted state across `openGames()`
-sessions and app restarts.
+`embed=1` takes its session from its host page, not from storage — and in an SDK WebView it has no
+host page. Each page still reads and writes storage of its own: the game keeps its own cookies and
+web storage on its own site, as any page does, so if you declare the data your app stores, count the
+game's as well as the hub's. What never happens is a session crossing from one site to the other.
+Each surface keeps its own persisted state across `openGames()` sessions and app restarts.
 
 Releases up to 0.3.0 documented the opposite — that the game inherited the hub's session through a
 shared cookie store. That was wrong and is withdrawn in 0.4.0 (`SPEC.md` § 7, rewritten). If you read
@@ -540,11 +564,11 @@ Priority order:
 
 ### Safe areas
 
-The SDK WebViews are laid out **edge-to-edge** (the Fanzone fills the screen top and bottom, no letterboxing); the chromeless Fanzone pads its own content via `env(safe-area-inset-*)` so nothing interactive sits under the notch, Dynamic Island, or gesture bar. Native close affordances (the ✕ button) are inset below the system bars. You do not need to do anything on the app side.
+On iOS the SDK lays its WebViews out **inside the safe area**: the hub starts below the status bar (notch and Dynamic Island included) and ends above the home indicator, and the game sheet ends above the home indicator too. The system bars sit on a plain band in the system background colour rather than on the Fanzone's own background. On the hub, if your app sets the status bar style itself rather than per view controller (`UIViewControllerBasedStatusBarAppearance` set to `NO`), the band follows the style in force when the hub opens: black under light text, white under dark text. A phone without a notch shows no band beyond the status bar's, and in landscape or on iPad the band runs along every edge the system reserves. On Android the WebViews are laid out **edge-to-edge** and the chromeless Fanzone pads its own content via `env(safe-area-inset-*)`, so nothing interactive sits under the cutout or the gesture bar. Native close affordances (the ✕ button) are inset below the system bars on both platforms. You do not need to do anything on the app side.
 
 ### Offline
 
-If a surface fails to load (airplane mode, no network, a page that answers an error), the SDK shows a native error state with a retry action — no blank white WebView is left on screen. **Since 0.4.0 the game sheet has the same error view**, and both surfaces report the failure to your app as `FastorySurfaceLoadFailed` (see *When a surface does not load*).
+If a surface fails to load (airplane mode, no network, a page that answers an error), the SDK shows a native error state with a retry action — no blank white WebView is left on screen. The message is localized — English, French and Spanish, following the fan's device language; when none of the device's languages is one of those, the `locale` you configured is used if it is one, English otherwise — and tells a lost connection (*No internet connection.*) from any other failure (*Something went wrong.*). With VoiceOver or TalkBack on, pressing Retry on either surface moves the focus onto a loading indicator labelled *Loading…*, and the end of the wait is spoken — *Content loaded.* when the page opens, the error message when it does not; the same language rule applies. On Android you may override the six string resources by redefining them, for every language you ship: a redefinition in `values/` alone leaves the SDK's French and Spanish tables in force on those devices. On iOS the texts cannot be overridden. **Since 0.4.0 the game sheet has the same error view**, and both surfaces report the failure to your app as `FastorySurfaceLoadFailed` (see *When a surface does not load*).
 
 ## FAQ
 
@@ -555,7 +579,7 @@ No — the two WebViews are owned and configured by the SDK (URL interception, s
 No. The SDK's Android module declares its keep rule with `consumerProguardFiles`, which is what makes R8 merge that rule into your application's configuration when it shrinks — whether your R8 setup is hand-written or derived from AGP's defaults. The rule keeps the bridge's JavaScript entry point, the one member R8 finds no caller for, because the WebView reaches it by reflection. Everything else the SDK uses — the platform `android.webkit.WebView`, standard Flutter plugin registration — is covered by default Flutter/AGP rules. If your build uses aggressive custom shrinking and you still hit an issue, keep the SDK's plugin package and report it to us.
 
 **What does the SDK add to app size?**
-It is intentionally ultra-light: Dart plugin glue plus thin native view controllers around system WebViews. No bundled UI frameworks, no analytics libraries, no native third-party dependencies. Expect a negligible footprint (well under 1 MB per platform).
+It is intentionally ultra-light: Dart plugin glue plus thin native view controllers around system WebViews. No bundled UI frameworks and no analytics libraries. The Swift package declares no dependency. The Android module depends on five AndroidX and Material libraries — `androidx.core:core-ktx:1.13.1`, `androidx.appcompat:appcompat:1.7.0`, `com.google.android.material:material:1.12.0`, `androidx.webkit:webkit:1.11.0` and `androidx.lifecycle:lifecycle-process:2.6.1` — which most Android apps already resolve. Expect a negligible footprint (well under 1 MB per platform).
 
 **Will this pass Apple App Store review / TestFlight?**
 The SDK displays the partner's own web content (your Fanzone) in a WebView, with no payments, no OAuth, no account creation, and no downloadable code beyond regular web pages. This is standard partner-content embedding. Prize-based games remain subject to the usual App Store Review Guidelines on contests (the contest organizer is the partner/Fastory, not Apple — state this in your contest rules as usual).
@@ -576,10 +600,17 @@ Plus the two **stories** hosts the games are served from, `https://story.tl` and
 because a game link is whatever the fanzone page put on the tile. That is also why a `/s/` link to
 either one opens in the game sheet whichever environment you configured (`SPEC.md` § 4, rule 1).
 
-The API host is reached **only** on the publishable-key path, once per configuration, at
-`POST /sdk/auth/bootstrap`. Configured with the deprecated `fanzoneSlug` the SDK calls no endpoint at
-all. Anything else your fan reaches through a hub tile leaves for the system browser and is not the
-SDK's traffic.
+The API host is reached **only** on the publishable-key path, at `POST /sdk/auth/bootstrap`. "Once
+per configuration" is true of an exchange that succeeded: it is not run again until you configure
+again. A **failed** exchange is not remembered as final, and the two platforms re-run it differently:
+on Android, `openGames()` asks the resolver again, so a second request leaves before the hub decides
+what to show; on iOS, the hub shows the error view from the remembered failure and the second
+request leaves when the fan taps Retry (never for `sdk_rate_limited` — see *When a surface does not
+load*). So a configuration whose exchange failed costs **two requests on Android** before the fan
+taps anything, and **one on iOS** until they tap Retry — plus one per Retry press on either — and
+none of them is a retry loop: each is triggered by a call of yours or a tap of the fan's.
+Configured with the deprecated `fanzoneSlug` the SDK calls no endpoint at all. Anything else your fan
+reaches through a hub tile leaves for the system browser and is not the SDK's traffic.
 
 ## Known limitations
 
@@ -589,11 +620,20 @@ one of them blocks you, rather than planning around a version number.
 - Of the three identity modes, only `FastoryAnonymous()` resolves today (see *Identity*). Until the
   other two ship, a fan is anonymous on both surfaces — which also means a game they play credits no
   points to an account.
+- No standalone Android artifact, and no supported native Android path until it ships: the Kotlin
+  core reaches an app only inside the Flutter plugin, for a Flutter app. Ask us if this blocks you.
 - No SDK-side analytics — use the event stream and your own tracker.
 - No JavaScript injection. The bridge carries one notification type and answers one question type —
   there is no API to *push* into the web content unprompted, and no haptics or share hooks.
 - On Android the reply channel needs a WebView from Chrome 85 (mid-2020) or later. Below that it is
   simply absent and surfaces stay anonymous; nothing else about the SDK is affected.
+- On Android the SDK learns that your app is on screen through `androidx.lifecycle:lifecycle-process`,
+  which is initialised by the `InitializationProvider` that `androidx.startup` declares in its
+  manifest. If your app removes that provider (`tools:node="remove"`), the SDK is never told you
+  are on screen: the hub is never prepared ahead of the first opening and every opening loads cold,
+  under a loading indicator — with no error and no event to tell you why. Keep the
+  provider, or run `ProcessLifecycleInitializer` yourself through `AppInitializer` before the SDK
+  needs it.
 - The SDK never retries a failed load by itself. It shows an error view with Retry and reports the
   failure (`FastorySurfaceLoadFailed`); any automatic retry policy is yours to implement. The fan's
   Retry does re-run a refused publishable-key exchange, since 0.4.3 — see *When a surface does not
@@ -607,13 +647,4 @@ one of them blocks you, rather than planning around a version number.
     ios"* and falls back to CocoaPods, which succeeds. This is about the **plugin's** iOS side only —
     the native Swift channel described under *Install* is a real SwiftPM package and resolves
     normally. A fix is planned on our side.
-- **One runtime console warning on iOS, also harmless.** Calling `openGames(from:)` from a SwiftUI
-  tab-bar action logs `Unbalanced calls to begin/end appearance transitions for
-  <SwiftUI.TabHostingController: …>` once — UIKit noticing that a presentation started while the tab
-  transition was still settling. The hub opens, your selection stays where it was, and nothing else
-  is affected; presenting from a plain button does not produce it (observed on iOS 26.5). It is ours
-  to fix, so you are not expected to do anything — though if the line bothers your logs, deferring
-  the call by one runloop tick
-  (`DispatchQueue.main.async { Fastory.openGames(from: …) }`) lets the tab transition settle first.
-  Worth knowing before you spend an afternoon on it.
 - Portrait and landscape are supported, but the hub content is designed mobile-first (portrait).

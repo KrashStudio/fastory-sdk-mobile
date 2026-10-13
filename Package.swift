@@ -5,10 +5,11 @@ import PackageDescription
 // cannot resolve a package held in a subdirectory; the Flutter plugin under flutter/ falls outside
 // every declared target path, so the two channels coexist here without SwiftPM ever seeing it.
 //
-// One target, sources only: no test target and therefore no resources declaration, so there is
-// nothing for SwiftPM to process before it compiles.
+// A single library target. Its only resources are the string tables the native error view
+// reads, one per language, which is why the manifest names a default localization.
 let package = Package(
     name: "FastorySDK",
+    defaultLocalization: "en",
     platforms: [
         .iOS(.v15)
     ],
@@ -16,6 +17,9 @@ let package = Package(
         .library(name: "FastorySDK", targets: ["FastorySDK"])
     ],
     targets: [
-        .target(name: "FastorySDK")
+        .target(
+            name: "FastorySDK",
+            resources: [.process("Resources")]
+        )
     ]
 )

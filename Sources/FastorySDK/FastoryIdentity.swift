@@ -192,7 +192,7 @@ enum FastoryWebsiteDataEraser {
 /// What `identify` / `logout` must do, decided before anything is touched.
 ///
 /// Pure by design: every rule of SPEC § 2.6.1 is decidable without a WebView, a data store or a
-/// network, which is what makes them assertable in a unit test.
+/// network, so the rules can be reasoned about on their own.
 struct FastoryIdentityTransition: Equatable {
     /// `nil` when the call fails.
     let resolved: FastoryResolvedIdentity?

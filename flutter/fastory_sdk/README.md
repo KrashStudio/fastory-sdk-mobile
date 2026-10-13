@@ -5,7 +5,7 @@ Flutter plugin of the Fastory Mobile SDK. It opens a Fanzone's games hub in a fu
 browser. The real logic is native — this package is a thin bridge over the same Swift and Kotlin cores
 the native channels ship.
 
-Scope: Fastory Mobile SDK v0.4.4 (ultra-light, WebView-based).
+Scope: Fastory Mobile SDK v0.4.5 (ultra-light, WebView-based).
 
 This file is the Dart reference: every method, event and error the plugin exposes. `README.md` at the
 repository root is the full integration guide (it also covers the native iOS channel), and `SPEC.md`
@@ -33,7 +33,7 @@ dependencies:
     git:
       url: https://github.com/KrashStudio/fastory-sdk-mobile
       path: flutter/fastory_sdk
-      ref: sdk-v0.4.4
+      ref: sdk-v0.4.5
 ```
 
 ## Upgrading from 0.3.0: three source breaks
@@ -82,7 +82,7 @@ void main() {
 | `fanzoneSlug` | `String?` | — | **Deprecated** since 0.3.0, accepted for the whole 0.x line: the Fanzone to open, e.g. `your-fanzone` |
 | `environment` | `FastoryEnvironment` | `production` | `production` (`fanzone.me`), `staging` (`staging.fanzone.me`), `development` |
 | `hubTabSlug` | `String` | `games` | Hidden Fanzone tab used as the hub |
-| `locale` | `String?` | `null` | Forced hub locale; defaults to the web Fanzone's own resolution |
+| `locale` | `String?` | `null` | Locale hint forwarded to the hub and game URLs, and the error view's fallback language; unset, the web Fanzone resolves its own |
 | `theme` | `FastoryTheme?` | `null` | `light` or `dark`, forwarded to the hub and game URLs. The web side does not read it yet, so setting it is inert until it ships there |
 | `developmentBaseUrl` | `String?` | `null` | Base URL, required when `environment` is `development` |
 
@@ -91,8 +91,11 @@ Call `configure()` once before `openGames()`. If you call it straight from `main
 
 Since 0.4.0 `configure()` no longer builds the hub WebView while your app is drawing its first
 screen — it waits for the first frame, and warms nothing at all on a background launch. Opening the
-hub is as fast as before. A re-`configure()` with a *different* configuration also drops the warm hub,
-so the next `openGames()` shows the new fanzone rather than the previous one.
+hub is as fast as before, on both paths: configured by slug the page is prepared right after that
+first frame, and configured by key it is prepared as soon as the exchange resolves, so
+the first tap finds it ready like every later one. A re-`configure()` with a *different*
+configuration also drops the warm hub, so the next `openGames()` shows the new fanzone rather than
+the previous one.
 
 Pass **exactly one** identifier: a key or the deprecated slug, never both and never neither. A
 publishable key must match its environment — `fpk_live_` in production, `fpk_test_` everywhere else —
@@ -193,7 +196,9 @@ SDK sends no analytics of its own — you own all tracking through this stream.
 
 A fanzone that does not exist, a key you revoked, a game that was taken down, a fan in a tunnel: the
 SDK shows its own error screen with a Retry button — the game sheet has one too since 0.4.0 —
-and tells your app what happened.
+and tells your app what happened. The screen is localized in English, French and Spanish, follows the
+fan's device language — falling back to the `locale` you configured, then to English — and
+distinguishes a lost connection from any other failure.
 
 - **`surface`** is `FastorySurface.hub` or `FastorySurface.game`.
 - **`reason`** is what you branch on. `FastoryLoadFailureReason.rejected` — something answered and
@@ -210,8 +215,8 @@ and tells your app what happened.
   name is not declared on the key) and `sdk_rate_limited` (429 — **not always transient**: repeated
   sanctions escalate to an address block with no expiry that is lifted only on request — ask your
   Fastory contact — so back off rather than retry in a loop). **The other two the SDK mints**, so that
-  a refusal is never reported as a blank: `http_<status>` when the refusal named no code of its own,
-  and `sdk_application_id_required`
+  a refusal is never reported as a blank: `http_<status>` when the refusal named no code of its own —
+  JSON without a `code`, an HTML error page, or no body at all — and `sdk_application_id_required`
   when the SDK could not read your app's identifier at all and had no well-formed request to send
   (iOS only in practice — an Android package name always exists).
 
@@ -337,16 +342,19 @@ Every failure crosses the channel as a `PlatformException`; branch on `code`.
 | Code | Raised by | Meaning |
 |---|---|---|
 | `not_configured` | `openGames`, `identify` | `configure` was never called |
-| `already_open` | — | Reserved; no platform raises it. Calling `openGames` while the hub is up is a silent no-op, not an error |
-| `invalid_config` | `configure`, `openGames` | Malformed configuration (bad URL, empty slug) |
+| `no_activity` | `openGames` | Android: the plugin has no foreground activity to present from — call it from a visible screen |
+| `no_view_controller` | `openGames` | iOS: the plugin found no visible view controller to present from — call it once your first screen is up |
+| `invalid_config` | `configure` | The native side refused a configuration Dart accepted — in practice a `developmentBaseUrl` iOS cannot parse as a URL; every other configuration mistake throws an `ArgumentError` in Dart, see below |
 | `identify_mode_unavailable` | `identify` | The mode is reserved in this version (`fanId`, `hostToken`) |
-| `invalid_identity_mode` | `identify` | The mode is not one of the three names |
-| `invalid_host_token` | `identify` | The `hostToken` JWT is absent, blank, malformed or expired |
-| `login_cancelled` | `identify` | The fan dismissed the system-browser login (`fanId`) |
-| `identify_rejected` | `identify` | The API refused the identity; `details` carry its own code |
-| `identify_network_error` | `identify` | The identity could not be reached — nothing was refused |
-| `invalid_bridge_request_type` | `setBridgeReply` | The type is not in the request registry |
+| `invalid_identity_mode` | `identify` | The native side answered with a mode Dart does not know. Never caused by your input — a defect to report |
+| `invalid_host_token` | `identify` | The `hostToken` JWT is blank — the one check that runs ahead of the mode's availability; a non-blank one is refused as `identify_mode_unavailable` while the mode is reserved |
 | `invalid_bridge_reply_payload` | `setBridgeReply` | The payload is neither an object nor `null`, or cannot be serialised to JSON |
+
+Those are the codes a Dart app can receive in this version. `SPEC.md` declares the channel contract —
+§ 5.2 the method codes, § 5.4 the identity and bridge failures — and it lists codes this table leaves
+out because they cannot reach you today: the Dart types rule them out, no platform raises them, or the
+mode that raises them is reserved. `no_activity` and `no_view_controller` are the plugin's own and
+appear in neither section. Calling `openGames` while the hub is up is a silent no-op, not an error.
 
 A refused `setBridgeReply` leaves the current standing answer untouched. Configuration mistakes the
 Dart side can see — no identifier, both identifiers, a key from the wrong environment, a blank

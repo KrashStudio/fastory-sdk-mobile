@@ -1,5 +1,7 @@
 package com.fastory.sdk
 
+import android.os.Handler
+import android.os.Looper
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -114,21 +116,13 @@ internal object FastoryLoadFailureClassifier {
         }
 }
 
-/**
- * Watches a warm-up load so a page that failed never reaches the warm slot (SPEC § 9.1).
- *
- * The warm-up runs with no screen and no fan in front of it, so its failure is not something to
- * report — the presentation that follows loads cold and reports for itself. Keeping the page,
- * though, is worse than useless: an error **body** commits like any other document, so the slot ends
- * up holding the web's own "fanzone introuvable" page, and the next presentation reads a committed
- * page as a loaded hub and announces `hubOpened` on it. Observed on a simulator, not reasoned: the
- * placeholder slug answers 404 and rendered exactly that.
- *
- * Named rather than anonymous so a suite can drive it without a live warm-up, which needs a real
- * network load the runner cannot complete.
- */
 internal class FastoryWarmUpClient : WebViewClient() {
+    override fun onPageCommitVisible(view: WebView, url: String?) {
+        Fastory.warmHubPageDidCommit(view)
+    }
+
     override fun onPageFinished(view: WebView, url: String?) {
+        Fastory.warmHubPageDidCommit(view)
         // Discovery still runs on a successful warm-up: the games are what the fan taps first.
         GamePreloader.onHubLoadFinished(view)
     }
@@ -138,7 +132,7 @@ internal class FastoryWarmUpClient : WebViewClient() {
         request: WebResourceRequest,
         error: WebResourceError,
     ) {
-        if (request.isForMainFrame) Fastory.discardWarmHubLater(view)
+        if (request.isForMainFrame) discard(view)
     }
 
     override fun onReceivedHttpError(
@@ -146,14 +140,19 @@ internal class FastoryWarmUpClient : WebViewClient() {
         request: WebResourceRequest,
         errorResponse: WebResourceResponse,
     ) {
-        if (request.isForMainFrame) Fastory.discardWarmHubLater(view)
+        if (request.isForMainFrame) discard(view)
+    }
+
+    private fun discard(view: WebView) {
+        Fastory.warmHubPageDidFail(view)
+        Handler(Looper.getMainLooper()).post { Fastory.releaseFailedWarmHubWebView(view) }
     }
 }
 
 /**
  * The load state of one Fastory surface, as the host sees it (SPEC § 5.3, § 9.1).
  *
- * Pure — no WebView and no Activity — so the rule both surfaces obey is written once and assertable
+ * Pure — no WebView and no Activity — so the rule both surfaces obey is written once and decidable
  * without either: **an opening event never fires on a surface that has not loaded**, and a surface
  * that never opened owes no closing event.
  *
@@ -179,6 +178,8 @@ internal class FastorySurfaceLoad(
 
     /** Whether the opening event has been announced — and therefore whether a closing one is owed. */
     internal val isOpen: Boolean get() = didOpen
+
+    internal val hasCommittedPage: Boolean get() = hasCommitted
 
     /** The container reached the screen. */
     internal fun present(): Announcement {

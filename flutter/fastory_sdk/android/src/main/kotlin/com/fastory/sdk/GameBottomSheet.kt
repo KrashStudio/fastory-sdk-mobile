@@ -19,11 +19,14 @@ import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import androidx.core.os.bundleOf
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.isInvisible
 import androidx.core.view.isVisible
+import androidx.fragment.app.Fragment
 import com.fastory.sdk.flutter.R
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
@@ -33,13 +36,33 @@ class GameBottomSheet : BottomSheetDialogFragment() {
 
     private var webView: WebView? = null
     private var errorView: LinearLayout? = null
+    private var progressBar: ProgressBar? = null
+    private var retryWait: FastoryErrorView.RetryWait? = null
     private var isPreloaded = false
 
     /**
      * The same gate the hub uses (SPEC § 9.1): `gameOpened` announces a game whose page loaded, and
      * a sheet that only ever showed the error view owes no `gameClosed`.
      */
-    private var load: FastorySurfaceLoad? = null
+    internal var load: FastorySurfaceLoad? = null
+
+    /**
+     * This sheet is the platform's rebuild of a game whose `gameOpened` the host has already heard.
+     * The page announces itself again as it settles here, and that second opening is not passed on;
+     * the closing it owes is.
+     */
+    private var openedBeforeRecreation = false
+
+    /** Whose teardown the view's destruction is, for the dismissal DialogFragment delivers from it. */
+    private var hostIsRebuilding = false
+
+    /** What the last saved state told the sheet the platform will restore: whether it had opened. */
+    private var savedOpened = false
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        restorePresentation(savedInstanceState)
+    }
 
     override fun onCreateDialog(savedInstanceState: Bundle?): Dialog {
         val dialog = super.onCreateDialog(savedInstanceState) as BottomSheetDialog
@@ -75,16 +98,27 @@ class GameBottomSheet : BottomSheetDialogFragment() {
             hasCommitted = gameWebView.url != null,
         )
 
+        val strings = FastoryErrorView.localizedContext(context)
+        val loading = strings.getString(R.string.fastory_sdk_loading)
         val closeButton = ImageButton(context).apply {
             setImageResource(android.R.drawable.ic_menu_close_clear_cancel)
             setBackgroundResource(android.R.color.transparent)
-            contentDescription = getString(R.string.fastory_sdk_close)
+            contentDescription = strings.getString(R.string.fastory_sdk_close)
             setOnClickListener { dismiss() }
         }
+        // Shown only for the wait Retry opens: a game opening for the first time is preloaded or
+        // presented, and TalkBack announces the dialog itself. During that wait it is what TalkBack
+        // lands on, so it carries the hub progress bar's label. Invisible rather than gone, so it
+        // is already laid out when Retry asks TalkBack to land on it in the same frame.
+        val indicator = ProgressBar(context).apply {
+            isIndeterminate = true
+            isInvisible = true
+            contentDescription = loading
+        }.also { progressBar = it }
 
         // Game WebView fills the sheet edge-to-edge (under the status bar); the close button is
         // overlaid top-right and inset below the system bars.
-        return FrameLayout(context).apply {
+        val root = FrameLayout(context).apply {
             setBackgroundColor(Color.BLACK)
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -102,6 +136,14 @@ class GameBottomSheet : BottomSheetDialogFragment() {
                 FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT,
+                ),
+            )
+            addView(
+                indicator,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.CENTER,
                 ),
             )
             val margin = (8 * resources.displayMetrics.density).toInt()
@@ -123,6 +165,12 @@ class GameBottomSheet : BottomSheetDialogFragment() {
                 insets
             }
         }
+        retryWait = FastoryErrorView.RetryWait(
+            host = root,
+            loading = loading,
+            loaded = strings.getString(R.string.fastory_sdk_loaded),
+        )
+        return root
     }
 
     /**
@@ -165,6 +213,9 @@ class GameBottomSheet : BottomSheetDialogFragment() {
     }
 
     override fun onDestroyView() {
+        // A dialog nobody dismissed is dismissed by super.onDestroyView(), and that is the only
+        // dismissal a rebuild of the hub delivers, so the rebuild is read here, before that call.
+        hostIsRebuilding = isTornDownForRebuild()
         // Closing must actually end the game: destroy the played WebView — its page
         // (timers, audio, state) dies with it. The preloader immediately rebuilds a fresh
         // copy so reopening stays instant.
@@ -179,23 +230,57 @@ class GameBottomSheet : BottomSheetDialogFragment() {
         }
         webView = null
         errorView = null
+        progressBar = null
+        retryWait = null
         super.onDestroyView()
     }
 
     override fun onDismiss(dialog: DialogInterface) {
         super.onDismiss(dialog)
-        // A game that never announced itself open owes no gameClosed — the pair brackets a session,
-        // and a sheet that only showed the error view held none (SPEC § 5.3).
-        if (load?.dismiss() == true) {
-            Fastory.notifyGameClosed()
-        }
+        endPresentation(hostIsRebuilding = hostIsRebuilding)
     }
 
-    private fun announce(announcement: FastorySurfaceLoad.Announcement?) {
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        savePresentation(outState)
+    }
+
+    internal fun savePresentation(outState: Bundle) {
+        savedOpened = load?.isOpen == true || openedBeforeRecreation
+        outState.putBoolean(STATE_OPENED, savedOpened)
+        outState.putString(STATE_PROCESS, PROCESS)
+    }
+
+    /** A state saved by another process describes a game whose host heard nothing from this one. */
+    internal fun restorePresentation(savedInstanceState: Bundle?) {
+        openedBeforeRecreation = savedInstanceState
+            ?.takeIf { it.getString(STATE_PROCESS) == PROCESS }
+            ?.getBoolean(STATE_OPENED) == true
+    }
+
+    /**
+     * A game that never announced itself open owes no gameClosed — the pair brackets a session, and
+     * a sheet that only showed the error view held none (SPEC § 5.3). Torn down with a hub the
+     * platform is rebuilding, the game never left the fan's screen: its closing is handed to the
+     * hub's suspended presentation, which the sheet restored with it takes back — provided the state
+     * it is restored from says so. A game that opened after that state was saved would announce
+     * itself a second time, so its closing goes out now and the restored sheet opens a new pair.
+     */
+    internal fun endPresentation(hostIsRebuilding: Boolean) {
+        val owed = load?.dismiss() == true || openedBeforeRecreation
+        openedBeforeRecreation = false
+        if (!owed) return
+        if (hostIsRebuilding && savedOpened && Fastory.suspendGamePresentation()) return
+        Fastory.notifyGameClosed()
+    }
+
+    internal fun announce(announcement: FastorySurfaceLoad.Announcement?) {
         when (announcement) {
             null, is FastorySurfaceLoad.Announcement.Nothing -> Unit
             is FastorySurfaceLoad.Announcement.Opened ->
-                Fastory.notifyGameOpened(requireArguments().getString(ARG_SLUG).orEmpty())
+                if (!openedBeforeRecreation) {
+                    Fastory.notifyGameOpened(requireArguments().getString(ARG_SLUG).orEmpty())
+                }
             is FastorySurfaceLoad.Announcement.Failed ->
                 Fastory.notifySurfaceLoadFailed(announcement.failure)
         }
@@ -205,15 +290,27 @@ class GameBottomSheet : BottomSheetDialogFragment() {
         reason: FastoryLoadFailureReason,
         statusCode: Int? = null,
     ) {
-        errorView?.isVisible = true
         webView?.isVisible = false
+        retryWait?.fail()
+        // Nothing is loading any more, and an indicator left over the error view reads as one that is.
+        progressBar?.isInvisible = true
+        errorView?.let { FastoryErrorView.show(it, reason) }
         announce(load?.fail(reason, statusCode = statusCode))
     }
 
+    /**
+     * The indicator comes up before TalkBack is asked to land on it — a focus request on a hidden
+     * view is refused — and both happen before the reload, so a failure reported for it is
+     * announced second.
+     */
     private fun retry() {
         errorView?.isVisible = false
         webView?.isVisible = true
         load?.restart()
+        progressBar?.let { indicator ->
+            indicator.isInvisible = false
+            retryWait?.begin(indicator)
+        }
         webView?.reload()
     }
 
@@ -279,6 +376,11 @@ class GameBottomSheet : BottomSheetDialogFragment() {
             override fun onPageCommitVisible(view: WebView, url: String?) {
                 announce(load?.commit())
             }
+
+            override fun onPageFinished(view: WebView, url: String?) {
+                progressBar?.isInvisible = true
+                retryWait?.succeed()
+            }
         }
 
         webView.webChromeClient = object : android.webkit.WebChromeClient() {
@@ -326,9 +428,21 @@ class GameBottomSheet : BottomSheetDialogFragment() {
         const val TAG = "FastoryGameBottomSheet"
         private const val ARG_URL = "url"
         private const val ARG_SLUG = "slug"
+        private const val STATE_OPENED = "com.fastory.sdk.game.opened"
+        private const val STATE_PROCESS = "com.fastory.sdk.game.process"
+
+        /** Tells this process's saved state from a previous one's. */
+        private val PROCESS: String = java.util.UUID.randomUUID().toString()
 
         fun newInstance(url: String, slug: String): GameBottomSheet = GameBottomSheet().apply {
             arguments = bundleOf(ARG_URL to url, ARG_SLUG to slug)
         }
     }
 }
+
+/**
+ * The platform is rebuilding this fragment's Activity — a configuration change outside the manifest's
+ * list, or *Don't keep activities* — rather than removing the fragment or finishing its host: the
+ * test the hub applies to itself, `isFinishing`, read from the fragment.
+ */
+internal fun Fragment.isTornDownForRebuild(): Boolean = !isRemoving && activity?.isFinishing == false

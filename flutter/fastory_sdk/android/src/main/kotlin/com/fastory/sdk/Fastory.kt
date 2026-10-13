@@ -15,6 +15,10 @@ import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
 import java.lang.ref.WeakReference
 
 interface FastoryEventsListener {
@@ -99,26 +103,53 @@ object Fastory {
      * for the same reason, in the other direction.
      *
      * The one hub field that is `@Volatile`: [close] reads it before its hop, off whatever thread
-     * the host called from. It is never reset, test seam included — a counter that went backwards
-     * would let a stale decision match a future launch, which is the whole thing it prevents.
+     * the host called from. It is never reset — a counter that went backwards would let a stale
+     * decision match a future launch, which is the whole thing it prevents.
      */
     @Volatile
     private var hubLaunch = 0
 
+    /**
+     * A presentation whose Activity the platform destroyed without dismissing it, and whether the
+     * host has heard its `hubOpened` — and the `gameOpened` of a game sheet torn down with it. The
+     * fan never saw the hub leave, so it stays reserved and nothing is emitted; the instance the
+     * platform rebuilds resumes it, a [close] arriving before that instance exists ends it here, and
+     * an [openGames] meanwhile asks for it again (SPEC § 5.3). A record that leaves its task with no
+     * callback is only noticed by the next [openGames] or [close], which is when its `hubClosed` goes
+     * out.
+     */
+    private var suspendedHub: SuspendedHub? = null
+
+    private class SuspendedHub(val launch: Int, val opened: Boolean) {
+        var gameOpened = false
+    }
+
     private const val LOST_LAUNCH_TIMEOUT_MS = 10_000L
 
-    /**
-     * Callable from any thread (SPEC § 2.7), and it returns without doing the work that would make
-     * that a lie: the configuration is stored on the calling thread, and the work Android restricts
-     * to the UI thread is hopped there.
-     *
-     * The order matters and is not cosmetic. Storing the configuration synchronously is what keeps
-     * `configure(); openGames()` legal — `openGames` throws on a null configuration, so a deferred
-     * store would turn a correct sequence into a crash. Revoking the standing bridge answer
-     * synchronously is what keeps § 13.8.6 airtight: deferred, it would leave a window in which the
-     * previous configuration's credential is still handed out.
-     */
+    private var identityGeneration = 0
+
+    fun configure(context: Context, config: FastoryConfig, listener: FastoryEventsListener? = null) {
+        val appContext = context.applicationContext
+        WorkspaceResolver.applicationId = appContext.packageName
+        applyConfiguration(config, listener) {
+            registerTrimCallbacksOnce(appContext)
+            warmUpHubOnceTheHostIsOnScreen(appContext)
+        }
+    }
+
+    @Deprecated(
+        "Configure with a Context: Fastory.configure(context, config, listener). The context-less " +
+            "form keeps working for the whole 0.x window; it will be removed in 1.0.",
+    )
     fun configure(config: FastoryConfig, listener: FastoryEventsListener? = null) {
+        applyConfiguration(config, listener, prepare = null)
+    }
+
+    private fun applyConfiguration(
+        config: FastoryConfig,
+        listener: FastoryEventsListener?,
+        prepare: (() -> Unit)?,
+    ) {
         val previous = this.config
         val configChanged = previous != config
         this.config = config
@@ -148,6 +179,7 @@ object Fastory {
             // Configured by key, the fanzone to open is only known once the API answers. Start the
             // exchange now so openGames() usually finds it already resolved.
             WorkspaceResolver.resolve(config)
+            prepare?.invoke()
         }
     }
 
@@ -201,15 +233,20 @@ object Fastory {
         // way up — does nothing at all. Without it a double tap on the host's own tab bar stacks two
         // Activities, close() finishes only the one on top, and the page each stashes on its way out
         // overwrites the other in the warm slot.
-        if (hubIsPresentedOrLaunching) return
-        // The key only bootstraps for the applications it was created with. configure() has no
-        // Context on the standalone SDK, so this is the first point where the package name is
-        // available — the hub activity's resolveHub() then starts the exchange.
+        if (hubIsPresentedOrLaunching && suspendedHub == null) return
         WorkspaceResolver.applicationId = context.applicationContext.packageName
         WorkspaceResolver.resolve(config)
         val intent = Intent(context, FastoryHubActivity::class.java)
         if (context !is Activity) {
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        if (suspendedHub != null) {
+            // The destroyed hub may never come back on its own — its record can leave the task with
+            // no callback — so this asks for it rather than doing nothing. Still on top of its task,
+            // singleTop rebuilds that record and it resumes its presentation; gone, a new instance
+            // arrives with no saved state and claimHubPresentation ends the lost one first.
+            context.startActivity(intent)
+            return
         }
         hubIsPresentedOrLaunching = true
         val launch = ++hubLaunch
@@ -241,7 +278,9 @@ object Fastory {
      */
     private fun releaseTheReservationIfTheLaunchIsLost(launch: Int) {
         Handler(Looper.getMainLooper()).postDelayed({
-            if (hubLaunch != launch || !hubIsPresentedOrLaunching || hubRef?.get() != null) {
+            if (hubLaunch != launch || !hubIsPresentedOrLaunching || hubRef?.get() != null ||
+                suspendedHub != null
+            ) {
                 return@postDelayed
             }
             hubIsPresentedOrLaunching = false
@@ -260,6 +299,9 @@ object Fastory {
             val hub = hubRef?.get()
             when {
                 hub != null -> hub.finish()
+                // Destroyed by the platform and not rebuilt yet: there is no Activity to finish,
+                // and the record that comes back will find its presentation over.
+                suspendedHub?.launch == launch -> endSuspendedHubPresentation()
                 // Nothing to finish yet: the Activity is still on its way. Swallowing the request
                 // here is how a hub ends up appearing after the host asked for it to be gone — but
                 // only for the launch this call was actually aimed at.
@@ -325,6 +367,7 @@ object Fastory {
             FastoryBridgeResponder.revokeAll()
         }
         if (!transition.erasesStorage || config == null) return
+        identityGeneration++
         // Both were built before this transition, so they hold the previous fan's rendered page.
         discardWarmHub()
         FastoryWebsiteDataEraser.erase(FastoryIdentityStorage.origins(config))
@@ -340,32 +383,91 @@ object Fastory {
 
     /**
      * Called by the hub Activity as it is created, before it builds anything — so a hub the host has
-     * already asked to close never renders. Returns false when [close] arrived during the launch,
-     * which is the Activity's cue to finish itself.
+     * already asked to close never renders. Returns null when [close] arrived during the launch,
+     * which is the Activity's cue to finish itself; otherwise the launch this presentation answers
+     * for, which the Activity hands back to [releaseHubPresentation] when it is over.
      *
-     * It is also what re-arms the reservation across a system-driven recreation: the outgoing
-     * instance releases it on its way out, and the incoming one is the same hub, still on screen.
+     * A hub the platform rebuilds does not come through here: it carries the launch it continues
+     * and goes through [resumeHubPresentation], since the reservation never left it.
      *
      * [hubRef] is taken here rather than at [notifyHubOpened] because a hub configured by key spends
      * the whole `/sdk/auth/bootstrap` round trip on screen before it opens — a `close()` in that
      * window used to find nothing to finish.
      */
-    internal fun claimHubPresentation(activity: Activity): Boolean {
+    internal fun claimHubPresentation(activity: Activity): Int? {
+        // A hub arriving with no saved state while another was suspended: the platform dropped the
+        // record that would have resumed it, so that presentation is over before this one begins —
+        // and gets a launch of its own, so a close() aimed at the lost one cannot reach it.
+        if (suspendedHub != null) {
+            endSuspendedHubPresentation()
+            ++hubLaunch
+        }
         if (hubCloseRequestedWhileLaunching) {
             hubCloseRequestedWhileLaunching = false
             hubIsPresentedOrLaunching = false
-            return false
+            return null
         }
         hubIsPresentedOrLaunching = true
         hubRef = WeakReference(activity)
+        return hubLaunch
+    }
+
+    /**
+     * Frees the slot [claimHubPresentation] took, so the next [openGames] is not a silent no-op.
+     *
+     * Keyed on the launch, not on the Activity. The hub gives its slot back the moment it is
+     * dismissed, while the platform destroys it on its own schedule — seconds later when the host
+     * beneath is slow to settle — and in between the fan may have asked for, and got, the next hub.
+     * A release matched on the Activity instance could not tell that late destruction from the live
+     * hub's own; one matched on the launch ignores it, because [openGames] has moved the counter on.
+     */
+    internal fun releaseHubPresentation(presentation: Int) {
+        if (presentation != hubLaunch) return
+        hubRef = null
+        hubIsPresentedOrLaunching = false
+    }
+
+    internal fun suspendHubPresentation(presentation: Int, opened: Boolean) {
+        if (presentation != hubLaunch) return
+        hubRef = null
+        suspendedHub = SuspendedHub(presentation, opened)
+    }
+
+    /**
+     * A game sheet whose `gameOpened` the host has heard, torn down with a hub the platform is
+     * rebuilding: its `gameClosed` is owed by that presentation now — the sheet restored with the hub
+     * takes it back, anything that ends the presentation first emits it, ahead of `hubClosed`. False
+     * when no presentation is suspended, and the sheet emits it itself.
+     */
+    internal fun suspendGamePresentation(): Boolean {
+        val suspended = suspendedHub ?: return false
+        suspended.gameOpened = true
         return true
     }
 
-    /** Frees the slot [claimHubPresentation] took, so the next [openGames] is not a silent no-op. */
-    internal fun releaseHubPresentation(activity: Activity) {
-        if (hubRef?.get() !== activity) return
-        hubRef = null
-        hubIsPresentedOrLaunching = false
+    /**
+     * Hands a rebuilt hub the presentation its predecessor left: whether the host has already heard
+     * it open, or null when that presentation is over and the instance must finish without a word.
+     */
+    internal fun resumeHubPresentation(activity: Activity, presentation: Int): Boolean? {
+        val suspended = suspendedHub
+        if (suspended == null || suspended.launch != presentation || presentation != hubLaunch) {
+            return null
+        }
+        suspendedHub = null
+        hubRef = WeakReference(activity)
+        return suspended.opened
+    }
+
+    private fun endSuspendedHubPresentation() {
+        val suspended = suspendedHub ?: return
+        suspendedHub = null
+        if (suspended.gameOpened) notifyGameClosed()
+        if (suspended.opened) {
+            notifyHubClosed(suspended.launch)
+        } else {
+            releaseHubPresentation(suspended.launch)
+        }
     }
 
     /// [fanzoneSlug] is the resolved one: configured by key, it is only known once the API answers.
@@ -374,20 +476,33 @@ object Fastory {
         listener?.onHubOpened(fanzoneSlug)
     }
 
-    internal fun notifyHubClosed(activity: Activity) {
-        releaseHubPresentation(activity)
+    internal fun notifyHubClosed(presentation: Int) {
+        releaseHubPresentation(presentation)
         listener?.onHubClosed()
     }
 
-    /**
-     * Hands the next case a hub-free SDK. This object is process-wide and the public contract has no
-     * way to withdraw a presentation — deliberately — so a case that left a reservation behind would
-     * make every later `openGames()` a silent no-op. iOS's `resetForTesting` exists for this reason.
-     */
     internal fun resetHubPresentationForTesting() {
         hubRef = null
+        suspendedHub = null
         hubIsPresentedOrLaunching = false
         hubCloseRequestedWhileLaunching = false
+    }
+
+    internal fun resetForTesting() {
+        config = null
+        listener = null
+        identity = null
+        identityGeneration = 0
+        discardWarmHub()
+        failedWarmHubWebViews.clear()
+        resetHubPresentationForTesting()
+        hostIsOnScreen = DEFAULT_HOST_IS_ON_SCREEN
+        whenHostComesOnScreen = DEFAULT_WHEN_HOST_COMES_ON_SCREEN
+        hostObserverArmed = false
+        WorkspaceResolver.reset()
+        WorkspaceResolver.performRequest = WorkspaceResolver.DEFAULT_PERFORM_REQUEST
+        WorkspaceResolver.applicationId = null
+        FastoryBridgeResponder.revokeAll()
     }
 
     internal fun notifyGameOpened(slug: String) {
@@ -430,13 +545,6 @@ object Fastory {
         }
     }
 
-    // Hub keep-alive: the hub WebView is created on a MutableContextWrapper and retained across
-    // sessions, so openGames() re-attaches an already-rendered page instead of reloading every
-    // time. preloadHub() (called by host bridges that own a Context, e.g. the Flutter plugin)
-    // additionally warms it up right after configure(). Dropped when the hub URL changes and
-    // under memory pressure.
-
-    // All three UI-thread-confined, like `hubRef` above and for the same reason.
     private var warmHubWebView: WebView? = null
 
     /**
@@ -448,27 +556,94 @@ object Fastory {
      * configuration it was rendered for, whenever it was put there.
      */
     private var warmHubConfig: FastoryConfig? = null
+
+    private var warmHubLoadStarted = false
+    private var warmHubDidCommit = false
+
+    private val failedWarmHubWebViews = mutableListOf<WebView>()
     private var trimCallbacksRegistered = false
+
+    internal data class WarmHub(val webView: WebView, val hasCommitted: Boolean, val isLoading: Boolean)
+
+    private val DEFAULT_HOST_IS_ON_SCREEN: () -> Boolean = {
+        ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+    }
+
+    private val DEFAULT_WHEN_HOST_COMES_ON_SCREEN: (() -> Unit) -> Unit = { callback ->
+        val lifecycle = ProcessLifecycleOwner.get().lifecycle
+        lifecycle.addObserver(object : LifecycleEventObserver {
+            override fun onStateChanged(source: LifecycleOwner, event: Lifecycle.Event) {
+                if (event != Lifecycle.Event.ON_START) return
+                lifecycle.removeObserver(this)
+                callback()
+            }
+        })
+    }
+
+    internal var hostIsOnScreen: () -> Boolean = DEFAULT_HOST_IS_ON_SCREEN
+
+    internal var whenHostComesOnScreen: (() -> Unit) -> Unit = DEFAULT_WHEN_HOST_COMES_ON_SCREEN
+
+    private var hostObserverArmed = false
+
+    private fun warmUpHubOnceTheHostIsOnScreen(appContext: Context) {
+        if (hostIsOnScreen()) {
+            preloadHub(appContext)
+            return
+        }
+        if (hostObserverArmed) return
+        hostObserverArmed = true
+        whenHostComesOnScreen {
+            if (!hostObserverArmed) return@whenHostComesOnScreen
+            hostObserverArmed = false
+            preloadHub(appContext)
+        }
+    }
 
     internal fun preloadHub(context: Context) {
         val config = config ?: return
-        WorkspaceResolver.applicationId = context.applicationContext.packageName
-        WorkspaceResolver.resolve(config)
-        if (hubRef?.get() != null || warmHubWebView != null) return
-        // Only the slug path can warm up synchronously. On the key path the hub activity resolves
-        // and loads on presentation — warming a webview for an unknown URL is pointless.
-        val hubUrl = config.staticHubUrl ?: return
-        registerTrimCallbacksOnce(context.applicationContext)
+        if (hubIsPresentedOrLaunching || hubRef?.get() != null || warmHubWebView != null) return
+        val appContext = context.applicationContext
+        config.staticHubUrl?.let { hubUrl ->
+            prepareWarmHub(appContext, hubUrl, config)
+            return
+        }
+        val generation = identityGeneration
+        WorkspaceResolver.whenResolved(config) { outcome ->
+            val workspace = (outcome as? WorkspaceResolver.Outcome.Success)?.workspace
+                ?: return@whenResolved
+            warmUpHub(appContext, config.hubUrl(workspace.slug), config, generation)
+        }
+    }
+
+    private fun warmUpHub(appContext: Context, hubUrl: String, config: FastoryConfig, generation: Int) {
+        if (config != Fastory.config ||
+            hubIsPresentedOrLaunching || hubRef?.get() != null ||
+            warmHubWebView != null ||
+            generation != identityGeneration
+        ) {
+            return
+        }
+        if (!hostIsOnScreen()) {
+            warmUpHubOnceTheHostIsOnScreen(appContext)
+            return
+        }
+        prepareWarmHub(appContext, hubUrl, config)
+    }
+
+    private fun prepareWarmHub(appContext: Context, hubUrl: String, config: FastoryConfig) {
         warmHubConfig = config
-        val webView = createWebView(MutableContextWrapper(context.applicationContext))
+        val webView = createWebView(MutableContextWrapper(appContext))
         // Kicks off game discovery as soon as the warm hub has rendered, and drops the page when the
         // warm-up failed (SPEC § 9.1).
         webView.webViewClient = FastoryWarmUpClient()
-        webView.loadUrl(hubUrl)
         warmHubWebView = webView
+        warmHubLoadStarted = true
+        warmHubDidCommit = false
+        webView.loadUrl(hubUrl)
     }
 
-    internal fun obtainHubWebView(activity: Activity): WebView {
+    internal fun obtainHubWebView(activity: Activity): WarmHub {
         // Nothing warm is not a mismatch. Discarding on an empty slot would flush the preloader on
         // every cold open, throwing away the games discovered from the very hub that is opening —
         // this runs on presentation, when the slot has just been emptied or was never filled.
@@ -478,13 +653,41 @@ object Fastory {
             discardWarmHub()
         }
         warmHubWebView?.let { webView ->
+            val hasCommitted = warmHubDidCommit
+            val isLoading = warmHubLoadStarted && !warmHubDidCommit
             warmHubWebView = null
             warmHubConfig = null
+            warmHubLoadStarted = false
+            warmHubDidCommit = false
             (webView.context as MutableContextWrapper).baseContext = activity
             webView.onResume()
-            return webView
+            return WarmHub(webView, hasCommitted = hasCommitted, isLoading = isLoading)
         }
-        return createWebView(MutableContextWrapper(activity))
+        return WarmHub(
+            createWebView(MutableContextWrapper(activity)),
+            hasCommitted = false,
+            isLoading = false,
+        )
+    }
+
+    /**
+     * [presentation] is the launch the page was presented for. A hub is destroyed on the platform's
+     * schedule, possibly after the fan has asked for — and got — the next one, and a page that late
+     * must not enter the slot: it would replace what the newer hub put there, or be handed to the
+     * one after it in place of a fresher page.
+     */
+    internal fun stashHubWebView(
+        webView: WebView,
+        config: FastoryConfig,
+        presentation: Int,
+        hasCommitted: Boolean,
+    ) {
+        if (presentation != hubLaunch) {
+            (webView.parent as? ViewGroup)?.removeView(webView)
+            webView.destroy()
+            return
+        }
+        stashHubWebView(webView, config, hasCommitted)
     }
 
     /**
@@ -492,7 +695,7 @@ object Fastory {
      * longer have: an Activity destroyed after a re-configure is exactly the case this parameter
      * exists for, and reading [Fastory.config] here would bless the stale page instead of catching it.
      */
-    internal fun stashHubWebView(webView: WebView, config: FastoryConfig) {
+    internal fun stashHubWebView(webView: WebView, config: FastoryConfig, hasCommitted: Boolean) {
         val wrapper = webView.context as? MutableContextWrapper ?: run {
             webView.destroy()
             return
@@ -509,26 +712,36 @@ object Fastory {
         if (warmHubWebView !== webView) warmHubWebView?.destroy()
         warmHubWebView = webView
         warmHubConfig = config
+        warmHubLoadStarted = hasCommitted
+        warmHubDidCommit = hasCommitted
     }
 
     internal fun discardWarmHub() {
         warmHubWebView?.destroy()
-        warmHubWebView = null
-        warmHubConfig = null
-        GamePreloader.flush()
+        emptyWarmHubSlot()
     }
 
-    /**
-     * A looper turn later, because [discardWarmHub] calls `WebView.destroy()` and this is reached
-     * from inside that WebView's own client — destroying it there is what Android's own
-     * documentation forbids. And only if the slot still holds [webView]: a presentation can take the
-     * page inside that turn, and discarding then would destroy a WebView the hub is about to attach
-     * and flush the games discovered for it.
-     */
-    internal fun discardWarmHubLater(webView: WebView) {
-        Handler(Looper.getMainLooper()).post {
-            if (warmHubWebView === webView) discardWarmHub()
-        }
+    internal fun warmHubPageDidFail(webView: WebView) {
+        if (warmHubWebView !== webView) return
+        emptyWarmHubSlot()
+        failedWarmHubWebViews.add(webView)
+    }
+
+    internal fun releaseFailedWarmHubWebView(webView: WebView) {
+        if (failedWarmHubWebViews.remove(webView)) webView.destroy()
+    }
+
+    internal fun warmHubPageDidCommit(webView: WebView) {
+        if (warmHubWebView !== webView) return
+        warmHubDidCommit = true
+    }
+
+    private fun emptyWarmHubSlot() {
+        warmHubWebView = null
+        warmHubConfig = null
+        warmHubLoadStarted = false
+        warmHubDidCommit = false
+        GamePreloader.flush()
     }
 
     // Warm game webviews live in GamePreloader: games are preloaded from the hub's own

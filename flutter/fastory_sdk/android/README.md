@@ -9,7 +9,7 @@ library — there is nothing here to configure.
 - `src/main/kotlin/com/fastory/sdk/flutter/`: the bridge to Dart (MethodChannel `fastory_sdk`,
   EventChannel `fastory_sdk/events`).
 - `src/main/res/`, `src/main/AndroidManifest.xml`, `consumer-rules.pro`: the resources, the manifest
-  entries the SDK needs, and the R8 keep rule applied to your application through
+  entries the SDK needs, and the R8 keep rules applied to your application through
   `consumerProguardFiles` — which is why you need no ProGuard rule of your own.
 
 **The SDK's public API is the Dart one.** Nothing in this directory is meant to be called from a host

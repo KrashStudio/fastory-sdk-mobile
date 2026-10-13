@@ -165,7 +165,7 @@ internal object FastoryWebsiteDataEraser {
  * What `identify` / `logout` must do, decided before anything is touched.
  *
  * Pure by design: every rule of SPEC § 2.6.1 is decidable without a WebView, a cookie store or a
- * network, which is what makes them assertable in a plain JVM test.
+ * network, so the rules can be reasoned about on their own.
  *
  * @property resolved null when the call fails.
  */

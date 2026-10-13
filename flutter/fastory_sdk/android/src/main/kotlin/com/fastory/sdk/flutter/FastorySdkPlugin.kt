@@ -14,7 +14,6 @@ import com.fastory.sdk.FastoryIdentityMode
 import com.fastory.sdk.FastoryLoadFailure
 import com.fastory.sdk.FastoryResolvedIdentity
 import com.fastory.sdk.FastoryTheme
-import com.fastory.sdk.WorkspaceResolver
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
@@ -147,11 +146,13 @@ class FastorySdkPlugin :
             result.error("invalid_config", error.message, null)
             return
         }
-        // The key only bootstraps for the applications it was created with, so the resolver needs
-        // the host's package name before configure() kicks the exchange off.
-        WorkspaceResolver.applicationId = applicationContext?.packageName
-        Fastory.configure(config, eventsListener)
-        applicationContext?.let(Fastory::preloadHub)
+        val appContext = applicationContext
+        if (appContext != null) {
+            Fastory.configure(appContext, config, eventsListener)
+        } else {
+            @Suppress("DEPRECATION")
+            Fastory.configure(config, eventsListener)
+        }
         result.success(null)
     }
 

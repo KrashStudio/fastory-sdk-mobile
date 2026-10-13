@@ -43,19 +43,17 @@ final class FastoryGamePreloader: NSObject {
     private var hubObservation: NSKeyValueObservation?
     private var isGameSheetPresented = false
     private var config: FastoryConfig?
-    /// Seam for unit tests (network loads are not deterministic there); production always
-    /// performs the real load. Named rather than inlined so a suite that stubs it can put it back —
-    /// this is a singleton, so a stub left behind is the next suite's silent no-op.
+    /// The default load step, named so `startLoad` can be put back after being replaced: this is a
+    /// singleton, and a replacement left behind would keep acting on every later preload.
     static let performLoad: (WKWebView, URLRequest) -> Void = { webView, request in
         webView.load(request)
     }
 
     var startLoad: (WKWebView, URLRequest) -> Void = FastoryGamePreloader.performLoad
 
-    /// How the stalled-load timeout is armed. A seam for the same reason as `startLoad`, and the
-    /// reason is the runner rather than convenience: it starves the main thread, so a case that
-    /// waits a wall-clock delay for this work item measures the machine's load and not the
-    /// preloader's behaviour. Named rather than inlined so a suite that stubs it can put it back.
+    /// How the stalled-load timeout is armed. Replaceable like `startLoad`, so the deferral can be
+    /// driven explicitly rather than waited for, and named for the same reason: a replacement has
+    /// to be put back on this singleton.
     static let performScheduleTimeout: (TimeInterval, DispatchWorkItem) -> Void = { seconds, work in
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
     }
@@ -95,10 +93,8 @@ final class FastoryGamePreloader: NSObject {
         return nil
     }
 
-    /// Seam for tests: hands the next `takeWebView(slug:)` a page a suite controls, so a game sheet
-    /// can be presented without loading anything. A unit-test host never completes a real
-    /// navigation, so the alternative is a sheet that either waits for a load that cannot land or
-    /// asserts around one racing it.
+    /// Hands the next `takeWebView(slug:)` a page supplied by the caller, so a game sheet can be
+    /// presented without loading anything.
     ///
     /// `hasCommitted` picks which of the two handover paths it models: the pool, whose pages have
     /// finished loading, or the load in flight, which the sheet adopts mid-navigation.

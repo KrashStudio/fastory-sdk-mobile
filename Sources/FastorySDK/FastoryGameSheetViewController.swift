@@ -9,6 +9,8 @@ final class FastoryGameSheetViewController: UIViewController {
     private let webView: WKWebView
     private let isPreloaded: Bool
     private var errorView = UIView()
+    private let loadingIndicator = UIActivityIndicatorView(style: .large)
+    private let retryWait = FastoryErrorView.RetryWait()
 
     /// The same gate the hub uses (SPEC § 9.1). A pooled page has finished loading, so it starts
     /// committed and a prewarmed game announces itself the instant the sheet appears; a load adopted
@@ -42,18 +44,20 @@ final class FastoryGameSheetViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = .black
+        view.backgroundColor = .systemBackground
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         view.addSubview(webView)
+        // Same rule as the hub: the game is kept clear of the home indicator here, not by the page.
         NSLayoutConstraint.activate([
-            webView.topAnchor.constraint(equalTo: view.topAnchor),
-            webView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            webView.trailingAnchor.constraint(equalTo: view.trailingAnchor)
+            webView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            webView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+            webView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor)
         ])
         setupErrorView()
+        setupLoadingIndicator()
         FastoryGamePreloader.shared.gameSheetWillPresent()
         // A preloaded webview is already rendering the game (or finishing its load) on a
         // fresh state — present it as-is. Only cold opens need a load here.
@@ -87,7 +91,7 @@ final class FastoryGameSheetViewController: UIViewController {
         }
     }
 
-    /// The game sheet's own native error view (SPEC § 9). Without it a failed game is a black sheet,
+    /// The game sheet's own native error view (SPEC § 9). Without it a failed game is a blank sheet,
     /// which the fan cannot tell from a slow one.
     ///
     /// The sheet is swipe-dismissible, but a fan looking at an error view should not have to
@@ -97,11 +101,26 @@ final class FastoryGameSheetViewController: UIViewController {
             in: view,
             actions: [
                 FastoryErrorView.retryButton { [weak self] in self?.retryGame() },
-                FastoryErrorView.plainButton(title: "Close") { [weak self] in
+                FastoryErrorView.closeButton { [weak self] in
                     self?.dismiss(animated: true)
                 }
             ]
         )
+    }
+
+    /// Shown only for the wait Retry opens: a game opening for the first time is preloaded or
+    /// presented, and VoiceOver announces the presentation itself. During that wait it is what
+    /// VoiceOver lands on, so it carries the hub indicator's label.
+    private func setupLoadingIndicator() {
+        loadingIndicator.hidesWhenStopped = true
+        loadingIndicator.isAccessibilityElement = true
+        loadingIndicator.accessibilityLabel = FastoryErrorView.localized("status.loading")
+        loadingIndicator.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(loadingIndicator)
+        NSLayoutConstraint.activate([
+            loadingIndicator.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            loadingIndicator.centerYAnchor.constraint(equalTo: view.centerYAnchor)
+        ])
     }
 
     private func announce(_ announcement: FastorySurfaceLoad.Announcement) {
@@ -115,11 +134,15 @@ final class FastoryGameSheetViewController: UIViewController {
         }
     }
 
-    /// Internal rather than private so a suite can drive the error view's own button: the view is
-    /// built in code, and reaching it through a tap would need the sheet actually presented.
+    /// Internal rather than private: the error view is built in code, and this is the only way to
+    /// trigger its Retry without the sheet actually presented.
     func retryGame() {
         load.restart()
+        // The indicator is on screen before VoiceOver is pointed at it, and both happen before the
+        // load starts, so a failure reported for it is announced second.
         errorView.isHidden = true
+        loadingIndicator.startAnimating()
+        retryWait.begin(indicator: loadingIndicator)
         webView.load(URLRequest(url: lastGameURL))
     }
 
@@ -127,7 +150,9 @@ final class FastoryGameSheetViewController: UIViewController {
         reason: FastoryLoadFailureReason,
         statusCode: Int? = nil
     ) {
-        errorView.isHidden = false
+        loadingIndicator.stopAnimating()
+        retryWait.fail()
+        FastoryErrorView.show(errorView, reason: reason)
         announce(load.fail(reason: reason, statusCode: statusCode))
     }
 
@@ -210,7 +235,9 @@ extension FastoryGameSheetViewController: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        loadingIndicator.stopAnimating()
         errorView.isHidden = true
+        retryWait.succeed()
     }
 
     func webView(
@@ -226,6 +253,10 @@ extension FastoryGameSheetViewController: WKNavigationDelegate {
     }
 
     private func handleLoadFailure(_ error: Error) {
+        loadingIndicator.stopAnimating()
+        // A cancelled load ends the wait too, or a page finishing minutes later would announce
+        // itself as the one Retry asked for.
+        retryWait.fail()
         guard let reason = FastoryLoadFailureClassifier.navigation(error) else {
             return
         }

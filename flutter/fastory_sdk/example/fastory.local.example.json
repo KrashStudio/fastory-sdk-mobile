@@ -1,7 +1,11 @@
 {
   "_comment": "Copy to `fastory.local.json` (gitignored), fill in, then run: flutter run --dart-define-from-file=fastory.local.json. Leave the key empty and the demo runs on the placeholder slug.",
-  "_environment": "`staging` or `production`. Staging is the default because that is where a new integration gets its first key.",
+  "_environment": "`staging`, `production`, or `development`. Staging is the default because that is where a new integration gets its first key.",
   "FASTORY_ENVIRONMENT": "staging",
-  "_publishableKey": "Created in the back-office: Fanzone > Settings > SDK keys. Staging mints `fpk_test_` keys, production mints `fpk_live_` ones, and configure() rejects a key from the other environment before any network call.",
-  "FASTORY_PUBLISHABLE_KEY": ""
+  "_publishableKey": "Created in the back-office: Fanzone > Settings > Mobile SDK. Staging mints `fpk_test_` keys, production mints `fpk_live_` ones, and configure() rejects a key from the other environment before any network call.",
+  "FASTORY_PUBLISHABLE_KEY": "",
+  "_developmentBaseUrl": "Only for `development`: the https base URL the SDK targets. Required when FASTORY_ENVIRONMENT is `development`, ignored otherwise.",
+  "FASTORY_DEVELOPMENT_BASE_URL": "",
+  "_locale": "Optional: a BCP 47 locale (`fr`, `es`) forwarded to the hub, and the language of the SDK's own error view when none of the device's languages is one it carries. Left empty, nothing is sent.",
+  "FASTORY_LOCALE": ""
 }

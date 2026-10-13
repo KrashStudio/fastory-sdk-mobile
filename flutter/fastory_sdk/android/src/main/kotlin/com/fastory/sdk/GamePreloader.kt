@@ -68,7 +68,6 @@ internal object GamePreloader {
     private var isGameSheetPresented = false
     internal var appContext: Context? = null
 
-    /** Seam for tests; production always performs the real load. */
     internal var loadStarter: (WebView, String) -> Unit = { webView, url -> webView.loadUrl(url) }
 
     // MARK: Hub hook

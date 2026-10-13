@@ -35,8 +35,8 @@ enum BridgeEnvelope {
     static let version = 1
 
     /// The allow-list, so the web side can ship a new type against an older SDK. The three platforms
-    /// hold the same set — adding a type here alone fails a test instead of dropping it silently for
-    /// the platforms that were missed.
+    /// hold the same set: a type added on one alone would be delivered there and dropped silently on
+    /// the others.
     static let knownTypes: Set<String> = ["fastory:ready"]
 
     /// The types the native side can be *asked* to answer (SPEC §13.8.3), held on the three
@@ -87,8 +87,7 @@ enum BridgeEnvelope {
         guard raw.utf16.count <= maxMessageChars else {
             return .failure(.tooLarge)
         }
-        guard let data = raw.data(using: .utf8),
-              let root = try? JSONSerialization.jsonObject(with: data) else {
+        guard let root = jsonObject(from: raw) else {
             return .failure(.notJSON)
         }
         guard let envelope = root as? [String: Any] else {
@@ -141,8 +140,7 @@ enum BridgeEnvelope {
         guard raw.utf16.count <= maxMessageChars else {
             return .failure(RequestRejection(error: .malformed, requestId: nil))
         }
-        guard let data = raw.data(using: .utf8),
-              let root = try? JSONSerialization.jsonObject(with: data),
+        guard let root = jsonObject(from: raw),
               let envelope = root as? [String: Any] else {
             return .failure(RequestRejection(error: .malformed, requestId: nil))
         }
@@ -166,6 +164,138 @@ enum BridgeEnvelope {
         return .success(
             FastoryBridgeRequest(type: type, requestId: requestId, payload: payload)
         )
+    }
+
+    /// Nil for text that is not JSON, and for a number too large to be finite held as an object
+    /// member: Android's `org.json` refuses that member and reads the same number as an array
+    /// element, where `JSONSerialization` reads both — so the stricter reading is applied here too.
+    ///
+    /// Two names of one object that differ in spelling but not as Swift strings, such as `"é"`
+    /// precomposed and decomposed, are two keys to `JSONSerialization` and one once the object is
+    /// bridged, which keeps either value. The text is read again without the later of the two, so
+    /// the first occurrence wins, as it does for a name repeated letter for letter.
+    private static func jsonObject(from raw: String) -> Any? {
+        guard let data = raw.data(using: .utf8),
+              var root = try? JSONSerialization.jsonObject(with: data) else {
+            return nil
+        }
+        if holdsEquivalentNames(root) {
+            guard let text = firstNamesOnly(data),
+                  let firstNames = try? JSONSerialization.jsonObject(with: text),
+                  !holdsEquivalentNames(firstNames) else {
+                return nil
+            }
+            root = firstNames
+        }
+        return holdsNonFiniteMember(root) ? nil : root
+    }
+
+    private static func holdsEquivalentNames(_ value: Any) -> Bool {
+        switch value {
+        case let object as NSDictionary:
+            let names = Set(object.allKeys.compactMap { $0 as? String })
+            return names.count < object.count || object.allValues.contains(where: holdsEquivalentNames)
+        case let list as NSArray:
+            return list.contains(where: holdsEquivalentNames)
+        default:
+            return false
+        }
+    }
+
+    /// The text without the members whose name repeats an earlier one of the same object, or nil
+    /// when its UTF-8 bytes do not form balanced JSON — `JSONSerialization` may have read them in
+    /// another encoding, which is also why the caller reads the result again and checks it. A
+    /// member is cut from the comma before it to the delimiter after its value; one nested in a
+    /// member already cut is skipped. An escaped name is decoded by `JSONSerialization` itself, any
+    /// other as it is.
+    private static func firstNamesOnly(_ data: Data) -> Data? {
+        let quote = UInt8(ascii: "\""), backslash = UInt8(ascii: "\\")
+        let bytes = [UInt8](data)
+        var open: [(isObject: Bool, names: Set<String>, repeatFrom: Int?)] = []
+        var repeats: [Range<Int>] = []
+        var memberStart = 0
+        var expectingName = false
+        var index = 0
+        while index < bytes.count {
+            switch bytes[index] {
+            case quote:
+                let start = index
+                var escaped = false
+                index += 1
+                while index < bytes.count, bytes[index] != quote {
+                    if bytes[index] == backslash {
+                        escaped = true
+                        index += 1
+                    }
+                    index += 1
+                }
+                guard index < bytes.count else { return nil }
+                if expectingName {
+                    guard let container = open.indices.last else { return nil }
+                    let name = escaped
+                        ? (try? JSONSerialization.jsonObject(
+                            with: Data(bytes[start...index]), options: .fragmentsAllowed
+                        )) as? String
+                        : String(decoding: bytes[(start + 1)..<index], as: UTF8.self)
+                    guard let name else { return nil }
+                    if !open[container].names.insert(name).inserted {
+                        open[container].repeatFrom = memberStart
+                    }
+                    expectingName = false
+                }
+            case UInt8(ascii: "{"):
+                open.append((isObject: true, names: [], repeatFrom: nil))
+                expectingName = true
+            case UInt8(ascii: "["):
+                open.append((isObject: false, names: [], repeatFrom: nil))
+            case UInt8(ascii: ","), UInt8(ascii: "}"), UInt8(ascii: "]"):
+                guard let container = open.indices.last else { return nil }
+                if let from = open[container].repeatFrom {
+                    repeats.append(from..<index)
+                    open[container].repeatFrom = nil
+                }
+                switch bytes[index] {
+                case UInt8(ascii: ","):
+                    memberStart = index
+                    expectingName = open[container].isObject
+                case UInt8(ascii: "}") where open[container].isObject,
+                     UInt8(ascii: "]") where !open[container].isObject:
+                    open.removeLast()
+                    expectingName = false
+                default:
+                    return nil
+                }
+            default:
+                break
+            }
+            index += 1
+        }
+        guard open.isEmpty else { return nil }
+        var kept = Data(capacity: bytes.count)
+        var from = 0
+        for span in repeats.sorted(by: { $0.lowerBound < $1.lowerBound }) where span.lowerBound >= from {
+            kept.append(contentsOf: bytes[from..<span.lowerBound])
+            from = span.upperBound
+        }
+        kept.append(contentsOf: bytes[from...])
+        return kept
+    }
+
+    /// Walks Foundation's containers as they are, so no nested object is bridged to Swift on the way.
+    private static func holdsNonFiniteMember(_ value: Any) -> Bool {
+        switch value {
+        case let object as NSDictionary:
+            return object.allValues.contains { member in
+                if let number = member as? NSNumber, !number.doubleValue.isFinite {
+                    return true
+                }
+                return holdsNonFiniteMember(member)
+            }
+        case let list as NSArray:
+            return list.contains(where: holdsNonFiniteMember)
+        default:
+            return false
+        }
     }
 
     private static func usableRequestId(_ raw: Any?) -> String? {
@@ -335,7 +465,8 @@ final class FastoryBridge: NSObject, WKScriptMessageHandler {
         route(message.body)
     }
 
-    /// Split out because `WKScriptMessage` cannot be constructed in a test.
+    /// Handles the body apart from the WebKit message that carried it: only the main-frame gate
+    /// above needs the message itself.
     func route(_ body: Any?) {
         guard let raw = body as? String else {
             FastoryBridgeLog.ignored(.notAString)
@@ -436,9 +567,6 @@ final class FastoryBridgeResponder: NSObject, WKScriptMessageHandlerWithReply {
     /// value is a fan credential, so it dies with the identity that justified it — `logout()`, an
     /// `identify` that resolves a different fan, and a `configure` that replaces the configuration
     /// it was set under. Without them `logout()` keeps answering with the previous fan's token.
-    ///
-    /// Also the suites' seam, for the same reason it needs to exist at all: a standing answer is
-    /// process-wide.
     static func revokeAll() {
         lock.lock()
         standingReplies = [:]
@@ -451,8 +579,9 @@ final class FastoryBridgeResponder: NSObject, WKScriptMessageHandlerWithReply {
     /// for a caller the SDK cannot recognise (SPEC §13.8.4). Every other outcome is an envelope,
     /// success or failure, so the page never waits on a reply that is not coming.
     ///
-    /// Split out from the WebKit entry point for the same reason as `route`: `WKScriptMessage` cannot
-    /// be constructed in a test, and this is where the whole contract lives.
+    /// Split out from the WebKit entry point for the same reason as `route`: the decision depends on
+    /// the caller's frame and origin, on the allow-lists and on the standing answers, never on the
+    /// WebKit message object, and this is where the whole contract lives.
     static func answer(
         to raw: Any?,
         from caller: FastoryBridgeCaller,

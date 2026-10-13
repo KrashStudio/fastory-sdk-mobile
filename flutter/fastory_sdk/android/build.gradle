@@ -1,5 +1,5 @@
 group = "com.fastory.sdk.flutter"
-version = "0.4.4"
+version = "0.4.5"
 
 buildscript {
     ext.kotlin_version = "1.9.22"
@@ -30,8 +30,7 @@ android {
     defaultConfig {
         minSdk = 24
         // The keep rule ships with this module and reaches the host app only through this
-        // declaration. Each channel is compiled from its own module, so a rule declared once
-        // travels on one channel only — both declare it, and a release check holds them together.
+        // declaration: without it consumer-rules.pro still ships and R8 never reads it.
         consumerProguardFiles "consumer-rules.pro"
     }
 
@@ -57,4 +56,5 @@ dependencies {
     // origin — the gate the bridge's reply channel needs, which addJavascriptInterface cannot give
     // (SPEC §13.8.4).
     implementation("androidx.webkit:webkit:1.11.0")
+    implementation("androidx.lifecycle:lifecycle-process:2.6.1")
 }

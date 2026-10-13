@@ -42,7 +42,7 @@ dependencies:
     git:
       url: https://github.com/KrashStudio/fastory-sdk-mobile
       path: flutter/fastory_sdk
-      ref: sdk-v0.4.4
+      ref: sdk-v0.4.5
 ```
 
 Public API surface (normative in `SPEC.md §2`): **6 methods** — `Fastory.configure(FastoryConfig)`,
@@ -111,9 +111,11 @@ analyzer reports, so the other two are the ones a host discovers at runtime or i
   workspace an app belongs to, carries no user identity, and grants no access on its own. Identity is
   `identify`, and only `identify`.
 - **The hub and the games do not share a session**, and no store configuration makes them: they are
-  different sites, and a game loads with `embed=1` and reads no storage at all (`SPEC.md §7`). Spec
-  versions up to 0.3.0 claimed the opposite — § 7 was rewritten in 0.4.0 and says so in its own
-  heading; if you find that claim anywhere, it is stale.
+  different sites, and a game loads with `embed=1` and takes its session from a host page it does not
+  have in an SDK WebView (`SPEC.md §7`). The game page still keeps its own cookies and web storage on
+  its own site — say "no shared session", never "no storage". Spec versions up to 0.3.0 claimed a
+  shared session — § 7 was rewritten in 0.4.0 and says so in its own heading; if you find that claim
+  anywhere, it is stale.
 - The `postMessage` bridge (`SPEC.md §13`, since 0.4.0) carries two directions and neither of them is
   the SDK speaking first. Web surfaces post `{v, type, payload}` envelopes and the app receives them as
   `FastoryBridgeMessage`; since 0.4.0 they can also **ask** a question, which the SDK answers from the

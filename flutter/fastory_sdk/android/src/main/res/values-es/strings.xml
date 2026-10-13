@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="fastory_sdk_error_message">Algo salió mal.</string>
+    <string name="fastory_sdk_error_no_connection">Sin conexión a internet.</string>
+    <string name="fastory_sdk_retry">Reintentar</string>
+    <string name="fastory_sdk_close">Cerrar</string>
+    <string name="fastory_sdk_loading">Cargando…</string>
+    <string name="fastory_sdk_loaded">Contenido cargado.</string>
+</resources>

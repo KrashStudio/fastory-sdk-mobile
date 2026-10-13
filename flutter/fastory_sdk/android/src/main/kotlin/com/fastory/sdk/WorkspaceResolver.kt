@@ -57,13 +57,13 @@ internal object WorkspaceResolver {
     private var stateConfig: FastoryConfig? = null
     private val waiters = mutableListOf<(Outcome) -> Unit>()
 
-    /** Package name on Android, bundle identifier on iOS: the key only bootstraps for the
-     * applications it was created with, so this must match what the workspace declared. */
+    @Volatile
     internal var applicationId: String? = null
 
-    /** Seam for tests; production performs the real request. */
-    internal var performRequest: (String, String, String) -> Pair<Int, String?> =
+    internal val DEFAULT_PERFORM_REQUEST: (String, String, String) -> Pair<Int, String?> =
         { url, key, appId -> httpPost(url, key, appId) }
+
+    internal var performRequest: (String, String, String) -> Pair<Int, String?> = DEFAULT_PERFORM_REQUEST
 
     /**
      * Drops everything this resolver holds — and **answers** the waiters rather than forgetting
@@ -130,9 +130,6 @@ internal object WorkspaceResolver {
         val key = config.publishableKey ?: return
         discardOutcomeFromAnotherConfiguration(config)
         if (isResolving || outcome is Outcome.Success) return
-        // No outcome is recorded when the application id is still unknown: configure() has no
-        // Context on the standalone SDK, so the id only arrives with openGames()/preloadHub().
-        // Caching a failure here would make every later attempt fail too.
         val appId = applicationId
         if (appId.isNullOrBlank()) return
         isResolving = true
@@ -165,18 +162,21 @@ internal object WorkspaceResolver {
     }
 
     private fun parse(status: Int, body: String?): Outcome {
-        if (status < 0 || body == null) return Outcome.Failure("sdk_unreachable")
-        val json = try {
-            JSONObject(body)
-        } catch (_: Exception) {
-            return Outcome.Failure("sdk_malformed_response")
+        if (status < 0) return Outcome.Failure("sdk_unreachable")
+        val json = body?.let {
+            try {
+                JSONObject(it)
+            } catch (_: Exception) {
+                null
+            }
         }
         if (status !in 200..299) {
-            // Every failure carries `code`; fall back to the status so an unexpected shape
-            // (a proxy error page, say) still reaches the host as something actionable.
-            return Outcome.Failure(json.optString("code").ifBlank { "http_$status" })
+            // The status is read before the body is required to parse: a refusal is a fact even
+            // when its body is a proxy's HTML error page or absent, and only the status can name
+            // it then.
+            return Outcome.Failure(json?.optString("code")?.ifBlank { null } ?: "http_$status")
         }
-        val workspace = json.optJSONObject("workspace")
+        val workspace = json?.optJSONObject("workspace")
             ?: return Outcome.Failure("sdk_malformed_response")
         val id = workspace.optString("id")
         val slug = workspace.optString("slug")

@@ -88,7 +88,6 @@ final class FastoryWorkspaceResolver {
     private var stateConfig: FastoryConfig?
     private var waiters: [(Result<FastoryWorkspace, FastoryBootstrapError>) -> Void] = []
 
-    /// Seam for unit tests: production performs the real request.
     var performRequest: (URLRequest, @escaping (Data?, URLResponse?, Error?) -> Void) -> Void = {
         request, completion in
         URLSession.shared.dataTask(with: request) { data, response, error in
@@ -216,18 +215,18 @@ final class FastoryWorkspaceResolver {
             finish(.failure(.unreachable))
             return
         }
-        guard let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            finish(.failure(.malformedResponse))
-            return
-        }
+        let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         guard (200..<300).contains(httpResponse.statusCode) else {
-            // Every failure carries `code`; fall back to the status so an unexpected shape
-            // (a proxy error page, say) still reaches the host as something actionable.
-            let code = payload["code"] as? String ?? "http_\(httpResponse.statusCode)"
-            finish(.failure(.rejected(code: code)))
+            // The status is read before the body is required to parse: a refusal is a fact even
+            // when its body is a proxy's HTML error page, and only the status can name it then.
+            let namedCode = (payload?["code"] as? String).flatMap { code in
+                code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : code
+            }
+            finish(.failure(.rejected(code: namedCode ?? "http_\(httpResponse.statusCode)")))
             return
         }
-        guard let workspace = payload["workspace"] as? [String: Any],
+        guard let payload,
+              let workspace = payload["workspace"] as? [String: Any],
               let id = workspace["id"] as? String,
               let slug = workspace["slug"] as? String,
               !slug.isEmpty else {

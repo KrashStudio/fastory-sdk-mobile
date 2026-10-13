@@ -4,6 +4,281 @@ All notable changes to the Fastory Mobile SDK are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: [SemVer](https://semver.org),
 tags `sdk-vX.Y.Z`.
 
+## 0.4.5
+
+Twenty-one fixes and seven changes: fifteen fixes and three changes in what the SDK does, and a
+documentation pass. No public name moves and nothing you call changes signature. Behaviours you may
+have worked around do change: a single `close()` on iOS returns the fan to your app even with a game
+open, `close()` on Android reports the game's closing before the hub's, `openGames()` on Android
+works again right after a close, a hub Android rebuilds in place no longer reports a close and a
+reopen, nor does a game open on it, a refusal whose body is
+not JSON now carries its status, the native error view speaks the fan's language and the wait after
+its *Retry* is spoken to a screen reader, a hub configured by key is ready before the first tap, a native Android app calls
+`Fastory.configure(context, config, listener)`, a bridge message that is not strict JSON is ignored
+on Android as it is on iOS, a bridge message that repeats a name, holds `-1e309` in an object, holds
+a number iOS cannot read or spells one name two ways reads the same on both platforms, the Android
+keep rules protect the bridge on their own, and on iOS the
+hub and the game sheet keep clear of the status bar and the home indicator. The rest is what the
+documentation tells you, corrected in ten places where it said something wrong, incomplete or
+contradictory, found by reading it the way an integrator does.
+
+### Fixed
+
+- **Configured by key, the first opening of the hub is now as fast as the second.** Until now only
+  the deprecated `fanzoneSlug` path prepared the hub ahead of time; a hub configured by
+  `publishableKey` had no page to prepare until the exchange answered, and nothing was prepared once
+  it had. Your fan's first tap therefore always loaded the hub cold, under a loading indicator, while
+  every later tap found it ready. The SDK now prepares the page as soon as the exchange resolves,
+  behind the same gate as before — never while your app is drawing its first screen, never on a
+  background launch — so the first tap finds it ready too. A failed exchange prepares nothing and
+  tells you nothing new: the first tap loads cold and reports `FastorySurfaceLoadFailed` for itself,
+  exactly as it did. An `identify()` or `logout()` that lands before the page is ready cancels it,
+  and one that lands after drops it, so a fan never sees a page rendered for a previous session.
+  Nothing prepares a new page after that transition — the SDK subscribes to the exchange once, at
+  `configure` — so the first opening after a `logout()` loads cold, as it always has, on both paths.
+  Nothing to change on your side.
+- **A prepared page that failed to load can no longer be presented.** A prepared page whose load
+  failed was already discarded, but a turn late — and a tap landing in that turn presented an empty
+  view under a loading indicator that never went away. The page now leaves the slot the instant the
+  failure is observed, so that tap loads cold like any other.
+- **A refusal whose body is not JSON now reaches your app with its status.** When something in front
+  of our API — a proxy, typically — answered the publishable-key exchange with an error page instead
+  of JSON, `surfaceLoadFailed` reported `reason: unknown` with a null `code` and a null `statusCode`:
+  your app learned neither the status nor that anything had answered and refused. The guide has
+  promised `http_<status>` for exactly that case since 0.4.0, and the fallback existed in the code; it
+  sat behind a check that required the body to be JSON, so the one answer it was written for could
+  never reach it. Both platforms now read the status before they require the body to parse: a 502
+  HTML page, an empty body and a response with no body at all are all `reason: rejected` with
+  `code: http_<status>`, on iOS and Android alike. A refusal whose JSON body carries an empty `code`
+  also falls back to the status now on iOS, as it already did on Android. A successful status whose
+  body cannot be read is still `unknown` — that is a response the SDK cannot use, not a refusal — and
+  on Android a successful status with no body at all moves from `network` to that same `unknown`,
+  matching iOS. If you alert on `code`, expect `http_<status>` values you were not receiving before,
+  in situations where you used to see `unknown` (or, on Android for a refusal with no body at all,
+  `network`).
+- **On iOS, `error.localizedDescription` now names the rule a refused configuration broke.**
+  `FastoryConfigError`, thrown by `try config.validate()`, described itself only through
+  interpolation, so the idiomatic `catch { log(error.localizedDescription) }` printed "The operation
+  couldn't be completed." followed by a case number. It now conforms to `LocalizedError`, and
+  `localizedDescription`, `"\(error)"` and `description` all return the same sentence — for example
+  `publishableKey does not belong to this environment`. Nothing changes for Flutter, whose
+  `ArgumentError` already carried the rule.
+- **Android: reopening the games right after closing them works again.** Calling `openGames()` in
+  the seconds after the hub was closed — by `close()`, by the close button or by the back gesture —
+  did nothing until the platform had finished destroying the previous hub, which can take several
+  seconds: no hub, no event, nothing reported to the host. The hub now hands its slot back the moment
+  it is dismissed, so the next `openGames()` opens a hub immediately, and `hubClosed` is emitted at
+  that moment rather than when the Activity is destroyed — calling `openGames()` from the `hubClosed`
+  callback opens a new hub. Two consequences follow. A hub that has been dismissed emits nothing
+  further: a page that fails, or finishes loading, while the hub leaves the screen produces no
+  `surfaceLoadFailed` and no `hubOpened`. And a hub reopened before the platform destroyed the
+  previous one starts from a cold page; the one after it is warm again. A second `openGames()` while
+  a hub is still launching is still absorbed, as before. iOS was not affected.
+- **iOS: one `close()` now returns the fan to your app even while a game is open.** With a game sheet
+  on screen, a single `close()` used to dismiss the sheet only: the hub stayed up, `hubClosed` was
+  never emitted, and a second call was needed — a workaround no document described, and one that
+  closed the hub by mistake whenever no game was open. `close()` now dismisses the game sheet and then
+  the hub, emitting `gameClosed` then `hubClosed`, as the specification always required. A `close()`
+  that lands while the sheet is still animating in is honoured too, once the animation ends. With the
+  hub alone on screen, nothing changes. If you had added a second `close()` to work around this,
+  remove it.
+- **Android: `close()` with a game open now emits `gameClosed` before `hubClosed`.** The hub was
+  finished with the game sheet still up, so `hubClosed` went out at once and `gameClosed` only when
+  the platform tore the sheet down with the hub, seconds later on a slow device — the reverse of the
+  order the specification requires, and of what iOS emits. One `close()` now dismisses the sheet and
+  then the hub, so `gameClosed` and `hubClosed` leave in that order, one right after the other.
+  With the hub alone on screen, and on the back gesture, nothing changes. If your app reconciles its
+  own state on `hubClosed` and was tolerating a `gameClosed` arriving after it, that tolerance is no
+  longer needed.
+- **Android: a hub the system rebuilds in place no longer reports a close and a reopen.** When
+  Android destroyed and rebuilt the hub's screen without the fan leaving it — a change of device
+  language or display size, or the *Don't keep activities* developer option; rotation was never
+  affected — your app received `hubClosed` immediately followed by `hubOpened`, for one hub that
+  never left the screen. The rebuilt hub now continues the same presentation and emits neither event;
+  an `openGames()` called while the system has not rebuilt it yet asks for that hub again. A game
+  open on the hub at that moment is covered by the next entry. Closing the hub afterwards — `close()`, the close button or the back gesture —
+  emits one `hubClosed`, as for any hub, including a `close()` that arrives while your app is in the
+  background and the system has not rebuilt the hub yet. If you counted openings, or discarded the extra pair,
+  that correction is no longer needed. iOS was not affected.
+- **Android: a game open on a hub the system rebuilds in place no longer reports a close and a
+  reopen.** The game sheet was rebuilt with the hub, and your app received `gameClosed` immediately
+  followed by `gameOpened` for a game the fan never left. The rebuilt sheet now continues the same
+  game and emits neither event. Its page still reloads with the screen, so the fan's progress in the
+  game starts over, as before; a reload that fails reports `surfaceLoadFailed`. Ending the game
+  afterwards — its close button, the back gesture, a swipe down, or `close()` — emits one
+  `gameClosed`, before `hubClosed` when the hub closes with it; a `close()` that arrives while your
+  app is in the background and the system has not rebuilt the hub yet emits `gameClosed` then
+  `hubClosed` too. If you discarded the extra pair, that correction is no longer needed. iOS was not
+  affected.
+- **Android: the SDK's R8 rules now keep the annotation the bridge needs, not only the method.**
+  `addJavascriptInterface` exposes a method only while its `@JavascriptInterface` annotation is still
+  visible at runtime. The SDK's consumer rules kept the method and left the `RuntimeVisibleAnnotations`
+  attribute to your own configuration: with AGP's default rules, or with any dependency that keeps
+  annotation attributes, nothing was lost — but a host whose hand-written R8 configuration keeps no
+  annotation attributes had a silent bridge in release, the method present and unreachable from the
+  page. The SDK now ships `-keepattributes RuntimeVisibleAnnotations` with its rules; nothing to change
+  on your side, and the FAQ's answer that you need no keep rule of your own now holds for that case
+  too.
+- **The wait after *Retry* is now spoken by a screen reader, on the hub and in the game sheet.** When
+  the hub could not open and the fan pressed *Retry* on the native error view, that view disappeared
+  — and VoiceOver's or TalkBack's focus with it — while a loading indicator with no label took its
+  place for as long as the exchange ran; nothing was said when the hub finally opened or when the
+  error view came back, and on Android the focus fell on a close button that had no label. The game
+  sheet, which shows the same error view when a game cannot load, was as silent, with no indicator
+  at all while the game reloaded. Pressing *Retry* now announces *Loading…* on either surface — the
+  game sheet gains a loading indicator for that wait, and only for it — the indicator carries that
+  label for the whole wait, and the end of the wait is announced too — *Content loaded.* when the
+  hub or the game opens, the error message when it does not. On both platforms the screen reader's
+  focus moves onto the indicator when the wait begins; when it ends, VoiceOver starts the screen
+  over and TalkBack hears the announcement where it stands. The hub's close button on Android now
+  carries the same *Close* label and button role as the game sheet's, so a focus that lands on it
+  reads as one. The texts, and the game sheet's *Close* label on Android, follow the error view's
+  language rule — the fan's device language among English, French and Spanish, then your configured
+  `locale`, then English. On Android they are two
+  new string resources, `fastory_sdk_loading` and `fastory_sdk_loaded`, which your app may redefine
+  under the same rule as the four existing ones. Nothing to change in your code.
+- **Android: a bridge message that is not strict JSON is now ignored, as it is on iOS.** The
+  Android parser read a little more than JSON: a version written `01`, `0x1` or `+1` was accepted as
+  `1`, and a comment, an `=` in place of a `:`, an unquoted value or text after the closing brace
+  were read past; so were an escaped lone surrogate, a positive number too large to be finite and
+  nesting deeper than 512 levels, all three refused on iOS. So a message iOS ignores as malformed
+  reached an Android host as `bridgeMessage`, and the same request on the reply channel was answered
+  instead of refused as `malformed`. Both channels now judge the text by the JSON grammar before
+  reading it, so the two platforms decide every one of these forms the same way: the version is an
+  integer as JSON writes one, and the document is JSON and nothing else. A leading byte order mark
+  is still skipped, as on iOS. Every envelope `JSON.stringify` produces from a well-formed string,
+  nested no more than 512 levels deep, is unaffected. If your web content builds the envelope by
+  hand and leaned on that leniency, Android now gives it the silence iOS always did — correct the
+  envelope, which iOS already required.
+- **A bridge message that repeats a name, or holds a negative number too large to be finite, now
+  reads the same on Android and iOS.** Both forms are valid JSON and the two platforms read them
+  differently. A name repeated within one object, as in `{"v":1,"v":2,…}`, was read at its first
+  occurrence on iOS and at its last on Android, so the version, the `type`, the `requestId` or a
+  payload value could differ by platform and a message one of them ignored reached the host on the
+  other. Android now keeps the first occurrence, as iOS always did. A number such as `-1e309` held
+  by an object member was refused on Android and reached an iOS host as negative infinity; iOS now
+  refuses it too: ignored on the receive-only channel, answered `malformed` on the reply channel.
+  As an array element it is still read on both. `JSON.stringify` writes neither form, so web
+  content that builds its envelope with it is unaffected.
+- **Two more bridge messages read the same on Android and iOS: a number iOS cannot read, and two
+  names that differ only in how a character is encoded.** iOS refuses some numbers that are valid
+  JSON and that Android read: an integer written in full past about 3.4 × 10^165, such as a `1`
+  followed by 166 zeros, positive or negative; a number written with more than 17 digits whose scale
+  iOS cannot hold, such as `0.` followed by 128 zeros and a `1`; and a number whose exponent
+  takes more than four characters, sign included, such as `1e-0001`. Such a message was ignored on
+  iOS, or answered `malformed` on the reply channel, and reached the host on Android; Android now
+  refuses it too, wherever the number stands. The same value written with a short exponent, such as
+  `1e166`, is read on both. Separately, two names of one object that are the same text written
+  differently — `é` as one character and as `e` followed by a combining accent, or the Kelvin sign
+  and the letter `K` — were two keys on Android and one on iOS, holding either value from one
+  message to the next. Both platforms now read them as one name repeated: the first occurrence wins,
+  spelling included, as it already did for a name repeated letter for letter. Names that are only
+  compatible, such as the ligature `ﬁ` and `fi`, stay two. `JSON.stringify` writes none of these
+  numbers; it does write both spellings of a name when your object holds both, and the first one it
+  writes is the one your host now receives on both platforms.
+- **A game page does read and write storage — its own.** The guide, the specification and the notes
+  on 0.4.0 said a game loaded with `embed=1` "reads no storage at all". Measured on the published
+  package, it does what any page does: it reads and writes its own cookies and web storage, on its
+  own site. What it does *not* read there is a session — it asks its host page for one, and in an
+  SDK WebView it has no host page — so the hub and the game still know nothing about each other, and
+  the isolation the earlier releases established holds. If you declare the data your app stores,
+  count the game's own cookies and web storage as well as the hub's.
+- **"Once per configuration" is only true of a key exchange that succeeded.** The guide said the API
+  host was reached "once per configuration". A failed exchange is not remembered as final, and the
+  guide now says how each platform re-runs it: on Android the next `openGames()` asks again by itself,
+  so a network incident at configuration time costs a second request with no tap; on iOS the hub shows
+  the error view from the remembered failure and the second request leaves on the fan's Retry. Only a
+  configuration whose exchange succeeded sends nothing more until you configure again. The behaviour
+  is unchanged and intended; the sentence was too absolute for anyone sizing their calls or reading
+  their own logs.
+- **The specification dates the staging stories host to the version that shipped it.** It dated the
+  switch to `https://staging.story.tl` to a 0.1.5 that never existed — the tags go from 0.1.4 to
+  0.2.0 — while the note added to the 0.1.1 entry below said 0.2.0. The specification now says 0.2.0
+  as well.
+- **The 0.2.0 entry below now says its install instruction was replaced.** It still tells you to add
+  the package with `from:`, the range 0.4.1 asked you to leave because it spans every 0.x minor and
+  this line ships source breaks in minors. Its text stays as the record of that release and carries a
+  note pointing at the 0.4.1 instruction — it was the one entry that still gave the old instruction in
+  the clear.
+- **The 0.4.4 entry below says where its four corrections actually were.** It announced them as "the
+  availability note, both quickstart snippets and the configuration reference". Three are in the root
+  `README.md` — the availability note, the Flutter quickstart's comment and the configuration
+  reference — and the fourth is in the Flutter plugin's own `README.md`; the Swift quickstart never
+  carried the note. A reader who re-checked one file saw three of the four.
+- **The specification's Kotlin signatures describe the Kotlin that ships.** `SPEC.md` § 2.3 declared
+  `FastoryEnvironment` as a sealed class whose `Development` case carried the base URL. The shipped
+  type is an enum — `PRODUCTION`, `STAGING`, `DEVELOPMENT` — and the URL travels as
+  `developmentBaseUrl` on `FastoryConfig`, as the same section's `FastoryConfig` and the
+  configuration table already said; code written from the old block did not compile. § 2.2 also
+  names `invalidIdentityMode`, a case `FastoryIdentifyError` has always had on Swift and whose code
+  § 5.4 already listed. Three smaller corrections travel with it: `locale` is documented as
+  forwarded to the game URLs as well as the hub's, and as the error view's fallback language; the
+  plugin's iOS notes say the error view follows the fan's device languages, then your configured
+  `locale` — not the language your app runs in; and the demo's notes name the back-office tab that
+  holds the publishable keys, *Mobile SDK*, rather than a tab that does not exist.
+- **iOS: the hub and the game sheet keep clear of the status bar and the home indicator on every
+  iPhone.** On an iPhone with a notch or a Dynamic Island, the hub's first frame — the top of
+  whichever tab it opened on — was painted under the status bar, and could stay there until the fan
+  scrolled; the game sheet's bottom edge, a game's main button typically, sat under the home
+  indicator. The page was left to pad itself from the insets WebKit reports, and WebKit reports them
+  to a page only after its first layout when the load began off screen, which is always the case
+  for the page the SDK prepares ahead of the tap. Both surfaces are now laid out inside the safe
+  area natively: the page starts below the status bar and ends above the home indicator, and the
+  system bars sit on a plain band in the system background colour rather than on the Fanzone's own
+  background. On the hub that band follows your status bar when your app sets its style itself
+  rather than per view controller: black under light text, white under dark text. A phone without a
+  notch gets the same band under its 20 pt status bar, and in landscape or on iPad the band runs
+  along every edge the system reserves. Android is unchanged. Nothing to change on your side.
+
+### Changed
+
+- **Android: call `Fastory.configure(context, config, listener)`.** A native Kotlin host used to
+  call `configure(config, listener)`, and without a `Context` the SDK could neither name your
+  application for the key exchange — so the exchange waited for your first `openGames(context)` —
+  nor watch your process lifecycle, so it never prepared the hub ahead of that first open on either
+  path. The new form does both: the exchange starts at `configure`, and the hub is prepared once your
+  app is on screen, at once on the slug path and once the exchange resolves on the key path. Pass any
+  `Context`; only its application context is kept, and it stays callable from any thread. The
+  context-less form is `@Deprecated`, keeps working exactly as before for the whole 0.x line, and
+  goes away in 1.0.
+- **The Android module now depends on `androidx.lifecycle:lifecycle-process`.** It is how the SDK
+  knows whether your app is on screen before it has an Activity of its own. Nothing to change in a
+  Flutter app — the plugin declares it — and nothing to change in a native app that already resolves
+  the module's dependencies through Gradle.
+- **The native error view speaks the fan's language, and tells a lost connection from any other
+  failure.** Until now the screen shown when the hub or a game could not load was English on every
+  device, with one message whatever had failed, and the two platforms did not even show the same
+  words. Both platforms now read their texts from a table per language — English, French and Spanish,
+  the languages the Fanzone web surfaces serve, English for any other device language — and show *No
+  internet connection.* when nothing answered, *Something went wrong.* otherwise. The message follows
+  the fan's device language; when none of the device's languages is one the SDK carries, the `locale`
+  you pass in the configuration is used if it is one, English otherwise. On Android the texts are
+  ordinary string resources (`fastory_sdk_error_message`, `fastory_sdk_error_no_connection`,
+  `fastory_sdk_retry`, `fastory_sdk_close`): your app may redefine them, provided it does so for
+  every language it ships — a redefinition in `values/` alone leaves the SDK's French and Spanish
+  tables in force on those devices. The Swift channel offers no override. Nothing to change in your
+  code.
+- **A native Android app now has an answer.** The guide only said a Kotlin artifact on Maven Central
+  "follows". It now says what holds today — the Kotlin core reaches an app only inside the Flutter
+  plugin, for a Flutter app, and no other path is supported until the artifact ships — and lists the
+  missing artifact among the known limitations, with no date attached and an invitation to ask.
+- **The plugin's error table lists the codes a Dart app can actually receive.** It listed eleven, and
+  five of them cannot reach you in this version: the Dart types rule them out, no platform raises
+  them, or the mode that raises them is reserved. Two it did not list can — `no_activity` and
+  `no_view_controller`, which `openGames()` answers when the plugin has no activity or no view
+  controller to present from. What every listed code means is unchanged. The channel contract stays in
+  `SPEC.md` § 5.2 and § 5.4.
+- **The specification no longer illustrates pinning with the range the guide tells you to avoid.** It
+  said a host pinning `ref: sdk-vX.Y.Z` and a host pinning `from: "X.Y.Z"` are on the same code — true,
+  and it normalised the form 0.4.1 asked you to drop. It says the same thing without it.
+- **The iOS console warning on a SwiftUI tab entry is no longer listed as an SDK limitation.** The
+  guide said `openGames(from:)` called from a SwiftUI tab-bar action logs *"Unbalanced calls to
+  begin/end appearance transitions"*, and that deferring the call by one runloop tick avoids it. Both
+  were wrong: on iOS 26.5 the call alone logs nothing, and the deferral changes nothing. The line
+  comes from the host side — the view owning the `TabView` re-rendering in the same tap, because it
+  reads state that tap changes. The *Integrate in 5 lines › Native iOS* section now says so and how to
+  avoid it. Nothing in the SDK changed.
+
 ## 0.4.4
 
 Documentation only. The sole change to the shipped Swift and Kotlin is comments — no public name
@@ -24,6 +299,10 @@ planning decision.
   key and the `environment` together. A live key that still does not resolve is a workspace
   provisioning question for your Fastory contact, and the `code` on `FastorySurfaceLoadFailed` names
   which refusal you hit.
+
+  **Corrected.** Three of those four places are in the root `README.md` — the availability note, the
+  Flutter quickstart's comment and the configuration reference — and the fourth is in the Flutter
+  plugin's own `README.md`. The Swift quickstart never carried the note.
 - **Three entries below now say when they stopped being true.** A changelog is usually read by
   landing in the middle of it, and three notes described a state of the world that has since changed:
   0.4.0's workaround for Retry after a refused key, which 0.4.3 made unnecessary; 0.3.0's warning
@@ -253,6 +532,10 @@ mode resolves in this release; the other two are the final signatures, reserved.
   the fan is", they do not: a game asks the SDK, and the only thing the SDK can answer with is the
   standing value you set with `setBridgeReply()`, new in this release. § 7 now describes what
   actually happens, and § 7.4 specifies what a sign-out erases.
+
+  **Corrected.** "Reads no storage at all" was wrong: the game page reads and writes its own cookies
+  and web storage on its own site, like any page. What it does not read there is a session — it asks
+  its host page for one, and has none in an SDK WebView — so the rest of this entry stands.
 - **The shared `WKProcessPool` is gone on iOS.** Deprecated since iOS 15 and documented by Apple as
   having no effect, so it produced a deprecation warning and nothing else. WebKit decides process
   sharing on its own at the SDK's iOS 15 floor. No behavior change; one less warning in your build.
@@ -450,6 +733,8 @@ surfaces which appearance to render in.
 - Configured by key, the hub cannot be warmed up before the exchange resolves — there is no URL to
   warm yet. The hub's existing loading state covers the round trip, and a rejected key lands on the
   existing native error view rather than a blank web view.
+  **No longer true.** It was accurate for 0.3.0 and is left as the record of that release: the hub is now prepared as soon as the exchange resolves, so the first opening no longer pays
+  for the round trip. Read the current guide, not this note.
 - Errors carry the API's machine-readable code (`sdk_key_revoked`, `sdk_application_not_allowed`,
   `sdk_rate_limited`, …). Branch on the code, never on the message.
 - The key only bootstraps for the application identifiers declared on it — your iOS bundle
@@ -467,6 +752,10 @@ budget while they are on screen.
   `Package.swift`, and call `Fastory.configure(_:)` then `Fastory.openGames(from:)`. The Flutter
   plugin is unchanged and keeps its own install path. Every release now publishes both channels
   from the same commit: `sdk-vX.Y.Z` for Flutter, the bare `X.Y.Z` tag that SwiftPM resolves.
+
+  **Superseded.** `from: "0.2.0"` accepts every later 0.x minor, and this line ships source breaks in
+  minors. Since 0.4.1 the install instruction is *Up to Next Minor Version* in Xcode, or
+  `.upToNextMinor(from:)` in your manifest — the 0.4.1 entry says why.
 
 ### Fixed
 

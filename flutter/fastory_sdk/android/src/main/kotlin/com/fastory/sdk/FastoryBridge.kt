@@ -10,6 +10,8 @@ import androidx.webkit.JavaScriptReplyProxy
 import androidx.webkit.WebMessageCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import java.math.BigInteger
+import java.text.Normalizer
 import java.util.concurrent.ConcurrentHashMap
 import org.json.JSONArray
 import org.json.JSONObject
@@ -60,8 +62,8 @@ internal object BridgeEnvelope {
 
     /**
      * The allow-list, so the web side can ship a new type against an older SDK. The three platforms
-     * hold the same set — adding a type here alone fails a test instead of dropping it silently for
-     * the platforms that were missed.
+     * hold the same set: a type added on one alone would be delivered there and dropped silently on
+     * the others.
      */
     val KNOWN_TYPES: Set<String> = setOf("fastory:ready")
 
@@ -108,8 +110,7 @@ internal object BridgeEnvelope {
             trace(Rejection.TOO_LARGE, null)
             return null
         }
-        // A top-level array, a truncated document or plain garbage all land here as a JSONException.
-        val envelope = runCatching { JSONObject(raw) }.getOrNull()
+        val envelope = strictJsonObject(raw)
         if (envelope == null) {
             trace(Rejection.NOT_JSON, raw)
             return null
@@ -224,8 +225,7 @@ internal object BridgeEnvelope {
         if (raw == null || raw.length > MAX_MESSAGE_CHARS) {
             return RequestDecoding.Refused(ReplyError.MALFORMED, null)
         }
-        // A top-level array, a truncated document or plain garbage all land here as a JSONException.
-        val envelope = runCatching { JSONObject(raw) }.getOrNull()
+        val envelope = strictJsonObject(raw)
             ?: return RequestDecoding.Refused(ReplyError.MALFORMED, null)
 
         // Read the correlation id before anything can fail, so a rejected request still comes back
@@ -258,6 +258,19 @@ internal object BridgeEnvelope {
     private fun usableRequestId(raw: Any?): String? {
         if (raw !is String || raw.length > MAX_REQUEST_ID_CHARS || raw.isBlank()) return null
         return raw
+    }
+
+    /**
+     * The platform's `org.json` reads more than JSON — comments, `=` for `:`, unquoted and
+     * single-quoted strings, `01`, `0x1` or `+1` as numbers, text after the document — where iOS's
+     * parser reads JSON alone, so the same envelope could be delivered on one platform and ignored
+     * on the other (§13.1 forbids exactly that). The text is judged by the grammar first, so the
+     * platform parser only sees a document iOS would read too, without the repeated members iOS
+     * reads past. Null for a top-level array, a truncated document or plain garbage alike.
+     */
+    private fun strictJsonObject(raw: String): JSONObject? {
+        val text = StrictJsonSyntax.firstMembersOnly(raw) ?: return null
+        return runCatching { JSONObject(text) }.getOrNull()
     }
 
     internal fun reply(payload: JSONObject, type: String, requestId: String): String = encodeReply(
@@ -343,6 +356,321 @@ internal object BridgeEnvelope {
 }
 
 /**
+ * Recognises JSON text as iOS's parser reads it: RFC 8259, plus the limits that parser adds — a
+ * surrogate escaped alone, a number outside the range it reads that number's spelling in, a value
+ * nested deeper than [MAX_DEPTH] — and the one leading byte order mark it skips. A name repeated
+ * within one object is read at its first occurrence there and at its last by `org.json`, so the
+ * text handed on keeps every member but the repeats. Names are compared as Swift compares strings,
+ * by canonical equivalence, so `"é"` written precomposed and decomposed is one name repeated.
+ * Iterative, and the depth limit keeps the platform parser, which recurses, from ever seeing a deep
+ * document.
+ */
+private object StrictJsonSyntax {
+
+    /** A value is read inside at most this many open containers, as on iOS. */
+    const val MAX_DEPTH = 512
+
+    /** The exponent's characters after the `e`, sign included, that iOS reads at most. */
+    private const val MAX_EXPONENT_CHARS = 4
+
+    /** Up to this many digits, iOS reads a number that is not a 64-bit integer as a double. */
+    private const val MAX_DOUBLE_DIGITS = 17
+
+    /** Past them, as a decimal: a mantissa below 2^128 and a power of ten within this range. */
+    private val MAX_DECIMAL_MANTISSA: BigInteger = BigInteger.ONE.shiftLeft(128) - BigInteger.ONE
+    private val DECIMAL_EXPONENTS = -128..127
+
+    /** The text without its repeated members, or null when iOS would not read it as JSON. */
+    fun firstMembersOnly(text: String): String? {
+        val reader = Reader(text)
+        return if (reader.document()) reader.withoutRepeats() else null
+    }
+
+    private class Container(val isObject: Boolean) {
+        /** Decoded and composed, so `"\u0076"` repeats `"v"` and `"e\u0301"` repeats `"é"`, as on iOS. */
+        val names = HashSet<String>()
+
+        /** Where the member being read began, comma included, when its name repeats; -1 otherwise. */
+        var repeatFrom = -1
+    }
+
+    private class Reader(private val text: String) {
+        private var pos = 0
+
+        /** One entry per container still open, innermost last. */
+        private val open = ArrayDeque<Container>()
+
+        /** Each repeated member, from the comma before it to the delimiter after its value. */
+        private val repeats = mutableListOf<IntRange>()
+
+        fun document(): Boolean {
+            if (peek() == '\uFEFF') pos++
+            skipWhitespace()
+            if (!value()) return false
+            skipWhitespace()
+            return pos == text.length
+        }
+
+        /** A repeat nested in a repeat is already gone with its parent, so it is skipped. */
+        fun withoutRepeats(): String {
+            if (repeats.isEmpty()) return text
+            val kept = StringBuilder(text.length)
+            var from = 0
+            for (span in repeats.sortedBy { it.first }) {
+                if (span.first < from) continue
+                kept.append(text, from, span.first)
+                from = span.last + 1
+            }
+            return kept.append(text, from, text.length).toString()
+        }
+
+        private fun peek(): Char? = if (pos < text.length) text[pos] else null
+
+        private fun skipWhitespace() {
+            while (pos < text.length && text[pos] in " \t\n\r") pos++
+        }
+
+        /**
+         * Reads one value, containers included. A container opens by pushing onto [open] and looping
+         * back for its first element; a completed element then closes every container that ends
+         * there, or steps to the next element of the innermost one.
+         */
+        private fun value(): Boolean {
+            while (true) {
+                if (open.size > MAX_DEPTH) return false
+                skipWhitespace()
+                when (peek()) {
+                    '{' -> {
+                        pos++
+                        skipWhitespace()
+                        if (peek() == '}') {
+                            pos++
+                        } else {
+                            val container = Container(isObject = true)
+                            open.addLast(container)
+                            if (!memberName(container, pos)) return false
+                            continue
+                        }
+                    }
+                    '[' -> {
+                        pos++
+                        skipWhitespace()
+                        if (peek() == ']') {
+                            pos++
+                        } else {
+                            open.addLast(Container(isObject = false))
+                            continue
+                        }
+                    }
+                    '"' -> if (!string(null)) return false
+                    else -> if (!scalar()) return false
+                }
+                while (true) {
+                    if (open.isEmpty()) return true
+                    skipWhitespace()
+                    val container = open.last()
+                    if (container.repeatFrom >= 0) {
+                        repeats += container.repeatFrom until pos
+                        container.repeatFrom = -1
+                    }
+                    when (peek()) {
+                        ',' -> {
+                            val comma = pos++
+                            if (container.isObject && !memberName(container, comma)) return false
+                            break
+                        }
+                        '}' -> if (container.isObject) open.removeLast() else return false
+                        ']' -> if (!container.isObject) open.removeLast() else return false
+                        else -> return false
+                    }
+                    pos++
+                }
+            }
+        }
+
+        /** `"name" :` — the half of a member that precedes its value, which begins at [start]. */
+        private fun memberName(container: Container, start: Int): Boolean {
+            skipWhitespace()
+            if (peek() != '"') return false
+            val name = StringBuilder()
+            if (!string(name)) return false
+            val composed = Normalizer.normalize(name, Normalizer.Form.NFC)
+            if (!container.names.add(composed)) container.repeatFrom = start
+            skipWhitespace()
+            if (peek() != ':') return false
+            pos++
+            return true
+        }
+
+        /** Entered on the opening quote; appends the decoded string to [into] when one is given. */
+        private fun string(into: StringBuilder?): Boolean {
+            pos++
+            while (pos < text.length) {
+                val c = text[pos++]
+                when {
+                    c == '"' -> return true
+                    c < ' ' -> return false
+                    c == '\\' -> if (!escape(into)) return false
+                    else -> into?.append(c)
+                }
+            }
+            return false
+        }
+
+        /** Entered just past the backslash. */
+        private fun escape(into: StringBuilder?): Boolean {
+            val c = peek() ?: return false
+            pos++
+            val decoded = when (c) {
+                '"', '\\', '/' -> c
+                'b' -> '\b'
+                'f' -> '\u000C'
+                'n' -> '\n'
+                'r' -> '\r'
+                't' -> '\t'
+                'u' -> return unicode(into)
+                else -> return false
+            }
+            into?.append(decoded)
+            return true
+        }
+
+        /** Entered just past `\u`: one code unit, or a high surrogate escaped with its low half. */
+        private fun unicode(into: StringBuilder?): Boolean {
+            val unit = unicodeEscape() ?: return false
+            if (unit in LOW_SURROGATES) return false
+            if (unit in HIGH_SURROGATES) {
+                if (!text.startsWith("\\u", pos)) return false
+                pos += 2
+                val low = unicodeEscape()
+                if (low == null || low !in LOW_SURROGATES) return false
+                into?.append(unit.toChar())?.append(low.toChar())
+                return true
+            }
+            into?.append(unit.toChar())
+            return true
+        }
+
+        /** The code unit the four hex digits after `\u` spell, or null when they are not four. */
+        private fun unicodeEscape(): Int? {
+            if (pos + 4 > text.length) return null
+            var code = 0
+            for (c in text.substring(pos, pos + 4)) {
+                val digit = when (c) {
+                    in '0'..'9' -> c - '0'
+                    in 'a'..'f' -> c - 'a' + 10
+                    in 'A'..'F' -> c - 'A' + 10
+                    else -> return null
+                }
+                code = code * 16 + digit
+            }
+            pos += 4
+            return code
+        }
+
+        private fun scalar(): Boolean = when (peek()) {
+            't' -> literal("true")
+            'f' -> literal("false")
+            'n' -> literal("null")
+            else -> number()
+        }
+
+        private fun literal(word: String): Boolean {
+            if (!text.startsWith(word, pos)) return false
+            pos += word.length
+            return true
+        }
+
+        /**
+         * `-? (0 | [1-9][0-9]*) (. [0-9]+)? ([eE] [+-]? [0-9]+)?` — no leading zero, no `+`, no hex —
+         * then read as iOS reads it: an integer as a 64-bit one when it fits, any other number of up
+         * to [MAX_DOUBLE_DIGITS] digits as a double, and the rest as a decimal.
+         */
+        private fun number(): Boolean {
+            val start = pos
+            if (peek() == '-') pos++
+            val integerStart = pos
+            val first = peek() ?: return false
+            when {
+                first == '0' -> pos++
+                first in '1'..'9' -> digits()
+                else -> return false
+            }
+            val integer = text.substring(integerStart, pos)
+            var fraction = ""
+            if (peek() == '.') {
+                pos++
+                val fractionStart = pos
+                if (!digits()) return false
+                fraction = text.substring(fractionStart, pos)
+            }
+            var exponent: String? = null
+            if (peek() == 'e' || peek() == 'E') {
+                pos++
+                val exponentStart = pos
+                if (peek() == '+' || peek() == '-') pos++
+                if (!digits()) return false
+                exponent = text.substring(exponentStart, pos)
+            }
+            if (exponent != null && exponent.length > MAX_EXPONENT_CHARS) return false
+            val literal = text.substring(start, pos)
+            if (fraction.isEmpty() && exponent == null &&
+                (literal.toLongOrNull() != null || literal.toULongOrNull() != null)
+            ) {
+                return true
+            }
+            // A leading `0` is no digit to iOS here, where every digit after the point is one.
+            val digitCount = (if (integer == "0") 0 else integer.length) + fraction.length
+            if (digitCount <= MAX_DOUBLE_DIGITS) {
+                return literal.toDouble() != Double.POSITIVE_INFINITY
+            }
+            return fitsDecimal(integer, fraction, exponent?.toInt() ?: 0)
+        }
+
+        /**
+         * The mantissa takes digits while it stays below 2^128 and stops at the first it cannot
+         * take: every integer digit past that point raises the power of ten, every fraction digit
+         * before it lowers it — so an integer of 167 digits overflows, as does `0.` followed by 129
+         * zeros the other way. The power has to fit both before the exponent is applied and after.
+         */
+        private fun fitsDecimal(integer: String, fraction: String, exponent: Int): Boolean {
+            var mantissa = BigInteger.ZERO
+            var power = 0
+            var full = false
+            for (digit in integer) {
+                if (!full) {
+                    val next = mantissa * BigInteger.TEN + BigInteger.valueOf((digit - '0').toLong())
+                    if (next <= MAX_DECIMAL_MANTISSA) {
+                        mantissa = next
+                        continue
+                    }
+                    full = true
+                }
+                power++
+            }
+            for (digit in fraction) {
+                if (full) break
+                val next = mantissa * BigInteger.TEN + BigInteger.valueOf((digit - '0').toLong())
+                if (next > MAX_DECIMAL_MANTISSA) break
+                mantissa = next
+                power--
+            }
+            return power in DECIMAL_EXPONENTS && power + exponent in DECIMAL_EXPONENTS
+        }
+
+        /** Consumes one digit or more. */
+        private fun digits(): Boolean {
+            val start = pos
+            while (peek()?.let { it in '0'..'9' } == true) pos++
+            return pos > start
+        }
+    }
+
+    private val HIGH_SURROGATES = 0xD800..0xDBFF
+    private val LOW_SURROGATES = 0xDC00..0xDFFF
+}
+
+/**
  * Receiving end of the bridge, shared by every SDK WebView. A singleton on purpose: a WebView holds
  * its interfaces for life and the hub WebView outlives its Activity, so anything holding one leaks.
  */
@@ -374,15 +702,15 @@ object FastoryBridge {
         onMainThread { Fastory.notifyBridgeMessage(message.type, message.payload) }
     }
 
-    // Once, not per message: the JavaBridge thread can deliver in a tight loop. Lazy because plain
-    // JUnit has no main looper to bind to.
+    // Once, not per message: the JavaBridge thread can deliver in a tight loop. Lazy because the
+    // handler can only be bound where a main looper exists.
     private val mainHandler: Handler? by lazy {
         Looper.getMainLooper()?.let { Handler(it) }
     }
 
     /**
      * `@JavascriptInterface` runs on the JavaBridge thread; the host listener and the Flutter
-     * EventChannel both require the main one. No looper (plain JUnit) means a direct call.
+     * EventChannel both require the main one. Without a main looper the call is made directly.
      */
     private inline fun onMainThread(crossinline block: () -> Unit) {
         val handler = mainHandler
@@ -488,9 +816,6 @@ internal object FastoryBridgeResponder : WebViewCompat.WebMessageListener {
      * is a fan credential, so it dies with the identity that justified it — `logout()`, an
      * `identify` that resolves a different fan, and a `configure` that replaces the configuration it
      * was set under. Without them `logout()` keeps answering with the previous fan's token.
-     *
-     * Also the suites' seam, for the same reason it needs to exist at all: a standing answer is
-     * process-wide.
      */
     internal fun revokeAll() {
         standingReplies.clear()
@@ -505,8 +830,9 @@ internal object FastoryBridgeResponder : WebViewCompat.WebMessageListener {
      * caller the SDK cannot recognise (SPEC §13.8.4). Every other outcome is an envelope, success or
      * failure, so the page never waits on a reply that is not coming.
      *
-     * Split out from [onPostMessage] because a [WebMessageCompat] and a [JavaScriptReplyProxy] cannot
-     * be constructed in a test, and this is where the whole contract lives.
+     * Split out from [onPostMessage]: the decision depends on the caller's frame and origin, on the
+     * allow-lists and on the standing answers, never on the [WebMessageCompat] or the
+     * [JavaScriptReplyProxy] that carried the request, and this is where the whole contract lives.
      */
     internal fun answer(
         raw: String?,
@@ -567,10 +893,6 @@ internal object FastoryBridgeResponder : WebViewCompat.WebMessageListener {
         return listOfNotNull(config.baseUrl, config.environment.storiesOrigin).mapNotNull(::originOf)
     }
 
-    /**
-     * `java.net.URI` rather than `android.net.Uri`: this runs in plain JUnit too, where the android.jar
-     * stubs would hand back a default instead of parsing.
-     */
     internal fun originOf(url: String?): String? {
         if (url.isNullOrBlank()) return null
         val uri = runCatching { java.net.URI(url.trim()) }.getOrNull() ?: return null

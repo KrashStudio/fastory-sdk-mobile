@@ -55,13 +55,19 @@ public enum FastoryTheme: String, Equatable, Sendable {
 /// `FastoryConfig.validate()` for callers that must surface a bad configuration to the host app
 /// instead of trapping — e.g. the Flutter plugin's `configure()` bridge, which maps each case to
 /// an `invalid_config` error.
-public enum FastoryConfigError: Error, Equatable, Sendable, CustomStringConvertible {
+///
+/// `LocalizedError` as well as `CustomStringConvertible`, so the rule reads the same through
+/// `error.localizedDescription` — the idiomatic thing to log in a `catch` — as through
+/// interpolation. Without it Foundation answers "The operation couldn't be completed" there.
+public enum FastoryConfigError: Error, Equatable, Sendable, CustomStringConvertible, LocalizedError {
     case blankFanzoneSlug
     case blankHubTabSlug
     case missingIdentifier
     case conflictingIdentifier
     case malformedPublishableKey
     case publishableKeyEnvironmentMismatch
+
+    public var errorDescription: String? { description }
 
     public var description: String {
         switch self {
@@ -96,8 +102,8 @@ public struct FastoryConfig: Equatable, Sendable {
     public let locale: String?
     public let theme: FastoryTheme?
 
-    /// Not deprecated, so SDK-internal construction (and tests) never trips the deprecation
-    /// warning attached to the slug initializer below.
+    /// Not deprecated, so SDK-internal construction never trips the deprecation warning attached to
+    /// the slug initializer below.
     init(
         environment: FastoryEnvironment,
         publishableKey: String?,

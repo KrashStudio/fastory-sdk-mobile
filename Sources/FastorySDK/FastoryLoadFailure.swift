@@ -144,26 +144,20 @@ final class FastoryWarmUpObserver: NSObject, WKNavigationDelegate {
         discard(webView)
     }
 
-    /// Where the deferred discard is handed off. A seam, and the deferral is the whole point of it:
-    /// production must not release a WebView from inside that WebView's own delegate callback, and a
-    /// suite must be able to observe that the discard was *scheduled* — then run it — instead of
-    /// waiting a wall-clock delay for a main-queue turn it does not control.
     static var scheduleDiscard: (@escaping () -> Void) -> Void = { work in
         DispatchQueue.main.async(execute: work)
     }
 
-    /// A turn later, so the WebView is not released from inside its own delegate callback — and only
-    /// if the slot still holds it, since a presentation that took it inside that turn owns it now and
-    /// discarding would flush the games discovered for the hub that is opening.
     private func discard(_ webView: WKWebView) {
-        Self.scheduleDiscard { Fastory.discardWarmHub(ifStillHolding: webView) }
+        Fastory.warmHubPageDidFail(webView)
+        Self.scheduleDiscard { Fastory.releaseFailedWarmHubWebView(webView) }
     }
 }
 
 /// The load state of one Fastory surface, as the host sees it (SPEC § 5.3, § 9.1).
 ///
 /// Pure — no WebView and no view controller — so the rule both surfaces obey is written once and
-/// assertable without either: **an opening event never fires on a surface that has not loaded**, and
+/// decidable without either: **an opening event never fires on a surface that has not loaded**, and
 /// a surface that never opened owes no closing event.
 struct FastorySurfaceLoad {
     enum Announcement: Equatable {
