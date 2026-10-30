@@ -12,6 +12,9 @@ import android.webkit.WebViewClient
 enum class FastorySurface(val wireName: String) {
     HUB("hub"),
     GAME("game"),
+
+    /** The workspace's membership panel — the bot page of § 3.5, presented full-screen. */
+    MEMBERSHIP("membership"),
 }
 
 /**
@@ -116,15 +119,26 @@ internal object FastoryLoadFailureClassifier {
         }
 }
 
-internal class FastoryWarmUpClient : WebViewClient() {
+/**
+ * Watches one warmed page.
+ *
+ * [surface] is which slot it answers for: two surfaces are prepared at once and each keeps its own
+ * page, so a client reporting into a single slot would mark the hub committed on the panel's
+ * document and empty the hub's slot on the panel's failure.
+ */
+internal class FastoryWarmUpClient(
+    private val surface: FastorySurface = FastorySurface.HUB,
+) : WebViewClient() {
     override fun onPageCommitVisible(view: WebView, url: String?) {
-        Fastory.warmHubPageDidCommit(view)
+        Fastory.warmPageDidCommit(view, surface)
     }
 
     override fun onPageFinished(view: WebView, url: String?) {
-        Fastory.warmHubPageDidCommit(view)
-        // Discovery still runs on a successful warm-up: the games are what the fan taps first.
-        GamePreloader.onHubLoadFinished(view)
+        Fastory.warmPageDidCommit(view, surface)
+        // Discovery still runs on a successful warm-up: the games are what the fan taps first. They
+        // are listed by the hub's page and by no other, so no other surface discovers.
+        val config = Fastory.config ?: return
+        if (surface == FastorySurface.HUB) GamePreloader.onHubLoadFinished(view, config)
     }
 
     override fun onReceivedError(
@@ -144,8 +158,8 @@ internal class FastoryWarmUpClient : WebViewClient() {
     }
 
     private fun discard(view: WebView) {
-        Fastory.warmHubPageDidFail(view)
-        Handler(Looper.getMainLooper()).post { Fastory.releaseFailedWarmHubWebView(view) }
+        Fastory.warmPageDidFail(view, surface)
+        Handler(Looper.getMainLooper()).post { Fastory.releaseFailedWarmWebView(view) }
     }
 }
 
@@ -158,8 +172,10 @@ internal class FastoryWarmUpClient : WebViewClient() {
  *
  * [hasCommitted] starts true for a page whose document committed before this surface existed: no
  * further commit callback is coming for it, so a gate that waited for one would never announce the
- * opening at all. [isIdentified] is false only for the hub, whose event carries a fanzone slug the
- * publishable-key path learns from the API (§ 2.5).
+ * opening at all. [isIdentified] defaults true for the game sheet, which is handed a page already
+ * addressed; the hub and the panel both pass false, since each has something to learn before it can
+ * announce itself — the hub's fanzone slug, the panel's resolved address — and call [identify] once
+ * it does.
  */
 internal class FastorySurfaceLoad(
     private val surface: FastorySurface,
@@ -180,6 +196,13 @@ internal class FastorySurfaceLoad(
     internal val isOpen: Boolean get() = didOpen
 
     internal val hasCommittedPage: Boolean get() = hasCommitted
+
+    /**
+     * Whether the current attempt failed. A committed page is not a loaded one: an error document
+     * commits too, and this is what tells the two apart. [restart] clears it with the failure it
+     * reports, so a retry that loads leaves a page like any other.
+     */
+    internal val hasFailedAttempt: Boolean get() = hasFailed
 
     /** The container reached the screen. */
     internal fun present(): Announcement {

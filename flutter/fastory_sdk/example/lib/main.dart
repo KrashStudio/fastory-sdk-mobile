@@ -15,7 +15,7 @@ const Color kClubRed = Color(0xFFE5484D);
 const String kClubPlatform = 'Flutter';
 
 // The SDK version this package ships, kept in step with the plugin's pubspec.yaml.
-const String kDeclaredSdkVersion = '0.4.5';
+const String kDeclaredSdkVersion = '0.5.0';
 
 // Pointing the demo at a real fanzone needs a real publishable key, and a key must
 // never reach a commit. Run with `--dart-define-from-file=fastory.local.json` (that
@@ -29,9 +29,16 @@ const String kDevelopmentBaseUrl =
     String.fromEnvironment('FASTORY_DEVELOPMENT_BASE_URL');
 const String kLocale = String.fromEnvironment('FASTORY_LOCALE');
 
-// Prefilled so the bridge control works without typing anything, and so does the reserved
-// hostToken mode the day it ships: the point is to reach the SDK, not to hold a real credential.
-// The jwt is shaped like one and signed by nobody.
+// The sequence the console's second membership control opens, read from that same file. Empty is
+// the ordinary case and not a failure: the panel's default screen is what the first control already
+// opens, so the second one is disabled rather than sending a blank identifier that would land on
+// the same screen and look like the argument was ignored.
+const String kMembershipSequenceId =
+    String.fromEnvironment('FASTORY_MEMBERSHIP_SEQUENCE_ID');
+
+// Prefilled so the bridge control works without typing anything, and so does the hostToken mode:
+// the point is to reach the SDK, not to hold a real credential. The jwt is shaped like one and
+// signed by nobody, so the exchange refuses it — which is the reachable outcome to show.
 const String kSampleFanToken = 'demo-fan-token';
 const String kSampleHostTokenJwt =
     'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkZW1vLWZhbiJ9.not-a-real-signature';
@@ -50,33 +57,25 @@ const String kGlyphFontFamily = 'DemoGlyphs';
 /// What the 'standing answer' line reads once the SDK has dropped the value (SPEC § 13.8.6).
 const String kRevokedBridgeReply = 'revoked by the SDK — set it again';
 
-/// One `identify` mode as the console offers it. The two identified modes are reserved signatures —
-/// declared, final, and not shipped — so each says why it cannot be called and its control is
-/// disabled rather than absent: an absent control reads as an oversight, a disabled one with a
-/// reason reads as a decision.
+/// One `identify` mode as the console offers it. All three resolve: `fanId` opens the Fastory
+/// login in the system browser, so tapping it hands the screen to a browser sheet and comes back
+/// resolved or `login_cancelled`.
 class IdentityModeOption {
   const IdentityModeOption({
     required this.identity,
     required this.label,
-    this.available = true,
   });
 
   final FastoryIdentity identity;
   final String label;
-  final bool available;
 }
 
 const List<IdentityModeOption> kIdentityModes = <IdentityModeOption>[
   IdentityModeOption(identity: FastoryAnonymous(), label: 'anonymous'),
-  IdentityModeOption(
-    identity: FastoryFanId(),
-    label: 'fanId',
-    available: false,
-  ),
+  IdentityModeOption(identity: FastoryFanId(), label: 'fanId'),
   IdentityModeOption(
     identity: FastoryHostToken(kSampleHostTokenJwt),
     label: 'hostToken',
-    available: false,
   ),
 ];
 
@@ -125,8 +124,45 @@ FastoryEnvironment get kEnvironment {
   }
 }
 
+/// The demo opens both surfaces from its tab bar, so it asks for both to be prepared before
+/// their first opening. A host that only opens the games keeps the SDK's default, the hub alone.
+const Set<FastorySurface> kPrewarm = <FastorySurface>{
+  FastorySurface.hub,
+  FastorySurface.membership,
+};
+
+/// The example answers `fastory:login-requested` with a dialog, so it declares that it does. The
+/// SDK's default is `false`, under which the pages show no sign-in entry at all.
+const bool kHandlesLoginRequests = true;
+
+/// Posted by a page when a fan taps one of its sign-in entries — only to a host that declared
+/// `handlesLoginRequests`, which this example does. Spelled out because the SDK publishes no
+/// constant for a bridge type.
+const String kLoginRequestedType = 'fastory:login-requested';
+
+const Duration kSurfaceClosedTimeout = Duration(seconds: 2);
+
+/// The `identify` modes that sign a fan in, as the Identity section plays them. Anonymous is left
+/// out: it is not an answer to a fan asking to sign in.
+final List<IdentityModeOption> kSignInModes = <IdentityModeOption>[
+  for (final IdentityModeOption mode in kIdentityModes)
+    if (mode.identity is! FastoryAnonymous) mode,
+];
+
+typedef PresentedSurface = ({FastorySurface surface, String? sequenceId});
+
+/// A set as the console shows it, in the order the SDK declares its surfaces.
+String prewarmLabel(Set<FastorySurface> surfaces) {
+  final List<String> names = <String>[
+    for (final FastorySurface surface in FastorySurface.values)
+      if (surfaces.contains(surface)) surface.name,
+  ];
+  return names.isEmpty ? 'none' : names.join(',');
+}
+
 // `configure` takes exactly one identifier and rejects both-or-neither, so the key and
-// the placeholder slug are alternatives, never a pair.
+// the placeholder slug are alternatives, never a pair. The same `prewarm` goes on both: on the
+// slug path the SDK ignores `membership`, since there is no workspace to address the panel by.
 FastoryConfig demoConfig({FastoryTheme? theme}) => kPublishableKey.isEmpty
     // ignore: deprecated_member_use
     ? FastoryConfig(
@@ -136,6 +172,8 @@ FastoryConfig demoConfig({FastoryTheme? theme}) => kPublishableKey.isEmpty
         developmentBaseUrl:
             kDevelopmentBaseUrl.isEmpty ? null : kDevelopmentBaseUrl,
         theme: theme,
+        prewarm: kPrewarm,
+        handlesLoginRequests: kHandlesLoginRequests,
       )
     : FastoryConfig(
         publishableKey: kPublishableKey,
@@ -144,6 +182,8 @@ FastoryConfig demoConfig({FastoryTheme? theme}) => kPublishableKey.isEmpty
         developmentBaseUrl:
             kDevelopmentBaseUrl.isEmpty ? null : kDevelopmentBaseUrl,
         theme: theme,
+        prewarm: kPrewarm,
+        handlesLoginRequests: kHandlesLoginRequests,
       );
 
 String get kIdentifierInUse => kPublishableKey.isEmpty
@@ -187,20 +227,25 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  // Four destinations and one action. Games sits between them because that is where a fan looks
-  // for it, not because it is a screen.
+  // Four destinations and two actions. Games and Members sit between them because that is where a
+  // fan looks for them, not because they are screens.
   static const int _gamesIndex = 2;
+  static const int _membersIndex = 3;
 
   int _currentIndex = 0;
   final GlobalKey<SdkConsoleState> _console = GlobalKey<SdkConsoleState>();
 
-  /// Games is an action, not a destination: the hub opens over the current tab and the selection
-  /// never moves, so there is no intermediate screen and closing the hub lands back in place. The
-  /// call is routed through the console rather than straight to the SDK, so it reaches the one log
-  /// a tester reads.
+  /// Games and Members are actions, not destinations: each surface opens over the current tab and
+  /// the selection never moves, so there is no intermediate screen and closing lands back in place.
+  /// The calls are routed through the console rather than straight to the SDK, so they reach the
+  /// one log a tester reads.
   void _onItemTapped(int index) {
     if (index == _gamesIndex) {
       _console.currentState?.openHub();
+      return;
+    }
+    if (index == _membersIndex) {
+      _console.currentState?.openMembership();
       return;
     }
     setState(() => _currentIndex = index);
@@ -224,6 +269,8 @@ class _HomeScreenState extends State<HomeScreen> {
                   // The bar returns before the selection moves, so this slot is never shown; it
                   // exists to keep the indices aligned, and it is themed rather than empty because
                   // a platform whose bar switches first would otherwise flash white.
+                  const ColoredBox(color: kClubNavy),
+                  // Same reason as the slot above, for the second action.
                   const ColoredBox(color: kClubNavy),
                   SdkConsole(key: _console),
                   const _ProfileContent(),
@@ -249,6 +296,10 @@ class _HomeScreenState extends State<HomeScreen> {
           BottomNavigationBarItem(
             icon: Icon(Icons.sports_esports),
             label: 'Games',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.groups),
+            label: 'Members',
           ),
           BottomNavigationBarItem(
             icon: Icon(Icons.terminal),
@@ -299,8 +350,12 @@ class SdkConsoleState extends State<SdkConsole> {
   /// value while meaning the absence of one. Reporting a revocation off it announced one after the
   /// host had already cleared the answer itself — nothing to revoke, and the console said otherwise.
   bool _bridgeReplyIsSet = false;
+  bool _hostTokenProviderSet = false;
   String? _lastMessage;
   SdkFailure? _lastFailure;
+  bool _loginDialogShowing = false;
+  PresentedSurface? _presented;
+  String? _requestedSequenceId;
   final List<ActivityEntry> _activity = <ActivityEntry>[];
 
   @override
@@ -338,6 +393,15 @@ class SdkConsoleState extends State<SdkConsole> {
           _identity = FastoryResolvedIdentity(mode, fanId);
         case FastoryBridgeMessage():
           _lastMessage = described.detail;
+        case FastoryHubOpened():
+          _presented = (surface: FastorySurface.hub, sequenceId: null);
+        case FastoryMembershipOpened():
+          _presented = (
+            surface: FastorySurface.membership,
+            sequenceId: _requestedSequenceId,
+          );
+        case FastoryHubClosed() || FastoryMembershipClosed():
+          _presented = null;
         // A surface that did not load lands in Last error with a machine-readable code, which is
         // the whole point of the event: before 0.4.0 a revoked key, an undeclared application
         // identifier and a phone in a tunnel all produced the same native error view and left that
@@ -348,11 +412,62 @@ class SdkConsoleState extends State<SdkConsole> {
             call: '${surface.name} load',
             code: _failureCode(event),
           );
+        // The SDK dropped the delegated fan on its own: the identity line returns to anonymous and
+        // the reason is what the host would branch on to re-identify or stay anonymous.
+        case FastoryIdentityRevoked(:final reason, :final code):
+          _identity = null;
+          _lastFailure = SdkFailure(
+            call: 'identity revoked',
+            code: code ?? reason.name,
+          );
         default:
           break;
       }
     });
+    if (event case FastoryBridgeMessage(type: kLoginRequestedType)) {
+      unawaited(_answerLoginRequest());
+    }
   }
+
+  /// Declaring the capability and not answering would leave every sign-in entry on the page a
+  /// control that does nothing. A Flutter dialog draws under the surfaces the SDK presents natively,
+  /// so the surface is closed first, then reopened where the fan was once the dialog is answered —
+  /// signed in after a mode, as it was after Cancel.
+  Future<void> _answerLoginRequest() async {
+    // A second request while the dialog is up has nothing new to ask.
+    if (_loginDialogShowing || !mounted) return;
+    _loginDialogShowing = true;
+    final PresentedSurface? origin = _presented;
+    final IdentityModeOption? choice;
+    try {
+      final Future<void> leftScreen = origin == null
+          ? Future<void>.value()
+          : Fastory.events
+              .firstWhere(
+                (FastoryEvent event) =>
+                    event is FastoryHubClosed ||
+                    event is FastoryMembershipClosed,
+              )
+              .then<void>((_) {}, onError: (Object _) {});
+      await _call('close', 'before the sign-in dialog', Fastory.close);
+      await leftScreen.timeout(kSurfaceClosedTimeout, onTimeout: () {});
+      if (!mounted) return;
+      choice = await showDialog<IdentityModeOption>(
+        context: context,
+        builder: (BuildContext context) => const _LoginRequestDialog(),
+      );
+    } finally {
+      _loginDialogShowing = false;
+    }
+    if (!mounted) return;
+    if (choice != null) await _identify(choice);
+    if (origin != null) await _reopen(origin);
+  }
+
+  Future<void> _reopen(PresentedSurface origin) =>
+      origin.surface == FastorySurface.membership
+          ? _openMembership(origin.sequenceId)
+          : _openHub();
 
   /// The API's own code when there is one, the reason otherwise. Both are machine-readable, which
   /// is what Last error carries — never a sentence.
@@ -368,6 +483,8 @@ class SdkConsoleState extends State<SdkConsole> {
           detail: 'fanzone: $fanzoneSlug',
         ),
       FastoryHubClosed() => (name: 'hubClosed', detail: '—'),
+      FastoryMembershipOpened() => (name: 'membershipOpened', detail: '—'),
+      FastoryMembershipClosed() => (name: 'membershipClosed', detail: '—'),
       FastoryGameOpened(:final slug) => (name: 'gameOpened', detail: 'slug: $slug'),
       FastoryGameClosed() => (name: 'gameClosed', detail: '—'),
       FastoryExternalLink(:final url) => (name: 'externalLink', detail: url),
@@ -393,6 +510,10 @@ class SdkConsoleState extends State<SdkConsole> {
             if (code != null) 'code=$code',
             if (statusCode != null) 'status=$statusCode',
           ].join(' · '),
+        ),
+      FastoryIdentityRevoked(:final reason, :final code) => (
+          name: 'identityRevoked',
+          detail: 'reason=${reason.name}${code != null ? ' · code=$code' : ''}',
         ),
     };
   }
@@ -462,7 +583,8 @@ class SdkConsoleState extends State<SdkConsole> {
     final FastoryTheme? previousTheme = _theme;
     final bool ok = await _call(
       'configure',
-      'theme: ${theme?.name ?? 'none'} · $kIdentifierInUse',
+      'theme: ${theme?.name ?? 'none'} · $kIdentifierInUse · prewarm: ${prewarmLabel(kPrewarm)}'
+          ' · handlesLoginRequests: $kHandlesLoginRequests',
       () => Fastory.configure(demoConfig(theme: theme)),
     );
     if (!mounted) return;
@@ -505,6 +627,20 @@ class SdkConsoleState extends State<SdkConsole> {
     });
   }
 
+  void openMembership({String? sequenceId}) =>
+      unawaited(_openMembership(sequenceId));
+
+  Future<void> _openMembership(String? sequenceId) async {
+    _requestedSequenceId = sequenceId;
+    await _call(
+      'openMembership',
+      sequenceId == null
+          ? 'panel over the current tab'
+          : 'panel over the current tab · sequenceId: $sequenceId',
+      () => Fastory.openMembership(sequenceId: sequenceId),
+    );
+  }
+
   Future<void> _identify(IdentityModeOption mode) async {
     FastoryResolvedIdentity? resolved;
     final bool ok = await _call(
@@ -522,6 +658,20 @@ class SdkConsoleState extends State<SdkConsole> {
     final bool ok = await _call('logout', 'Fastory session only', Fastory.logout);
     if (ok && mounted) setState(() => _identity = null);
     if (ok) _noteStandingAnswerRevoked('logout');
+  }
+
+  /// Registers — or clears — the host-token provider the SDK calls back for a fresh assertion when a
+  /// delegated session needs renewing. A real host returns a freshly minted JWT; the demo returns its
+  /// sample one, or null to prove the "no provider" path lapses to anonymous.
+  Future<void> _setHostTokenProvider(bool enabled) async {
+    final bool ok = await _call(
+      'setHostTokenProvider',
+      enabled ? 'provider returning a fresh JWT' : 'cleared',
+      () => Fastory.setHostTokenProvider(
+        enabled ? () async => kSampleHostTokenJwt : null,
+      ),
+    );
+    if (ok && mounted) setState(() => _hostTokenProviderSet = enabled);
   }
 
   /// The SDK revoked the standing answer, so the console stops claiming it has one.
@@ -582,6 +732,11 @@ class SdkConsoleState extends State<SdkConsole> {
             const _ValueLine(label: 'environment', value: kEnvironmentName),
             _ValueLine(label: 'identifier', value: kIdentifierInUse),
             _ValueLine(label: 'locale', value: kLocale.isEmpty ? '—' : kLocale),
+            _ValueLine(label: 'prewarm', value: prewarmLabel(kPrewarm)),
+            const _ValueLine(
+              label: 'handles login requests',
+              value: kHandlesLoginRequests ? 'yes' : 'no',
+            ),
             _ValueLine(label: 'configured', value: _configured ? 'yes' : 'no'),
             const _ActionRow(
               children: <Widget>[
@@ -594,6 +749,11 @@ class SdkConsoleState extends State<SdkConsole> {
               'SPEC § 2.7 is a contract with the native cores, and there is no Dart side to it: a '
               'platform-channel call already arrives on the platform thread, and Dart has no host '
               'thread to call from. On a native host the same control is live.',
+            ),
+            const _Hint(
+              'The example declares handlesLoginRequests and answers fastory:login-requested by '
+              "closing the surface, showing a dialog, then reopening it; the SDK's default is "
+              'false, under which the pages show no sign-in entry at all.',
             ),
           ],
         ),
@@ -623,6 +783,47 @@ class SdkConsoleState extends State<SdkConsole> {
               'opening. hubOpened fires on every opening whose page loaded, pre-warmed or not; '
               'one that does not load sends surfaceLoadFailed instead, and no hubClosed after it '
               '(SPEC § 9.1).',
+            ),
+          ],
+        ),
+        _ConsoleSection(
+          title: 'Membership',
+          children: <Widget>[
+            _ValueLine(
+              label: 'sequence',
+              value: kMembershipSequenceId.isEmpty
+                  ? 'none — set FASTORY_MEMBERSHIP_SEQUENCE_ID'
+                  : kMembershipSequenceId,
+            ),
+            _ActionRow(
+              children: <Widget>[
+                _Action(
+                  label: 'openMembership',
+                  onPressed: _busy ? null : openMembership,
+                ),
+                _Action(
+                  // The reason is on the label rather than only in the hint below: a control that
+                  // does nothing and says nothing reads as a broken demo.
+                  label: kMembershipSequenceId.isEmpty
+                      ? 'openMembership(sequenceId) · none configured'
+                      : 'openMembership(sequenceId)',
+                  onPressed: _busy || kMembershipSequenceId.isEmpty
+                      ? null
+                      : () => openMembership(sequenceId: kMembershipSequenceId),
+                ),
+              ],
+            ),
+            const _Hint(
+              'The first control is the same call the Members entry makes, on the panel default '
+              'screen. The second opens one of the workspace sequences by name, taking the '
+              'identifier from fastory.local.json — there is nothing to type on screen, and with no '
+              'identifier configured it is disabled rather than sending a blank one. Both need a '
+              'publishable key: without one, this demo runs on the placeholder fanzone slug and the '
+              'call refuses with publishable_key_required. The demo puts the panel in prewarm '
+              '(Runtime above), so the bare opening is prepared from launch; the SDK default '
+              'prepares the hub alone. One surface at a time — asking while the '
+              'hub is up does nothing — and close() in the Hub section dismisses whichever one is '
+              'showing.',
             ),
           ],
         ),
@@ -665,22 +866,35 @@ class SdkConsoleState extends State<SdkConsole> {
               children: <Widget>[
                 for (final IdentityModeOption mode in kIdentityModes)
                   _Action(
-                    label: mode.available
-                        ? mode.label
-                        : '${mode.label} · not yet available',
-                    onPressed: _busy || !mode.available
-                        ? null
-                        : () => unawaited(_identify(mode)),
+                    label: mode.label,
+                    onPressed: _busy ? null : () => unawaited(_identify(mode)),
                   ),
                 _Action(
                   label: 'logout',
                   onPressed: _busy ? null : () => unawaited(_logout()),
                 ),
+                _Action(
+                  label: _hostTokenProviderSet
+                      ? 'clear setHostTokenProvider'
+                      : 'setHostTokenProvider',
+                  onPressed: _busy
+                      ? null
+                      : () => unawaited(
+                            _setHostTokenProvider(!_hostTokenProviderSet),
+                          ),
+                ),
               ],
             ),
+            _ValueLine(
+              label: 'host-token provider',
+              value: _hostTokenProviderSet ? 'registered' : 'none',
+            ),
             const _Hint(
-              'The two identified modes are declared with their final signature and are not '
-              'shipped, so their control is present and disabled rather than absent.',
+              'fanId opens the Fastory login in the system browser and comes back resolved, or '
+              'with login_cancelled. hostToken sends a sample assertion signed by nobody, so the '
+              'exchange refuses it with identify_rejected. Both need a publishable key: on the '
+              'placeholder slug they answer identify_mode_unavailable. setHostTokenProvider registers the closure the SDK calls back to renew a delegated '
+              'session; a FastoryIdentityRevoked event returns the fan to anonymous when it cannot.',
             ),
           ],
         ),
@@ -717,6 +931,12 @@ class SdkConsoleState extends State<SdkConsole> {
             _ValueLine(
               label: 'from web',
               value: _lastMessage ?? 'nothing received yet',
+            ),
+            const _Hint(
+              'A sign-in entry tapped on a page posts fastory:login-requested, which lands here. A '
+              'Flutter dialog would draw under the hub or the panel, so the example closes the '
+              'surface, shows the sign-in dialog, then reopens the hub, or the panel on the same '
+              'sequence — signed in after a mode, as it was after Cancel.',
             ),
           ],
         ),
@@ -904,6 +1124,32 @@ class _CalendarContent extends StatelessWidget {
             ),
         ],
       ),
+    );
+  }
+}
+
+/// The example's answer to `fastory:login-requested`: the `identify` modes that sign a fan in, as
+/// the Identity section plays them, plus Cancel, which signs nobody in. Pops the chosen mode, or
+/// null.
+class _LoginRequestDialog extends StatelessWidget {
+  const _LoginRequestDialog();
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Sign the fan in'),
+      content: const Text('A page asked the app to sign the fan in. identify() with:'),
+      actions: <Widget>[
+        for (final IdentityModeOption mode in kSignInModes)
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(mode),
+            child: Text(mode.label),
+          ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+      ],
     );
   }
 }

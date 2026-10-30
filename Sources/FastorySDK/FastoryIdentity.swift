@@ -41,13 +41,38 @@ public struct FastoryResolvedIdentity: Equatable, Sendable {
     static let anonymous = FastoryResolvedIdentity(mode: .anonymous, fanId: nil)
 }
 
+/// Why the SDK dropped a delegated identity **on its own** — the payload of the `identityRevoked`
+/// event (SPEC § 5.3). A host-driven drop (`logout()`, a replacing `configure()`) is never a
+/// revocation: the host already knows, so it gets no event.
+public enum FastoryRevocationReason: String, Equatable, Sendable {
+    /// A background re-exchange was refused by the API. Carries the API's own code when it named one.
+    case rejected
+    /// The embed session expired and could not be renewed — no host-token provider was registered,
+    /// so there was no fresh assertion to re-exchange. Carries no code: nothing refused it.
+    case expired
+}
+
+/// The `identityRevoked` event's payload. `code` is the API's machine-readable reason, present only
+/// for `reason == .rejected` and only when the refusal named one (SPEC § 5.3, § 5.4).
+public struct FastoryIdentityRevocation: Equatable, Sendable {
+    public let reason: FastoryRevocationReason
+    public let code: String?
+
+    public init(reason: FastoryRevocationReason, code: String? = nil) {
+        self.reason = reason
+        self.code = code
+    }
+}
+
 public enum FastoryIdentifyError: Error, Equatable, Sendable {
     case notConfigured
     case modeUnavailable(FastoryIdentityMode)
     case invalidIdentityMode(String)
     case invalidHostToken
     case loginCancelled
-    case rejected(code: String)
+    /// The API refused the assertion. `code` carries its machine-readable reason when it named one,
+    /// and is `nil` when the refusal had no readable body — never a guessed code (SPEC § 5.4).
+    case rejected(code: String?)
     case network
 
     /// Machine-readable code crossing the platform channel (SPEC § 5.4). Hosts branch on this,
@@ -240,6 +265,34 @@ enum FastoryIdentityRules {
         }
     }
 
+    /// What to do once an exchange has resolved a fan (`identify(.hostToken)`). The same difference
+    /// rule as `.anonymous`: erase and re-announce only when the fan actually changed, so resolving
+    /// the same fan twice is idempotent — no erasure, no second `identityResolved`, and the standing
+    /// answer refreshed rather than revoked. `current == nil` is the first identify ever, which has
+    /// nothing to erase but is still a change worth announcing.
+    static func afterResolution(
+        _ resolved: FastoryResolvedIdentity,
+        from current: FastoryResolvedIdentity?
+    ) -> FastoryIdentityTransition {
+        let changed = current != resolved
+        return FastoryIdentityTransition(
+            resolved: resolved,
+            error: nil,
+            erasesStorage: changed && current != nil,
+            emitsIdentityResolved: changed,
+            revokesBridgeReplies: changed && current != nil
+        )
+    }
+
+    /// What to do when an exchange fails (SPEC § 2.6.1): the SDK must not keep the previous identity,
+    /// or a host that saw `identify` fail would still be serving the old fan. Erase what was there
+    /// and revoke the standing answer, landing on anonymous — the caller reports the error instead of
+    /// emitting `identityResolved`. A pre-flight rejection never reaches here; it is decided before
+    /// the exchange and leaves everything untouched.
+    static func afterResolutionFailure(from current: FastoryResolvedIdentity?) -> FastoryIdentityTransition {
+        logout(from: current)
+    }
+
     static func logout(from current: FastoryResolvedIdentity?) -> FastoryIdentityTransition {
         FastoryIdentityTransition(
             resolved: nil,
@@ -263,5 +316,87 @@ enum FastoryIdentityRules {
             // A pre-flight rejection touches nothing (SPEC § 2.6.1), the standing answer included.
             revokesBridgeReplies: false
         )
+    }
+}
+
+// MARK: - The host-token lifecycle (SPEC § 2.6, § 5.3)
+
+/// The observable effects of one lifecycle event, decided without any I/O so both platforms map the
+/// same trigger to the same outcome — the renewal analogue of `FastoryIdentityExchangeClassifier`.
+struct FastoryLifecycleEffects: Equatable {
+    enum Identity: String { case preserved, anonymous }
+    enum StandingAnswer: String { case preserved, refreshed, revoked }
+    enum Persistence: String { case unchanged, written, read, purged }
+
+    let identity: Identity
+    let standingAnswer: StandingAnswer
+    /// The `identityRevoked` event to emit, or `nil`. Only a background drop carries one — a
+    /// host-driven `logout`/`configReplaced` never surprises the host with news it already has.
+    let revocation: FastoryIdentityRevocation?
+    let persistence: Persistence
+}
+
+/// Maps each host-token lifecycle event to its effects. Pure and total, so every case is decidable
+/// the same way on both platforms: the shared reference the two renewal coordinators in `Fastory` are
+/// written against, and what the cross-platform fixture pins so a case cannot drift between them.
+enum FastoryHostTokenLifecycle {
+    enum Trigger: Equatable {
+        /// The embed session is still valid but nearing expiry: refresh it, involving no one.
+        case sessionExpiring
+        /// `/embed/auth/refresh` refused, but a host-token provider is registered: a fresh assertion
+        /// re-exchanges into a new session for the same fan.
+        case refreshRefused
+        /// A background re-exchange was itself refused. The identity cannot be kept.
+        case exchangeRefused(code: String?)
+        /// The session expired and no provider is registered — nothing to re-exchange.
+        case sessionExpiredNoProvider
+        /// `configure` found a persisted identity for this workspace/environment: show it at once,
+        /// confirm it in the background.
+        case bootRehydration
+        /// The host signed the fan out. Host-driven, so no event.
+        case logout
+        /// A replacing `configure` discards the previous configuration's identity. Host-driven.
+        case configReplaced
+    }
+
+    static func effects(for trigger: Trigger) -> FastoryLifecycleEffects {
+        switch trigger {
+        case .sessionExpiring:
+            return FastoryLifecycleEffects(
+                identity: .preserved, standingAnswer: .refreshed,
+                revocation: nil, persistence: .unchanged
+            )
+        case .refreshRefused:
+            // The provider handed back a fresh assertion and the re-exchange resolved the same fan:
+            // the new session's token replaces the standing answer, and persistence is re-stamped.
+            return FastoryLifecycleEffects(
+                identity: .preserved, standingAnswer: .refreshed,
+                revocation: nil, persistence: .written
+            )
+        case .exchangeRefused(let code):
+            return FastoryLifecycleEffects(
+                identity: .anonymous, standingAnswer: .revoked,
+                revocation: FastoryIdentityRevocation(reason: .rejected, code: code),
+                persistence: .purged
+            )
+        case .sessionExpiredNoProvider:
+            return FastoryLifecycleEffects(
+                identity: .anonymous, standingAnswer: .revoked,
+                revocation: FastoryIdentityRevocation(reason: .expired, code: nil),
+                persistence: .purged
+            )
+        case .bootRehydration:
+            return FastoryLifecycleEffects(
+                identity: .preserved, standingAnswer: .preserved,
+                revocation: nil, persistence: .read
+            )
+        case .logout, .configReplaced:
+            // Host-driven: the fan is dropped and persistence purged, but no event — the host
+            // initiated it. The standing answer is revoked so no game keeps the old token.
+            return FastoryLifecycleEffects(
+                identity: .anonymous, standingAnswer: .revoked,
+                revocation: nil, persistence: .purged
+            )
+        }
     }
 }

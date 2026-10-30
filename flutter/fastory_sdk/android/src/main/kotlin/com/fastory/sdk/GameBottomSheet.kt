@@ -188,6 +188,8 @@ class GameBottomSheet : BottomSheetDialogFragment() {
             return
         }
         GamePreloader.gameSheetWillPresent()
+        // The presented game is a live target of the session-change signal (SPEC § 13.9.3).
+        webView?.let { FastorySessionPush.setPresentedGameWebView(it) }
         // A preloaded WebView is already rendering the game (or finishing its load) on a
         // fresh state — present it as-is. Only cold opens need a load here.
         if (!isPreloaded) {
@@ -220,6 +222,7 @@ class GameBottomSheet : BottomSheetDialogFragment() {
         // (timers, audio, state) dies with it. The preloader immediately rebuilds a fresh
         // copy so reopening stays instant.
         webView?.let { playedWebView ->
+            FastorySessionPush.setPresentedGameWebView(null)
             playedWebView.stopLoading()
             (playedWebView.parent as? ViewGroup)?.removeView(playedWebView)
             playedWebView.destroy()

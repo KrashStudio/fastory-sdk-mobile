@@ -2,9 +2,11 @@ import Foundation
 import WebKit
 
 /// Which Fastory surface a load failure is about (SPEC § 9.1).
-public enum FastorySurface: String, Equatable, Sendable {
+public enum FastorySurface: String, Equatable, Hashable, Sendable {
     case hub
     case game
+    /// The workspace's membership panel — the bot page of § 3.5, presented full-screen.
+    case membership
 }
 
 /// How a surface failed to load, as a host branches on it (SPEC § 9.1).
@@ -109,10 +111,19 @@ enum FastoryLoadFailureClassifier {
 /// committed page as a loaded hub and announces `hubOpened` on it. Observed on a simulator, not
 /// reasoned: the placeholder slug answers 404 and rendered exactly that.
 final class FastoryWarmUpObserver: NSObject, WKNavigationDelegate {
+    /// Which slot this observer answers for. Two surfaces are warmed at once and each keeps its own
+    /// page, so an observer that reported into a single slot would mark the hub committed on the
+    /// panel's document and empty the hub's slot on the panel's failure.
+    private let surface: FastorySurface
+
+    init(surface: FastorySurface = .hub) {
+        self.surface = surface
+    }
+
     /// The only place the warm-up's commit can be seen. `WKWebView.url` cannot answer it: it is the
     /// active URL, set the instant `load()` is called.
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
-        Fastory.warmHubPageDidCommit()
+        Fastory.warmPageDidCommit(surface: surface)
     }
 
     func webView(
@@ -149,8 +160,8 @@ final class FastoryWarmUpObserver: NSObject, WKNavigationDelegate {
     }
 
     private func discard(_ webView: WKWebView) {
-        Fastory.warmHubPageDidFail(webView)
-        Self.scheduleDiscard { Fastory.releaseFailedWarmHubWebView(webView) }
+        Fastory.warmPageDidFail(webView, surface: surface)
+        Self.scheduleDiscard { Fastory.releaseFailedWarmWebView(webView) }
     }
 }
 
@@ -175,8 +186,10 @@ struct FastorySurfaceLoad {
 
     /// `hasCommitted` starts true for a page whose document committed before this surface existed:
     /// no further commit callback is coming for it, so a gate that waited for one would never
-    /// announce the opening at all. `isIdentified` is false only for the hub, whose event carries a
-    /// fanzone slug the publishable-key path learns from the API (§ 2.5).
+    /// announce the opening at all. `isIdentified` defaults true for the game sheet, which is
+    /// handed a page already addressed; the hub and the panel both pass false, since each has
+    /// something to learn before it can announce itself — the hub's fanzone slug, the panel's
+    /// resolved address — and call `identify()` once it does.
     init(surface: FastorySurface, isIdentified: Bool = true, hasCommitted: Bool = false) {
         self.surface = surface
         self.isIdentified = isIdentified

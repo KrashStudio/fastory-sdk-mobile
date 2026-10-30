@@ -55,10 +55,17 @@ data class FastoryResolvedIdentity(
     }
 }
 
-/** Every identify failure of SPEC § 5.4, carried as its machine-readable [code]. */
+/**
+ * Every identify failure of SPEC § 5.4, carried as its machine-readable [code].
+ *
+ * @property detailsCode the API's own code when the failure is a refusal that named one
+ * (`identify_rejected`); null otherwise. It crosses the channel as `details.code` so a host branches
+ * on the API's reason without parsing a message.
+ */
 class FastoryIdentifyException(
     val code: String,
     message: String? = null,
+    val detailsCode: String? = null,
 ) : Exception(message ?: code) {
 
     internal companion object {
@@ -82,6 +89,31 @@ class FastoryIdentifyException(
         )
     }
 }
+
+/**
+ * Why the SDK dropped a delegated identity **on its own** — the payload of the `identityRevoked`
+ * event (SPEC § 5.3). A host-driven drop (`logout()`, a replacing `configure()`) is never a
+ * revocation: the host already knows, so it gets no event.
+ */
+enum class FastoryRevocationReason(internal val wireName: String) {
+    /** A background re-exchange was refused by the API. Carries the API's own code when it named one. */
+    REJECTED("rejected"),
+
+    /**
+     * The embed session expired and could not be renewed — no host-token provider was registered,
+     * so there was no fresh assertion to re-exchange. Carries no code: nothing refused it.
+     */
+    EXPIRED("expired"),
+}
+
+/**
+ * The `identityRevoked` event's payload. [code] is the API's machine-readable reason, present only
+ * for [FastoryRevocationReason.REJECTED] and only when the refusal named one (SPEC § 5.3, § 5.4).
+ */
+data class FastoryIdentityRevocation(
+    val reason: FastoryRevocationReason,
+    val code: String? = null,
+)
 
 /**
  * The identity-bearing web state an identity transition must erase, and where.
@@ -121,26 +153,38 @@ internal object FastoryIdentityStorage {
  * shared with the host app, so `removeAllCookies()` or `deleteAllData()` would sign the partner out
  * of their own services (SPEC § 7.4).
  *
- * Main thread only: `WebStorage` is bound to it.
+ * Main thread only: `WebStorage` is bound to it, and the cookie store answers on the calling
+ * thread's looper.
+ *
+ * [completion] runs once the cookie store has applied every expiry. `WebStorage.deleteOrigin`
+ * reports no completion of its own, so each origin's deletion is issued before it.
  */
 internal object FastoryWebsiteDataEraser {
 
-    fun erase(origins: List<String>) {
+    fun erase(origins: List<String>, completion: () -> Unit) {
         val cookies = CookieManager.getInstance()
         val storage = WebStorage.getInstance()
+        var pending = 1
+        fun settle() {
+            if (--pending > 0) return
+            cookies.flush()
+            completion()
+        }
         for (origin in origins) {
             for (name in FastoryIdentityStorage.cookieNames) {
-                cookies.setCookie(origin, expiryDirective(name, origin, withDomain = false))
+                pending++
+                cookies.setCookie(origin, expiryDirective(name, origin, withDomain = false)) { settle() }
                 // A cookie set for `.fanzone.me` is not overwritten by a host-only one, so expire
                 // both forms. `__Host-` cookies reject a Domain attribute outright, which is
                 // precisely the guarantee that they are host-only and need no second pass.
                 if (!name.startsWith("__Host-") && registrableDomain(origin) != null) {
-                    cookies.setCookie(origin, expiryDirective(name, origin, withDomain = true))
+                    pending++
+                    cookies.setCookie(origin, expiryDirective(name, origin, withDomain = true)) { settle() }
                 }
             }
             storage.deleteOrigin(origin)
         }
-        cookies.flush()
+        settle()
     }
 
     private fun expiryDirective(name: String, origin: String, withDomain: Boolean): String =
@@ -220,6 +264,36 @@ internal object FastoryIdentityRules {
         }
     }
 
+    /**
+     * What to do once an exchange has resolved a fan ([FastoryIdentity.HostToken]). The same
+     * difference rule as anonymous: erase and re-announce only when the fan actually changed, so
+     * resolving the same fan twice is idempotent — no erasure, no second `identityResolved`, and the
+     * standing answer refreshed rather than revoked. A null [current] is the first identify ever,
+     * which has nothing to erase but is still a change worth announcing.
+     */
+    fun afterResolution(
+        resolved: FastoryResolvedIdentity,
+        current: FastoryResolvedIdentity?,
+    ): FastoryIdentityTransition {
+        val changed = current != resolved
+        return FastoryIdentityTransition(
+            resolved = resolved,
+            errorCode = null,
+            erasesStorage = changed && current != null,
+            emitsIdentityResolved = changed,
+            revokesBridgeReplies = changed && current != null,
+        )
+    }
+
+    /**
+     * What to do when an exchange fails (SPEC § 2.6.1): the SDK must not keep the previous identity,
+     * or a host that saw `identify` fail would still be serving the old fan. Erase what was there and
+     * revoke the standing answer, landing on anonymous — the caller reports the error instead of
+     * emitting `identityResolved`. A pre-flight rejection never reaches here.
+     */
+    fun afterResolutionFailure(current: FastoryResolvedIdentity?): FastoryIdentityTransition =
+        logout(current)
+
     fun logout(current: FastoryResolvedIdentity?): FastoryIdentityTransition =
         FastoryIdentityTransition(
             resolved = null,
@@ -242,4 +316,107 @@ internal object FastoryIdentityRules {
             // A pre-flight rejection touches nothing (SPEC § 2.6.1), the standing answer included.
             revokesBridgeReplies = false,
         )
+}
+
+/**
+ * The observable effects of one host-token lifecycle event, decided without any I/O so both
+ * platforms map the same trigger to the same outcome — the renewal analogue of the exchange
+ * classifier.
+ *
+ * @property revocation the `identityRevoked` event to emit, or null. Only a background drop carries
+ * one — a host-driven `logout`/`configReplaced` never surprises the host with news it already has.
+ */
+internal data class FastoryLifecycleEffects(
+    val identity: Identity,
+    val standingAnswer: StandingAnswer,
+    val revocation: FastoryIdentityRevocation?,
+    val persistence: Persistence,
+) {
+    enum class Identity(val wireName: String) { PRESERVED("preserved"), ANONYMOUS("anonymous") }
+    enum class StandingAnswer(val wireName: String) {
+        PRESERVED("preserved"), REFRESHED("refreshed"), REVOKED("revoked")
+    }
+    enum class Persistence(val wireName: String) {
+        UNCHANGED("unchanged"), WRITTEN("written"), READ("read"), PURGED("purged")
+    }
+}
+
+/**
+ * Maps each host-token lifecycle event to its effects. Pure and total, so every case is decidable the
+ * same way on both platforms: the shared reference the two renewal coordinators in [Fastory] are
+ * written against, and what the cross-platform fixture pins so a case cannot drift between them.
+ */
+internal object FastoryHostTokenLifecycle {
+
+    sealed class Trigger {
+        /** The embed session is still valid but nearing expiry: refresh it, involving no one. */
+        object SessionExpiring : Trigger()
+
+        /**
+         * `/embed/auth/refresh` refused, but a host-token provider is registered: a fresh assertion
+         * re-exchanges into a new session for the same fan.
+         */
+        object RefreshRefused : Trigger()
+
+        /** A background re-exchange was itself refused. The identity cannot be kept. */
+        data class ExchangeRefused(val code: String?) : Trigger()
+
+        /** The session expired and no provider is registered — nothing to re-exchange. */
+        object SessionExpiredNoProvider : Trigger()
+
+        /**
+         * `configure` found a persisted identity for this workspace/environment: show it at once,
+         * confirm it in the background.
+         */
+        object BootRehydration : Trigger()
+
+        /** The host signed the fan out. Host-driven, so no event. */
+        object Logout : Trigger()
+
+        /** A replacing `configure` discards the previous configuration's identity. Host-driven. */
+        object ConfigReplaced : Trigger()
+    }
+
+    fun effects(trigger: Trigger): FastoryLifecycleEffects = when (trigger) {
+        is Trigger.SessionExpiring -> FastoryLifecycleEffects(
+            FastoryLifecycleEffects.Identity.PRESERVED,
+            FastoryLifecycleEffects.StandingAnswer.REFRESHED,
+            revocation = null,
+            FastoryLifecycleEffects.Persistence.UNCHANGED,
+        )
+        // The provider handed back a fresh assertion and the re-exchange resolved the same fan: the
+        // new session's token replaces the standing answer, and persistence is re-stamped.
+        is Trigger.RefreshRefused -> FastoryLifecycleEffects(
+            FastoryLifecycleEffects.Identity.PRESERVED,
+            FastoryLifecycleEffects.StandingAnswer.REFRESHED,
+            revocation = null,
+            FastoryLifecycleEffects.Persistence.WRITTEN,
+        )
+        is Trigger.ExchangeRefused -> FastoryLifecycleEffects(
+            FastoryLifecycleEffects.Identity.ANONYMOUS,
+            FastoryLifecycleEffects.StandingAnswer.REVOKED,
+            FastoryIdentityRevocation(FastoryRevocationReason.REJECTED, trigger.code),
+            FastoryLifecycleEffects.Persistence.PURGED,
+        )
+        is Trigger.SessionExpiredNoProvider -> FastoryLifecycleEffects(
+            FastoryLifecycleEffects.Identity.ANONYMOUS,
+            FastoryLifecycleEffects.StandingAnswer.REVOKED,
+            FastoryIdentityRevocation(FastoryRevocationReason.EXPIRED, null),
+            FastoryLifecycleEffects.Persistence.PURGED,
+        )
+        is Trigger.BootRehydration -> FastoryLifecycleEffects(
+            FastoryLifecycleEffects.Identity.PRESERVED,
+            FastoryLifecycleEffects.StandingAnswer.PRESERVED,
+            revocation = null,
+            FastoryLifecycleEffects.Persistence.READ,
+        )
+        // Host-driven: the fan is dropped and persistence purged, but no event — the host initiated
+        // it. The standing answer is revoked so no game keeps the old token.
+        is Trigger.Logout, is Trigger.ConfigReplaced -> FastoryLifecycleEffects(
+            FastoryLifecycleEffects.Identity.ANONYMOUS,
+            FastoryLifecycleEffects.StandingAnswer.REVOKED,
+            revocation = null,
+            FastoryLifecycleEffects.Persistence.PURGED,
+        )
+    }
 }

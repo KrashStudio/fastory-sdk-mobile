@@ -64,8 +64,12 @@ internal object BridgeEnvelope {
      * The allow-list, so the web side can ship a new type against an older SDK. The three platforms
      * hold the same set: a type added on one alone would be delivered there and dropped silently on
      * the others.
+     *
+     * `fastory:login-requested` is posted when a fan taps a sign-in entry on a page whose host
+     * declared [FastoryConfig.handlesLoginRequests]. It is only delivered: the SDK opens nothing and
+     * navigates nowhere on it, since signing the fan in belongs to the host, through `identify`.
      */
-    val KNOWN_TYPES: Set<String> = setOf("fastory:ready")
+    val KNOWN_TYPES: Set<String> = setOf("fastory:ready", "fastory:login-requested")
 
     /**
      * The types the native side can be *asked* to answer (SPEC §13.8.3), held on the three

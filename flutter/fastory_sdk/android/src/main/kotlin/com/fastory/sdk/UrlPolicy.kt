@@ -1,6 +1,7 @@
 package com.fastory.sdk
 
 import java.net.URI
+import java.net.URLEncoder
 
 enum class NavigationDecision {
     ALLOW,
@@ -52,10 +53,14 @@ object UrlPolicy {
             ?.takeIf { it.isNotBlank() }
 
     /**
-     * Augments a game URL with the embedded-rendering params (SPEC §3.3): `embed=1`,
-     * `utm_source=sdk`, `consent=0`. Existing params are preserved and never duplicated.
+     * Augments a game URL for embedded rendering (SPEC §3.3): `embed=1`, `utm_source=sdk`,
+     * `consent=0`, then [extra], the host's own parameters (locale, theme, host login), each added
+     * only when the link does not carry it already — the fanzone builds its own game links, and a
+     * value it put there wins. The host's values are encoded; the embed ones are constants.
+     * `@JvmOverloads` keeps the one-argument method every earlier version exposed to the JVM.
      */
-    fun embeddedGameUrl(url: String): String {
+    @JvmOverloads
+    fun embeddedGameUrl(url: String, extra: List<Pair<String, String>> = emptyList()): String {
         val fragmentSplit = url.split('#', limit = 2)
         val base = fragmentSplit[0]
         val fragment = fragmentSplit.getOrNull(1)
@@ -64,7 +69,8 @@ object UrlPolicy {
             .filter { it.isNotEmpty() }
             .map { it.substringBefore('=') }
             .toSet()
-        val missing = listOf("embed" to "1", "utm_source" to "sdk", "consent" to "0")
+        val hostParams = extra.map { (name, value) -> name to URLEncoder.encode(value, "UTF-8") }
+        val missing = (listOf("embed" to "1", "utm_source" to "sdk", "consent" to "0") + hostParams)
             .filter { it.first !in existingNames }
         if (missing.isEmpty()) return url
         val separator = if (base.contains('?')) "&" else "?"

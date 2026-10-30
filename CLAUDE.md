@@ -42,28 +42,36 @@ dependencies:
     git:
       url: https://github.com/KrashStudio/fastory-sdk-mobile
       path: flutter/fastory_sdk
-      ref: sdk-v0.4.5
+      ref: sdk-v0.5.0
 ```
 
-Public API surface (normative in `SPEC.md §2`): **6 methods** — `Fastory.configure(FastoryConfig)`,
-`Fastory.openGames()`, `Fastory.close()`, since 0.4.0 `Fastory.identify(FastoryIdentity)` +
-`Fastory.logout()`, and since 0.4.0 `Fastory.setBridgeReply(type, payload)` — and **8 events** on
-`Fastory.events` (`FastoryHubOpened`, `FastoryHubClosed`, `FastoryGameOpened(slug)`,
+Public API surface (normative in `SPEC.md §2`): **8 methods** — `Fastory.configure(FastoryConfig)`,
+`Fastory.openGames()`, since 0.5.0 `Fastory.openMembership({String? sequenceId})`,
+`Fastory.close()`, since 0.4.0 `Fastory.identify(FastoryIdentity)` +
+`Fastory.logout()`, since 0.4.0 `Fastory.setBridgeReply(type, payload)`, and since 0.5.0
+`Fastory.setHostTokenProvider(provider)` — and **11 events** on
+`Fastory.events` (`FastoryHubOpened`, `FastoryHubClosed`, since 0.5.0 `FastoryMembershipOpened` and
+`FastoryMembershipClosed`, `FastoryGameOpened(slug)`,
 `FastoryGameClosed`, `FastoryExternalLink(url)`, since 0.4.0 `FastoryBridgeMessage(type, payload)`,
-`FastoryIdentityResolved(mode, fanId)` and
-`FastorySurfaceLoadFailed(surface, reason, code, statusCode)`).
+`FastoryIdentityResolved(mode, fanId)`,
+`FastorySurfaceLoadFailed(surface, reason, code, statusCode)` and since 0.5.0
+`FastoryIdentityRevoked(reason, code)`).
 An opening event announces a surface whose page loaded: a hub or game that failed emits
 `FastorySurfaceLoadFailed` and no opening — and therefore no closing — event (`SPEC.md` § 9.1).
 Minimum platforms: iOS 15.0, Android `minSdk 24`, Flutter ≥ 3.10 (Dart ≥ 3.0).
 
-**Upgrading from 0.3.0 costs a host exactly three things, and nothing else** (`SPEC.md` § 10,
-`CHANGELOG.md` → `Breaking`). Name all three when advising an upgrade — the first is the only one an
+**Upgrading from 0.3.0 to 0.4.x costs a host exactly three things** (`SPEC.md` § 10, `CHANGELOG.md`
+→ `Breaking`), and **0.5.0 costs three more** — listed after them. Name all of them when advising an
+upgrade, and always ask which version the host is on first: the two lists break in different places,
+and only the 0.5.0 one reaches a native host. Of the three below, the first is the only one an
 analyzer reports, so the other two are the ones a host discovers at runtime or in review:
 
 1. **Dart's `FastoryEvent` gains three subtypes at once** — `FastoryBridgeMessage`,
    `FastoryIdentityResolved`, `FastorySurfaceLoadFailed`. It is `sealed`, so an exhaustive `switch`
    with no `default:` stops compiling until all three cases exist. Three cases at once, not one per
-   release. The two native API surfaces are unaffected: every new callback is defaulted to a no-op.
+   release. The two native API surfaces are unaffected *by this break*: every new callback is
+   defaulted to a no-op. Do not carry that sentence over to 0.5.0, where one of the three does reach
+   them.
 2. **Android gains an `androidx.webkit` dependency and a WebView floor of Chrome 85** (mid-2020), for
    the reply channel only (`SPEC.md` § 13.8). Below it the reply channel is absent and the surface
    stays anonymous; nothing else about the SDK changes and there is no host code to write.
@@ -73,6 +81,22 @@ analyzer reports, so the other two are the ones a host discovers at runtime or i
    exactly one workspace, and what refuses a key used by an application its workspace never declared
    is the API, unconditionally (`sdk_application_not_allowed`, `SPEC.md` § 2.5). Any snippet still
    passing `workspaceId:` predates 0.4.0.
+
+**Upgrading from 0.4.x to 0.5.0 costs a host three more** (`CHANGELOG.md` → `Breaking`). No name
+moves, nothing changes signature and nothing is removed — two public types gain cases:
+
+1. **`FastorySurface` gains `membership`** — name this one first. It is a plain public enum on Swift
+   and Kotlin as well as in Dart, so a `switch` or a `when` used as an expression that covers `hub`
+   and `game` exhaustively stops compiling on the native channels too. **Never call a 0.x minor
+   additive for a native host without checking this type.** A host meets it on
+   `FastorySurfaceLoadFailed` alone, so one that never inspects a failed load has nothing to change.
+2. **Dart's `FastoryEvent` gains `FastoryMembershipOpened` and `FastoryMembershipClosed`** — the
+   `sealed` rule again, two cases this time. The native listeners stay additive here: both new
+   callbacks are defaulted to a no-op.
+3. **Nothing else.** `openMembership()` is a call a host adds when it wants the panel, not a
+   migration: it needs the publishable key the host already configures with. A host that does not
+   want the panel upgrades by adding the cases above and calling nothing new; one that does may add
+   `membership` to `FastoryConfig.prewarm`, which is additive and defaults to the hub alone.
 
 ## Rules for AI assistants
 
@@ -101,7 +125,7 @@ analyzer reports, so the other two are the ones a host discovers at runtime or i
 - The bundled iOS (`flutter/fastory_sdk/ios/`) and Android (`flutter/fastory_sdk/android/`) sources
   are internal to the plugin; host apps interact only with the Dart API.
 - The SDK is intentionally light: no analytics, and **no behavior-modifying JavaScript** — that one is
-  a standing normative rule with a single bounded exception, `SPEC.md §12.1`, not a v0.1 limitation.
+  a standing normative rule with a few bounded exceptions, `SPEC.md §12.1`, not a v0.1 limitation.
   `SPEC.md §12` holds the non-goals and `README.md` the known limitations.
 - **It does carry user identity, since 0.4.0** (`SPEC.md §2.6`): `identify` with three modes plus
   `logout`. Only the `anonymous` mode resolves in this release; `fanId` and `hostToken` are frozen
@@ -126,6 +150,39 @@ analyzer reports, so the other two are the ones a host discovers at runtime or i
   what is wrong is "the bridge is receive-only" said of the bridge as a whole, which describes the
   design before § 13.8 landed and never described a released version, since both channels shipped
   together in 0.4.0.
+- **The receive registry holds two types since 0.5.0** (`SPEC.md` § 13.3): `fastory:ready` and
+  `fastory:login-requested`; the request registry still holds `fastory:user-token` alone, and the two
+  never share a type. The second inbound type is a fan tapping a sign-in entry on the hub, the panel
+  or a game, and it arrives only when the host set `FastoryConfig.handlesLoginRequests` (`SPEC.md`
+  § 2.6). Four things to get right when advising on it. The **answer is the host's own sign-in
+  followed by `identify`** — `FastoryHostToken(jwt)`, or `FastoryFanId()` for the system browser —
+  never a bridge reply, and never a login form in the page: no page the SDK shows renders one. **A
+  host that declares the field must listen for the message**, or every sign-in entry becomes a button
+  that does nothing; never suggest declaring it "for later". **Without the field the pages show no
+  sign-in entry at all** — by design, not a defect to report. And **never let a host decide anything
+  sensitive on it**: its payload is empty and, on Android, a sub-frame can post it. After the
+  `identify`, the hub on screen reloads signed in; the membership panel does not show the signed-in
+  fan yet (`README.md` → *Known limitations*).
+- **`openMembership()` can name the sequence to open, since 0.5.0** (`SPEC.md` § 3.5, § 5.2). Four
+  things to get right when advising on it. The **argument is `sequenceId` and the URL parameter is
+  `sequence`** — say it once rather than letting a host read the difference as a typo. The host
+  **passes the identifier as it holds it**; the SDK escapes it, so a snippet that encodes it first is
+  wrong. A **blank identifier names no sequence and an unknown one opens the default screen** —
+  neither is an error, neither is announced, so never tell a host to detect a bad identifier through
+  the event stream; they check it where it comes from. And a **named opening is slower than a bare
+  one**: only the default address is prepared ahead of time — and only when `prewarm` names the
+  panel, below — so naming a sequence loads at the opening. Say so when a host reports the panel feeling slower than the hub — it is the expected
+  cost, not a defect — and never suggest pre-opening the panel to work around it. A call with no
+  argument opens the panel's default screen, which is the club's own setting and not the host's.
+- **The SDK prepares the hub alone unless the host asks for more, since 0.5.0** (`SPEC.md` § 2.1).
+  `FastoryConfig.prewarm` is the set of surfaces prepared before their first opening, and it
+  defaults to `{hub}`. When a host that opens the panel reports that its *first* opening loads while
+  every later one is instant, the answer is `prewarm: {FastorySurface.hub, FastorySurface.membership}`
+  — not pre-opening the panel, and not a defect. Say the cost when advising it: a prepared surface
+  keeps a WebView (a renderer process on Android) and its page's requests alive from launch on, so
+  do not tell a host that never opens the panel to add it. `openMembership()` needs nothing from the
+  set; an empty set prepares nothing; `game` changes nothing on its own; the deprecated slug path
+  ignores `membership`; and changing the set is changing the configuration, so it drops what is warm.
 - **A game does not know the fan unless the host tells it.** Opened through the SDK a game has no
   embedding page to ask, so `setBridgeReply(userToken, …)` is what stands in for it — set before
   `openGames()`, or that session is anonymous and earns no points.
@@ -168,12 +225,13 @@ analyzer reports, so the other two are the ones a host discovers at runtime or i
   present it as a synonym of `sdk_key_revoked` (that key existed and was withdrawn) or as a flaky
   connection (that is `reason=network`, with no code at all): the three ask a host for three
   different responses. Anything outside the six is a defect to report to us, not a code to branch on.
-- **Every method may be called from any thread except `openGames()`, since 0.4.0**
-  (`SPEC.md §2.7`). `configure()` stores the configuration synchronously and schedules its own
-  main-thread work, so a background bootstrap is supported rather than merely tolerated; `openGames()`
-  takes the host's own UI object, so it is main-thread-only. Do not advise wrapping `configure()` in a
-  main-thread hop — the SDK owns that — and do not describe the whole surface as main-thread-only,
-  which was the behaviour up to 0.3.0.
+- **Every method may be called from any thread except the two openings, `openGames()` and
+  `openMembership()`** (`SPEC.md §2.7`; the rule is from 0.4.0, the second opening from 0.5.0).
+  `configure()` stores the configuration synchronously and schedules its own
+  main-thread work, so a background bootstrap is supported rather than merely tolerated; the two
+  openings take the host's own UI object and present with it, so they are main-thread-only. Do not
+  advise wrapping `configure()` in a main-thread hop — the SDK owns that — and do not describe the
+  whole surface as main-thread-only, which was the behaviour up to 0.3.0.
 - **The standing answer is not permanent, since 0.4.0** (`SPEC.md §13.8.6`): `logout()`, an
   `identify()` resolving a different fan, and a `configure()` that changes the configuration all drop
   it, and the next question is answered `unavailable`. Advise setting it again after any of the three

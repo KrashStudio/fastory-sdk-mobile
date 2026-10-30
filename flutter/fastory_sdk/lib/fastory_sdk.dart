@@ -14,6 +14,9 @@ class FastoryConfig {
   /// production, a `test` key to everything else.
   static const String livePublishableKeyPrefix = 'fpk_live_';
   static const String testPublishableKeyPrefix = 'fpk_test_';
+  static const String _malformedPublishableKey =
+      'publishableKey must start with $livePublishableKeyPrefix '
+      'or $testPublishableKeyPrefix, followed by the key itself';
 
   /// Pass exactly one identifier: a [publishableKey] created in the workspace
   /// settings (preferred), or the deprecated [fanzoneSlug].
@@ -30,6 +33,8 @@ class FastoryConfig {
     this.locale,
     this.theme,
     this.developmentBaseUrl,
+    this.prewarm = const <FastorySurface>{FastorySurface.hub},
+    this.handlesLoginRequests = false,
   });
 
   /// Non-null only when configured by publishable key.
@@ -50,6 +55,29 @@ class FastoryConfig {
   final String? locale;
   final FastoryTheme? theme;
   final String? developmentBaseUrl;
+
+  /// The surfaces the SDK prepares before their first opening (SPEC §2.1) — the
+  /// hub alone unless you ask for more.
+  ///
+  /// A prepared surface opens already rendered, and it keeps a WebView resident
+  /// from the moment it is prepared. Add [FastorySurface.membership] when your app
+  /// opens the membership panel; left out, the panel's first opening loads when
+  /// it is asked for, and its page is kept after it closes like any other. An
+  /// empty set prepares nothing ahead of time. [FastorySurface.game] has no effect
+  /// of its own: games are preloaded from the hub's page, so they follow
+  /// [FastorySurface.hub]. The deprecated slug path resolves no workspace, so it
+  /// has no panel to prepare and ignores [FastorySurface.membership].
+  final Set<FastorySurface> prewarm;
+
+  /// Whether your app signs the fan in when a Fastory page asks it to (SPEC §2.6).
+  ///
+  /// No page the SDK presents ever shows a login form of its own. Declared, the hub, the
+  /// membership panel and the games keep their sign-in entries, and a fan's tap on one reaches
+  /// [Fastory.events] as a [FastoryBridgeMessage] of type `fastory:login-requested`: sign the fan
+  /// in your own way, then call [Fastory.identify]. Left `false`, the pages show no sign-in entry
+  /// at all. Declare it only if you handle that message — otherwise every sign-in entry becomes a
+  /// control that does nothing.
+  final bool handlesLoginRequests;
 
   /// Every rule the three platforms enforce identically. Called by [Fastory.configure]
   /// before the platform channel, so a bad configuration throws in Dart instead of
@@ -94,19 +122,13 @@ class FastoryConfig {
     final bool isLive = key.startsWith(livePublishableKeyPrefix);
     final bool isTest = key.startsWith(testPublishableKeyPrefix);
     if (!isLive && !isTest) {
-      throw ArgumentError(
-        'publishableKey must start with $livePublishableKeyPrefix '
-        'or $testPublishableKeyPrefix',
-      );
+      throw ArgumentError(_malformedPublishableKey);
     }
     // A prefix alone is not a key: reject `fpk_live_` with nothing after it.
     final String prefix =
         isLive ? livePublishableKeyPrefix : testPublishableKeyPrefix;
     if (key.length <= prefix.length) {
-      throw ArgumentError(
-        'publishableKey must start with $livePublishableKeyPrefix '
-        'or $testPublishableKeyPrefix',
-      );
+      throw ArgumentError(_malformedPublishableKey);
     }
     final String expected = environment == FastoryEnvironment.production
         ? livePublishableKeyPrefix
@@ -128,6 +150,13 @@ class FastoryConfig {
         'locale': locale,
         'theme': theme?.name,
         'developmentBaseUrl': developmentBaseUrl,
+        // A list, since the codec has no set; in declaration order, so one configuration always
+        // crosses the channel as one payload.
+        'prewarm': <String>[
+          for (final FastorySurface surface in FastorySurface.values)
+            if (prewarm.contains(surface)) surface.name,
+        ],
+        'handlesLoginRequests': handlesLoginRequests,
       };
 }
 
@@ -149,6 +178,23 @@ class FastoryHubClosed extends FastoryEvent {
 
   @override
   String toString() => 'FastoryHubClosed()';
+}
+
+/// The membership panel reached the screen with its page loaded (SPEC §5.3).
+class FastoryMembershipOpened extends FastoryEvent {
+  const FastoryMembershipOpened();
+
+  @override
+  String toString() => 'FastoryMembershipOpened()';
+}
+
+/// The membership panel was dismissed (SPEC §5.3). Emitted once per presentation,
+/// and only for a panel that opened.
+class FastoryMembershipClosed extends FastoryEvent {
+  const FastoryMembershipClosed();
+
+  @override
+  String toString() => 'FastoryMembershipClosed()';
 }
 
 class FastoryGameOpened extends FastoryEvent {
@@ -186,7 +232,10 @@ class FastoryBridgeMessage extends FastoryEvent {
 
   /// The allow-list, mirrored from the native cores. Re-applied here because a host can drive
   /// the event channel directly — the same reason the native side re-checks `configure`.
-  static const Set<String> knownTypes = <String>{'fastory:ready'};
+  static const Set<String> knownTypes = <String>{
+    'fastory:ready',
+    'fastory:login-requested',
+  };
 
   final String type;
   final Map<String, Object?> payload;
@@ -196,7 +245,7 @@ class FastoryBridgeMessage extends FastoryEvent {
 }
 
 /// Which Fastory surface a load failure is about (SPEC §9.1).
-enum FastorySurface { hub, game }
+enum FastorySurface { hub, game, membership }
 
 /// How a surface failed to load, as a host branches on it (SPEC §9.1).
 ///
@@ -282,6 +331,35 @@ class FastoryIdentityResolved extends FastoryEvent {
   String toString() => 'FastoryIdentityResolved(mode: ${mode.name}, fanId: $fanId)';
 }
 
+/// Why the SDK dropped a delegated identity on its own (`SPEC.md` § 5.3).
+enum FastoryRevocationReason {
+  /// A background re-exchange was refused by the API. Carries the API's own code
+  /// when it named one.
+  rejected,
+
+  /// The embed session expired and could not be renewed — no host-token provider
+  /// was registered, so there was no fresh assertion to re-exchange. Carries no code.
+  expired,
+}
+
+/// The SDK dropped a delegated identity **on its own** (`SPEC.md` § 5.3): a session
+/// that expired with no way to renew, or a background re-exchange the API refused.
+/// The fan is now anonymous. The host learns why through [reason] so it can
+/// re-`identify` with a fresh token or let the fan continue anonymously — never a
+/// blank panel. A host-driven `logout()` is not a revocation and never emits this.
+class FastoryIdentityRevoked extends FastoryEvent {
+  const FastoryIdentityRevoked(this.reason, this.code);
+
+  final FastoryRevocationReason reason;
+
+  /// The API's machine-readable reason, present only for
+  /// [FastoryRevocationReason.rejected] and only when the refusal named one.
+  final String? code;
+
+  @override
+  String toString() => 'FastoryIdentityRevoked(reason: ${reason.name}, code: $code)';
+}
+
 /// The identity a host asks the SDK to resolve. See `SPEC.md` § 2.6.
 ///
 /// [FastoryFanId] carries no argument on purpose — it is a Fastory *login* through
@@ -328,6 +406,12 @@ class FastoryHostToken extends FastoryIdentity {
 }
 
 enum FastoryIdentityMode { anonymous, fanId, hostToken }
+
+/// Hands the SDK a fresh host assertion when it needs to renew a delegated session
+/// (`SPEC.md` § 2.6.3). Registered with [Fastory.setHostTokenProvider] and awaited when
+/// the SDK needs a token; returns a fresh JWT, or `null` when the host cannot supply
+/// one — in which case the session lapses and the fan becomes anonymous.
+typedef FastoryHostTokenProvider = Future<String?> Function();
 
 class FastoryResolvedIdentity {
   const FastoryResolvedIdentity(this.mode, this.fanId);
@@ -380,6 +464,21 @@ abstract final class Fastory {
   static Future<void> openGames() =>
       _methodChannel.invokeMethod<void>('openGames');
 
+  /// Opens the membership panel full-screen over the host app (`SPEC.md` § 3.5).
+  ///
+  /// [sequenceId] names one of the sequences the panel already owns and opens it
+  /// on that one; naming none lands on the panel's default screen, which stays the
+  /// club's setting. It needs a publishable key — a fanzone slug names a fanzone,
+  /// not the workspace this surface is addressed by, and rejects with
+  /// `publishable_key_required` on that path.
+  ///
+  /// One surface at a time: called while the hub or the panel is already up, it
+  /// does nothing and completes normally. [close] dismisses whichever is showing.
+  static Future<void> openMembership({String? sequenceId}) =>
+      _methodChannel.invokeMethod<void>('openMembership', <String, Object?>{
+        'sequenceId': sequenceId,
+      });
+
   static Future<void> close() => _methodChannel.invokeMethod<void>('close');
 
   /// Binds the host app's user to a Fastory fan (`SPEC.md` § 2.6).
@@ -409,6 +508,41 @@ abstract final class Fastory {
   /// touched. Idempotent, and never fails.
   static Future<void> logout() => _methodChannel.invokeMethod<void>('logout');
 
+  static FastoryHostTokenProvider? _hostTokenProvider;
+  static bool _requestHandlerInstalled = false;
+
+  /// Registers the closure the SDK calls to obtain a fresh host assertion when a
+  /// delegated session must be renewed (`SPEC.md` § 2.6.3). Pass `null` to clear it.
+  ///
+  /// The SDK calls back into Dart (`requestHostToken`) only when it needs a token;
+  /// the provider returns a fresh JWT, or `null` when the host cannot supply one — in
+  /// which case the session lapses and the fan becomes anonymous. Setting the provider
+  /// never renews anything on its own.
+  static Future<void> setHostTokenProvider(
+    FastoryHostTokenProvider? provider,
+  ) {
+    _hostTokenProvider = provider;
+    if (!_requestHandlerInstalled) {
+      _methodChannel.setMethodCallHandler(_handleMethodCall);
+      _requestHandlerInstalled = true;
+    }
+    // Advertise whether a provider now exists so the native side knows to invoke — or not — when a
+    // session needs renewing. The provider itself never crosses the channel; only its answers do.
+    return _methodChannel.invokeMethod<void>(
+      'setHostTokenProvider',
+      <String, Object?>{'hasProvider': provider != null},
+    );
+  }
+
+  /// Native → Dart calls land here. Only `requestHostToken` is expected: the native side needs a
+  /// fresh assertion and the registered provider answers it, or answers `null` when it has none.
+  static Future<Object?> _handleMethodCall(MethodCall call) async {
+    if (call.method == 'requestHostToken') {
+      return _hostTokenProvider == null ? null : await _hostTokenProvider!.call();
+    }
+    return null;
+  }
+
   /// What the SDK answers the next time a web surface asks for [type] over the bridge
   /// (`SPEC.md` § 13.8) — the fan token a game requests from its host page, in the place
   /// of the host page it does not have.
@@ -436,14 +570,31 @@ abstract final class Fastory {
     return switch (raw['type']) {
       'hubOpened' => FastoryHubOpened(raw['slug'] as String? ?? ''),
       'hubClosed' => const FastoryHubClosed(),
+      'membershipOpened' => const FastoryMembershipOpened(),
+      'membershipClosed' => const FastoryMembershipClosed(),
       'gameOpened' => FastoryGameOpened(raw['slug'] as String? ?? ''),
       'gameClosed' => const FastoryGameClosed(),
       'externalLink' => FastoryExternalLink(raw['url'] as String? ?? ''),
       'bridgeMessage' => _decodeBridgeMessage(raw),
       'identityResolved' => _decodeIdentityResolved(raw),
+      'identityRevoked' => _decodeIdentityRevoked(raw),
       'surfaceLoadFailed' => _decodeSurfaceLoadFailed(raw),
+      // 'identityRehydrated' and every other type fall here and are dropped: a restoration is not a
+      // resolution, so it must never surface as one, and the host reads the rehydrated fan natively.
       _ => null,
     };
+  }
+
+  /// An unknown `reason` drops the event rather than guessing: a host branches on
+  /// [FastoryIdentityRevoked.reason], so an unrecognised word must not be forced into one of the two.
+  static FastoryEvent? _decodeIdentityRevoked(Map<Object?, Object?> raw) {
+    final Object? rawReason = raw['reason'];
+    for (final FastoryRevocationReason reason in FastoryRevocationReason.values) {
+      if (reason.name == rawReason) {
+        return FastoryIdentityRevoked(reason, raw['code'] as String?);
+      }
+    }
+    return null;
   }
 
   /// An unknown `surface` drops the event, exactly as an unknown identity mode

@@ -37,7 +37,11 @@ enum BridgeEnvelope {
     /// The allow-list, so the web side can ship a new type against an older SDK. The three platforms
     /// hold the same set: a type added on one alone would be delivered there and dropped silently on
     /// the others.
-    static let knownTypes: Set<String> = ["fastory:ready"]
+    ///
+    /// `fastory:login-requested` is posted when a fan taps a sign-in entry on a page whose host
+    /// declared `FastoryConfig.handlesLoginRequests`. It is only delivered: the SDK opens nothing
+    /// and navigates nowhere on it, since signing the fan in belongs to the host, through `identify`.
+    static let knownTypes: Set<String> = ["fastory:ready", "fastory:login-requested"]
 
     /// The types the native side can be *asked* to answer (SPEC §13.8.3), held on the three
     /// platforms alike. Disjoint from `knownTypes` on purpose: a request is never delivered to the
@@ -418,6 +422,13 @@ enum FastoryBridgeLog {
     /// a hint the native side offers the page, and refusing it leaves the page anonymous, not broken.
     static func standingReplyRefused(_ reason: String) {
         logger.debug("bridge reply refused: \(reason, privacy: .public)")
+    }
+
+    /// The session-change signal (§ 13.9) failed to evaluate in a game page. Best-effort by contract:
+    /// traced here and the page left alone, since its own expiry guard is the backstop for a signal
+    /// that never lands.
+    static func signalUndelivered(_ reason: String) {
+        logger.debug("session-change signal not delivered: \(reason, privacy: .public)")
     }
 
     private static func excerpt(of raw: String) -> String {

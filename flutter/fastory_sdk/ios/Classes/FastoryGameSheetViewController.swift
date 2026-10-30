@@ -49,7 +49,8 @@ final class FastoryGameSheetViewController: UIViewController {
         webView.uiDelegate = self
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         view.addSubview(webView)
-        // Same rule as the hub: the game is kept clear of the home indicator here, not by the page.
+        // The sheet holds the safe area on every edge: the game is kept clear of the home indicator
+        // here, not by the page.
         NSLayoutConstraint.activate([
             webView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             webView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
@@ -68,12 +69,17 @@ final class FastoryGameSheetViewController: UIViewController {
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        // The presented game is a live target of the session-change signal (SPEC § 13.9.3).
+        FastorySessionPush.presentedGameWebView = webView
         announce(load.present())
     }
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         if isBeingDismissed || presentingViewController == nil {
+            if FastorySessionPush.presentedGameWebView === webView {
+                FastorySessionPush.presentedGameWebView = nil
+            }
             // Closing must actually end the game: silence it right away, then discard the
             // played webview with the sheet — its page (timers, audio, state) dies with it.
             // The preloader immediately rebuilds a fresh copy so reopening stays instant.
@@ -175,7 +181,7 @@ final class FastoryGameSheetViewController: UIViewController {
         }
         load.restart()
         errorView.isHidden = true
-        lastGameURL = url.fastoryEmbeddedGameURL
+        lastGameURL = url.fastoryEmbeddedGameURL(with: config.gamePresentationQueryItems)
         webView.load(URLRequest(url: lastGameURL))
     }
 }

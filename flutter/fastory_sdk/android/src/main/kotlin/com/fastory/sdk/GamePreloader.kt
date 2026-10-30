@@ -72,18 +72,34 @@ internal object GamePreloader {
 
     // MARK: Hub hook
 
-    /** Runs game discovery against a hub WebView that just finished a load. */
-    fun onHubLoadFinished(hubWebView: WebView) {
-        val config = Fastory.config ?: return
+    /**
+     * Runs game discovery against a hub WebView that just finished a load, under the [config] that
+     * hub was built with: the pool presents a game with the URL it was preloaded under, so a hub
+     * on screen through a re-configure must not preload under another locale than its taps use.
+     */
+    fun onHubLoadFinished(hubWebView: WebView, config: FastoryConfig) {
         if (appContext == null) {
             appContext = hubWebView.context.applicationContext
         }
         val script = discoveryScript(config.environment.storiesOrigin)
         hubWebView.evaluateJavascript(script) { result ->
-            val games = parseDiscoveredGames(unquoteJsResult(result), config.baseUrl, MAX_PRELOAD_COUNT)
+            val games = parseDiscoveredGames(
+                unquoteJsResult(result),
+                config.baseUrl,
+                MAX_PRELOAD_COUNT,
+                config.gamePresentationQuery.toList(),
+            )
             schedule(games)
         }
     }
+
+    /**
+     * The live game pages the preloader owns: every pooled WebView and the load in flight. These are
+     * the preloaded targets of the session-change signal (SPEC § 13.9.3) — pages that adopted the
+     * standing answer at load time and will be presented later still carrying it.
+     */
+    fun liveGameWebViews(): List<WebView> =
+        pool.values.toList() + listOfNotNull(currentLoad?.webView)
 
     // MARK: Game sheet hooks
 
@@ -264,11 +280,20 @@ internal object GamePreloader {
 
     /**
      * Parses the discovery result and keeps only URLs UrlPolicy would open in the game
-     * sheet, mapped to their load URL (embed/consent params added, like a real tap). The
-     * script's URL scan over-collects (any origin with an `/s/` path), so this filter is
+     * sheet, mapped to their load URL (embed/consent params and [extra] added, like a real tap).
+     * The script's URL scan over-collects (any origin with an `/s/` path), so this filter is
      * what enforces the game-sheet policy.
+     *
+     * [extra] holds the configuration's own additions — locale, theme, host login — the same ones
+     * a tap adds, and required: a sheet takes its preloaded page by slug, so a page loaded without
+     * them would be shown without them.
      */
-    fun parseDiscoveredGames(json: String, baseUrl: String, limit: Int): List<Pair<String, String>> {
+    fun parseDiscoveredGames(
+        json: String,
+        baseUrl: String,
+        limit: Int,
+        extra: List<Pair<String, String>>,
+    ): List<Pair<String, String>> {
         val array = runCatching { JSONArray(json) }.getOrNull() ?: return emptyList()
         val games = mutableListOf<Pair<String, String>>()
         val seen = mutableSetOf<String>()
@@ -278,7 +303,7 @@ internal object GamePreloader {
             if (UrlPolicy.decide(url, baseUrl) != NavigationDecision.OPEN_GAME_SHEET) continue
             val slug = UrlPolicy.gameSlug(url) ?: continue
             if (!seen.add(slug)) continue
-            games.add(slug to UrlPolicy.embeddedGameUrl(url))
+            games.add(slug to UrlPolicy.embeddedGameUrl(url, extra))
         }
         return games
     }

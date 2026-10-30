@@ -4,6 +4,372 @@ All notable changes to the Fastory Mobile SDK are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: [SemVer](https://semver.org),
 tags `sdk-vX.Y.Z`.
 
+## 0.5.0
+
+The whole delegated-identity surface, the club's membership panel and a page's request to sign the
+fan in: six capabilities released at once as one version. A fan is recognised across the app without
+ever typing in a WebView — a host-signed assertion, a Fastory login in the system browser, or a
+session that renews itself and announces its changes to the live games — `openMembership()` opens
+the club's panel full-screen beside the hub, and a sign-in entry on a page asks your app to sign the
+fan in. It arrives as one upgrade, but each capability breaks in its own place, so each keeps its own
+section below, in that order; the Dart source breaks are called out where they land. Everything you
+adopt, you read in one section — the rest asks nothing of you, exactly as 0.4.0 bundled its five
+capabilities into one version. A layout change and fixes ride along, in the last two sections:
+on iOS the hub now runs to the bottom of the screen, under the home indicator, while the panel and
+the game sheet still end above it (*iOS hub layout*); on Android, a hub or a panel closed on its
+error view without *Retry* no longer reopens on a black screen, and one rebuilt in place while that
+view is up loads its page again; and on both platforms, games now receive the `locale` and `theme`
+you configure (*Fixed*).
+
+### fanId
+
+A fan without a partner identity system can now sign in to their Fastory account from the host app:
+`identify(fanId)` opens the Fastory login in the **system browser** — `ASWebAuthenticationSession` on
+iOS, a Custom Tab on Android — and comes back resolved, with the hub and the games recognising the
+fan exactly as a `hostToken` resolution does. No login form ever renders in a WebView: the system
+browser is a platform rule, and the only path that reaches the device's password manager. A fan
+already signed in on that browser is not asked to type again.
+
+#### Added
+
+- **`identify(fanId)` resolves** (spec § 2.6). The login runs through the platform's reference OpenID
+  library (AppAuth): the browser returns a single-use code, and the SDK exchanges it — with PKCE, the
+  publishable key and the application identifier — for the fan session. The mode requires a
+  publishable-key configuration, like `hostToken`; on the deprecated slug path it answers
+  `identify_mode_unavailable`. Dismissing the browser fails the call with `login_cancelled` and
+  leaves the SDK anonymous — never the previously resolved fan, and never a half state.
+
+#### Changed
+
+- **New dependency on both native channels: AppAuth** (the `AppAuth` SwiftPM package / pod on iOS,
+  `net.openid:appauth` on Android). It arrives transitively with the plugin and the Swift package;
+  no host declares it by hand.
+- **One integration step on each platform for hosts adopting `fanId`.** Android: declare the
+  `appAuthRedirectScheme` manifest placeholder with your own application id — the build fails at
+  manifest merge without it once the dependency is present, so every host needs it even before
+  calling the mode. iOS: declare your bundle identifier as a URL scheme. The integration guide
+  carries both snippets.
+- **Spec version 0.5.0.** § 2.6 (`fanId` released; the browser leg's three normative properties —
+  caller proven before the browser opens, redirect derived from the application identifier,
+  dismissal landing on anonymous), § 5.4 (`identify_mode_unavailable` narrowed to the slug-path
+  case).
+
+#### Known limitation
+
+- Signing out of the SDK does not sign the fan out of the system browser: that session belongs to
+  the browser, which an app cannot erase. A later `identify(fanId)` on the same device may resolve
+  without showing a login form. This matches "an open session is not asked for again" and is how
+  every system-browser login behaves.
+
+### Session-change signal
+
+A game no longer runs a stale session to the end of its own lifetime: when the SDK renews, replaces
+or revokes the fan session it hands to games over the bridge, it now signals the live game pages so
+they re-read it immediately. Additive on every channel — no public name moves, no new event, nothing
+to change in a host app. Pages that predate the signal keep their own expiry guard and behave exactly
+as before.
+
+#### Added
+
+- **The session-change signal (spec § 13.9).** When the standing bridge answer changes — renewed
+  ahead of expiry, populated by an `identify`, or revoked by `logout()`, an identity change or a
+  failed renewal — the SDK dispatches a constant, payload-free `fastory:session-changed` event in the
+  game WebViews it owns: the presented game sheet and the preloaded game pages. The page re-requests
+  `fastory:user-token` over the reply channel and adopts the answer; `unavailable` tells it the fan is
+  gone and it falls back to anonymous. The signal carries no data, deliberately: the spec's
+  no-JavaScript rule gains a second, narrow exception for it (§ 12.1) — one byte-for-byte constant
+  statement, nothing interpolated, nothing read back — and every value a page learns still travels on
+  the reply path, origin-gated as every reply is.
+
+#### Changed
+
+- **Spec version 0.5.0.** § 12.1 (second bounded exception), § 13 (the native side may signal, never
+  push data), § 13.9 (new — the signal's statement, triggers, targets and bounds), § 2.6.3 (a renewal
+  or revocation announces itself to live game pages).
+
+### Session lifecycle
+
+A `FastoryHostToken` fan now stays signed in across the life of the app: the SDK renews the session
+before it expires and drops it cleanly when it cannot. **Additive in behaviour, with one Dart source
+break** — the new `FastoryIdentityRevoked` enters the sealed `FastoryEvent`, so an exhaustive `switch`
+without a `default:` stops compiling until you add a case, exactly as the events added in 0.4.0
+did. Not purely additive, and not a silent change either: a delegated session that used to lapse
+quietly now ends in an announced return to anonymous.
+
+#### Added
+
+- **`Fastory.setHostTokenProvider(provider)` keeps a delegated fan signed in.** Register a
+  `FastoryHostTokenProvider` — a `Future<String?> Function()` — and the SDK calls it back for a fresh
+  host token whenever a delegated session needs renewing. It refreshes the session server-side while it
+  is still valid (asking no one), and only falls back to your provider when that refresh is refused.
+  Pass `null` to clear it. The call is non-blocking, and the SDK never inspects your token.
+- **`FastoryIdentityRevoked(reason, code)` tells you when a delegated fan lapsed to anonymous.** A
+  session that expired with nothing to renew it emits `reason == FastoryRevocationReason.expired`; a
+  background renewal the server refused emits `reason == FastoryRevocationReason.rejected` with the
+  server's `code`. `logout()` and a failed `identify()` never emit it — it is only for a drop the SDK
+  performs on its own, so you can re-`identify` or let the fan continue anonymously rather than show a
+  blank panel.
+
+#### Changed
+
+- **A verified delegated identity now survives between launches.** The SDK stores the fan's `mode` and
+  `fanId` — never the host token, never the embed session — and rehydrates it on `configure`, so the
+  panel opens already identified instead of re-verifying from scratch. The rehydrated identity is
+  confirmed in the background and emits no `identityResolved` (it is restored, not resolved).
+- **A delegated session that cannot be renewed now ends in an announced return to anonymous** rather
+  than lapsing silently. This is the one behaviour change to be aware of when upgrading from an SDK
+  that resolved `hostToken` without a lifecycle.
+
+### Membership panel
+
+**One new surface and one new option.** `openMembership()` opens the club's membership panel
+full-screen over your app, and announces itself on the event stream; `FastoryConfig.prewarm` chooses
+which surfaces are prepared before their first opening — the hub alone unless you add the panel. No
+existing name moves and nothing you already call changes signature — but **Dart hosts have three
+source breaks to absorb**, as in 0.4.0: `FastoryEvent` gains `FastoryMembershipOpened` and
+`FastoryMembershipClosed`, and `FastorySurface` gains `membership`, so an exhaustive `switch` with
+no `default:` stops compiling until you add the cases. **The third of those is not Dart-only:**
+`FastorySurface` is a plain public enum on iOS and Android too, so a Swift `switch` or a Kotlin
+`when` used as an expression that already covers `hub` and `game` stops compiling on the native
+channel the same way — add the `membership` case (or fall back to a `default:`/`else` branch) there
+as well. **Read `Breaking` and you are done**; the rest asks nothing of you.
+
+#### Breaking
+
+- **Dart: `FastoryEvent` gains two subtypes** — `FastoryMembershipOpened` and
+  `FastoryMembershipClosed`. It is a `sealed` class, so an exhaustive `switch` with no `default:`
+  stops compiling until both cases exist. The analyzer points at each.
+- **All three channels: `FastorySurface` gains `membership`.** This one is not Dart-only, which is
+  why it is worth reading twice: `FastorySurface` is a plain public enum on Swift and Kotlin as
+  well, so a `switch` or a `when` used as an expression that covers `hub` and `game` exhaustively
+  stops compiling there too. Add the case, or an `else` / `default:` branch. You only meet this type
+  on `FastorySurfaceLoadFailed`, so a host that never inspects a failed load has nothing to change.
+- Deliberate, under SemVer § 4 — anything may change in a `0.y.z` line, and this SDK ships source
+  breaks in minors while it is on 0.x. Pin `.upToNextMinor(from:)` on the Swift channel and an
+  immutable `ref:` on the Flutter one if you would rather choose when you take them.
+
+#### Added
+
+- **`openMembership()` opens the club's membership panel over your app.** Full-screen, with a close
+  control of its own, on the same model as `openGames()`: the entry that opens it is an action, not
+  a destination, so your own tab selection never moves and dismissing lands the fan back exactly
+  where they were. Called with no argument it opens the panel's default screen, which is the club's
+  setting and not yours. Its first opening loads while your fan waits unless you ask for the panel
+  to be prepared (`prewarm`, below); once its page has loaded, that page is kept, so every later
+  opening is instant.
+  - **You can open the panel on one of the club's sequences, by name** — `sequenceId` on Flutter
+    (`Fastory.openMembership(sequenceId: '2f8a1c64-…')`) and on Swift
+    (`Fastory.openMembership(from: presenter, sequenceId: "2f8a1c64-…")`). Pass the identifier
+    exactly as you hold it: the SDK escapes it for the URL, so you never encode it yourself. An
+    identifier that is empty or only spaces counts as naming none, and one the club does not carry
+    opens the default screen — neither is an error, and no event tells them apart, so check an
+    identifier where it comes from rather than through the SDK.
+  - **Naming a sequence is slower than not naming one, and that is worth knowing before you time
+    it.** The panel is prepared ahead of your fan's first tap on **one** address, the default screen
+    — the SDK cannot guess which sequence you will ask for — so an opening that names a sequence
+    loads at the moment you ask for it, while the bare call presents a page that is already there.
+    The difference is the cost of that load, and it is most visible on a slow network. Nothing to
+    work around: it is the preparation that makes the bare call instant — and that preparation
+    happens only when `prewarm` names the panel.
+  - It **needs a publishable key**. A fanzone slug names a fanzone, never the workspace this surface
+    is addressed by, so a configuration on the deprecated slug path rejects with
+    `publishable_key_required`.
+  - **One surface at a time.** Called while the hub or the panel is already up, it does nothing and
+    completes normally — a double tap on a tab-bar entry is the ordinary way to reach this.
+    `close()` dismisses whichever surface is showing.
+  - **`membershipOpened` and `membershipClosed`** bracket every presentation, exactly once each, and
+    only for a panel whose page loaded. A panel that failed to load emits `surfaceLoadFailed`
+    carrying the new `membership` surface, and owes no closing event.
+  - **It behaves as the hub does wherever the two could differ, bar one on iOS**, since it is shown
+    in the same full-screen container: the same error view and Retry, whose wait is spoken to VoiceOver and
+    TalkBack; on iOS the same band under the status bar, though the panel, unlike the hub, still
+    ends above the home indicator (see *iOS hub layout* below); and a `close()` with a game open
+    emits `gameClosed` before `membershipClosed`. A panel Android rebuilds in place — a language or
+    display-size change, *Don't keep activities* — emits neither of its events again.
+  - **On Android, back walks only what your fan did since the panel's page was last loaded**, then
+    closes the panel. An opening that loads its page — a named sequence, or the default screen after
+    one — starts with no history behind it, and back closes it while that page is still loading; a
+    panel reopened as your fan left it has not been loaded again and keeps the way they came. The hub
+    of a fan you identified follows the same rule, since its address changes at every opening.
+  - **An opening that loads its page never shows the screen an earlier opening ended on.** The
+    panel opened on a named sequence after a bare opening, and the hub of a fan you identified,
+    come up on a blank page under the loading indicator until the new page has drawn its first
+    content, on both platforms; screen readers do not read the earlier screen meanwhile. The hub
+    reloaded after your fan's identity changes is covered the same way, so the previous fan's hub is
+    not shown while the new one loads. A panel or hub reopened on the page your fan left is still shown at once, as it stands, and a first opening
+    while the page is still being prepared shows it as it loads, as before. The opening events are
+    unchanged. To know when the new page has drawn, the SDK asks it one read-only question — whether
+    it has painted content yet — every 50 ms for at most two seconds while the cover is up: the
+    spec's no-JavaScript rule gains a third, narrow exception for it (§ 12.1), nothing written,
+    nothing registered in the page.
+  - The panel does not show a signed-in fan in this version: a fan you identified stays anonymous
+    there (see *Sign-in request* below). A club whose panel is not enabled gets an explanatory page,
+    which the SDK reports as opened like any other — there is no separate signal for it.
+- **`FastoryConfig.prewarm` chooses which surfaces are prepared before their first opening.** A
+  prepared surface opens already rendered, and it costs a WebView kept in memory from launch on — a
+  renderer process on Android — plus the requests its page makes, whether your fan opens it or not.
+  The default is the hub alone, so a configuration that sets nothing prepares exactly what it did
+  before; add the panel when your app opens it — `prewarm: {FastorySurface.hub,
+  FastorySurface.membership}` on Flutter, `prewarm: [.hub, .membership]` on Swift. Additive on
+  every channel: a defaulted field and a defaulted initializer parameter, nothing to change.
+  - `openMembership()` needs nothing from it. Left out, the panel's first opening loads while your
+    fan waits and the page is kept once it closes, provided it loaded; the same goes for the hub if
+    you remove it.
+  - An empty set prepares nothing ahead of time; the key exchange still starts at `configure()`.
+    `FastorySurface.game` changes nothing on its own — games are preloaded from the hub's page. On
+    the deprecated `fanzoneSlug` path `membership` is ignored, since that path names no workspace.
+  - It is part of the configuration: a `configure()` with a different set drops what is warm and
+    prepares again, and the same set again keeps it.
+
+### hostToken
+
+The `FastoryHostToken` identity mode now resolves. **No public name moves and no call signature
+changes** — the mode and its errors shipped frozen in 0.4.0, so this is additive.
+
+#### Added
+
+- **`identify(FastoryHostToken(jwt))` signs a fan in with no screen.** When your backend has already
+  authenticated the user, pass the assertion it signed: the SDK exchanges it for a Fastory session
+  server-side (it never validates the JWT itself), the games receive it over the bridge, and the hub
+  adopts it — no browser, no WebView, nothing typed. The resolved identity carries a stable `fanId`.
+  Asking for the same user again is idempotent; a different user replaces the session and leaves no
+  trace of the previous fan; a refused or unreachable exchange lands the SDK on anonymous.
+
+#### Notes
+
+- **`hostToken` requires configuring with a publishable key.** The exchange is bound to the workspace
+  your key resolves, so on the deprecated `fanzoneSlug` path `hostToken` rejects with
+  `identify_mode_unavailable`.
+- **A refused assertion surfaces as `identify_rejected`,** carrying the API's own code in
+  `PlatformException.details['code']`. `invalid_host_token` now covers only a blank or absent JWT — a
+  malformed or expired one is the server's verdict, not a local one.
+- The SDK does not renew the session; it lives for the token's lifetime.
+
+### Sign-in request
+
+A sign-in entry on a page the SDK shows — the hub, the membership panel or a game — now asks your app
+to sign the fan in, and no page ever shows a login form of its own. **Additive on every channel**:
+one defaulted configuration field and one new bridge message type, nothing to change in a host that
+adopts neither. Without the field, the pages show no sign-in entry at all.
+
+#### Added
+
+- **`FastoryConfig.handlesLoginRequests`** (default `false`) declares that your app listens for
+  `fastory:login-requested` and signs the fan in itself. Declared, the SDK passes it to the hub, the
+  panel and the games by adding `hostLogin=1` to their URLs, and their sign-in entries stay. A
+  defaulted field on Flutter, a defaulted last initializer parameter on Swift: an existing
+  configuration compiles unchanged. A `configure()` that changes it is a different configuration, and
+  drops what is warm like any other change.
+- **`fastory:login-requested`, the bridge's second message type** (spec § 13.3) — a
+  `FastoryBridgeMessage` on Flutter, `fastoryBridgeMessage(type:payload:)` on Swift, with an empty
+  payload. It is sent when a fan taps a sign-in entry, once per tap, and never because a page loaded
+  or a game ended. Answer it by signing the fan in your own way, then calling `identify` —
+  `FastoryHostToken(jwt)` after your own sign-in, or `FastoryFanId()` for the Fastory login in the
+  system browser. There is no reply on the bridge, and the SDK opens nothing on the message itself.
+  `FastoryBridgeMessage.knownTypes` now holds both types.
+
+#### Changed
+
+- **No page the SDK shows ever displays a login form.** With the field declared, a sign-in entry
+  sends you the message; without it, an entry whose only job is to sign in is hidden, and content
+  that needs a signed-in fan reads *Sign in from the app to continue*, with no button. **Declare the
+  field only if you listen for the message**: declared and unheard, every sign-in entry is a button
+  that does nothing.
+- **The hub on screen follows the signed-in fan.** When `identify` signs in a fan or a different one,
+  and when `logout()` or a lapsed session drops one, an open hub reloads — signed in as the new fan,
+  or anonymous. Identifying the same fan again, a background renewal, and an anonymous `identify`
+  while no fan is signed in reload nothing. The reload emits no `hubOpened` or `hubClosed`, and does
+  not keep the fan's scroll position. Games learn of the change without reloading, as before.
+- **Spec version 0.5.0.** § 2.1–2.4 (`handlesLoginRequests`), § 2.6 (a page's sign-in entries ask
+  the host or are not shown), § 2.6.1 and § 7 (the presented hub reloads when the signed-in fan
+  changes), § 3.2, § 3.3 and § 3.5 (`hostLogin`), § 5.2 (the `configure` key, read as `false` when
+  unreadable), § 13 and § 13.3 (the second message type, delivered and nothing else), § 13.7 (an
+  Android sub-frame can post it).
+
+#### Known limitation
+
+- **The membership panel does not show the signed-in fan yet.** A sign-in entry there sends you the
+  message like anywhere else, but once you have signed the fan in the panel still shows them as
+  anonymous — the *Membership panel* section above says the same. The hub and the games do show the
+  fan. A fix is planned on our side.
+- **On Android a frame embedded inside a game can post `fastory:login-requested` too.** It carries
+  nothing, so the worst it can do is show your sign-in when the fan did not ask: offer a sign-in on
+  it, never decide anything that matters.
+
+### iOS hub layout
+
+On iOS the hub now runs to the bottom of the screen, under the home indicator, as it already did on
+Android. No public name moves, nothing you call changes, and there is nothing to change in your app.
+
+#### Changed
+
+- **iOS: the hub's page runs to the bottom edge of the screen** (spec § 8). Since 0.4.5 the hub
+  ended above the home indicator, on a plain band in the system background colour. Its page now
+  continues under the indicator, with no band there, and keeps its last content clear of the
+  indicator itself. The top and the sides stay inside the safe area, on the band under the status
+  bar, which still follows a status bar style your app forces. The hub's error view covers the
+  screen down to the bottom edge, its message and *Retry* centred clear of the indicator. The same
+  holds in landscape and on iPad.
+- **The membership panel and the game sheet do not follow.** Both still end above the home
+  indicator, on a plain band: the panel's page does not make room for the indicator, and the game
+  sheet is unchanged.
+- **Spec version 0.5.0.** § 8 (the hub's bottom edge on iOS; the panel kept inside the safe area).
+
+#### Known limitation
+
+- **A control the hub's page pins to the very bottom of the screen without allowing for the home
+  indicator** — a floating button, the foot of a drawer — can now sit behind the indicator on iOS,
+  as it already could behind the gesture bar on Android. It is the page's to correct, and nothing in
+  your app changes it; tell your Fastory contact where you see one.
+
+### Fixed
+
+- **Android: a hub closed on its error view no longer reopens on a black screen.** When the hub did
+  not load — no connection, for the page or for the publishable-key exchange, or an error status,
+  even after an earlier page of the same hub had loaded — and your fan closed it with the close
+  button or the back gesture without pressing *Retry*, a later `openGames()` showed a black screen
+  with only the close button, while your app received `hubOpened`, then `hubClosed`, for a hub your
+  fan never saw. Every opening after it did the same, typically until the app was restarted. The
+  next opening now starts over on a page your fan can see: once the connection is back it opens, and
+  `hubOpened` is emitted when the page has loaded; still offline, the error view comes back with a
+  new `surfaceLoadFailed` and no opening event. When it was the publishable-key exchange that failed,
+  the first opening back online can still show the error view — it may be answered from the failed
+  exchange while a new one goes out — and the opening after it, or *Retry*, opens the hub. The
+  membership panel behaves the same, with `membershipOpened`. A hub that *Retry* brought
+  back is kept like any hub that loaded, so its next opening is still instant. If you count
+  `hubOpened` as a session, you stop receiving sessions for hubs that never loaded. Present since
+  0.4.5; iOS was not affected. Nothing to change on your side.
+- **Android: a hub rebuilt while it shows its error view loads its page again.** When the system
+  rebuilds the screen in place — a language or display-size change, *Don't keep activities* —
+  while the error view is up, the rebuilt hub now loads the page as its first opening did: online it
+  opens, emitting `hubOpened` unless that hub had already announced itself before failing; offline
+  you receive one more `surfaceLoadFailed`. A rebuild does not run the publishable-key exchange
+  again, so when that exchange is what failed the error view can stay up until your fan presses
+  *Retry*. It used to stand on the page that had failed, blank, and announce itself open. Like the
+  game sheet's reload with a rebuilt screen, this load starts without your fan pressing *Retry*;
+  any other retry policy is still yours to implement. The
+  membership panel behaves the same.
+- **The `locale` and `theme` you configure now reach the games.** They were documented as forwarded
+  to the hub and to games, but only the hub received them: a game opened from the hub or prepared
+  ahead of time loaded with neither, on iOS and Android alike, so a game whose page picks its own
+  language could play in another one than your app. Those games now carry them after `embed`,
+  `utm_source` and `consent` — and on iOS, so does a game opened from another game. A value the
+  fanzone already put on the game's link is kept as it is, never overwritten nor repeated. Present
+  since 0.3.0. Nothing to change on your side.
+- **The guide quotes Flutter's Swift Package Manager warning as Flutter prints it.** *Known
+  limitations* quoted only a line Flutter prints when the plugin is a local path dependency, which an
+  app depending on it from git does not see; it now quotes *"The following plugins do not support
+  Swift Package Manager for ios"* first, says Flutter announces it will become an error, and that
+  Swift Package Manager support for the plugin is planned on our side. The build still succeeds
+  through CocoaPods. Nothing to change on your side.
+- **A publishable key reduced to its prefix is refused with a message that names the rule it
+  breaks.** `configure()` with `fpk_live_` or `fpk_test_` and nothing after it — typically an empty
+  variable appended to the prefix — was refused with *"publishableKey must start with fpk_live_ or
+  fpk_test_"*, a rule that key respects. A malformed key is now refused, on all three channels, with
+  *"publishableKey must start with fpk_live_ or fpk_test_, followed by the key itself"*. The error is
+  the same one as before — `FastoryConfigError.malformedPublishableKey` on native iOS — and the old
+  sentence still begins the new one. Nothing to change on your side.
+
 ## 0.4.5
 
 Twenty-one fixes and seven changes: fifteen fixes and three changes in what the SDK does, and a

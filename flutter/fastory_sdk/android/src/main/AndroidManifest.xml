@@ -7,7 +7,9 @@
         <!--
             singleTop is the platform's own half of openGames()' idempotence: the SDK refuses a
             second hub, and this makes the system refuse it too rather than stack one on top of the
-            first. No onNewIntent handling is needed — the intent carries nothing, so an instance
+            first. Its Intent carries what the container is built from — which surface, and which
+            sequence — read once at creation; no onNewIntent handling is needed because the SDK's
+            own reservation turns away every start that would deliver a second one, so an instance
             already on screen simply stays as it is.
         -->
         <activity
@@ -16,6 +18,25 @@
             android:exported="false"
             android:launchMode="singleTop"
             android:theme="@style/Theme.Fastory.Hub" />
+
+        <!--
+            The invisible host of the identify(FanId) round trip: it hands the fan to the Custom Tab
+            and receives the redirect's outcome. Translucent and never exported — nothing renders in
+            it.
+        -->
+        <activity
+            android:name="com.fastory.sdk.FanLoginActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <!--
+            Captures the application context at process start: identify()'s signature carries no
+            Context by contract (§ 2.7), so the browser leg has to find the application's own.
+        -->
+        <provider
+            android:name="com.fastory.sdk.FastoryInitProvider"
+            android:authorities="${applicationId}.fastory-init"
+            android:exported="false" />
     </application>
 
 </manifest>

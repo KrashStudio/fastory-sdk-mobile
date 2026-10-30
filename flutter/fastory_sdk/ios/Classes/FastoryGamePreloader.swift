@@ -74,6 +74,13 @@ final class FastoryGamePreloader: NSObject {
 
     // MARK: - Game sheet hooks
 
+    /// The live game pages the preloader owns: every pooled WebView and the load in flight. These are
+    /// the preloaded targets of the session-change signal (SPEC § 13.9.3) — pages that adopted the
+    /// standing answer at load time and will be presented later still carrying it.
+    var liveGameWebViews: [WKWebView] {
+        pool.values.map { $0 } + [currentLoad?.webView].compactMap { $0 }
+    }
+
     /// Pool hit: hands the prewarmed webview (loaded, or still loading — the sheet adopts
     /// the in-flight navigation) to the game sheet. Miss: returns nil.
     ///
@@ -183,7 +190,8 @@ final class FastoryGamePreloader: NSObject {
             let games = Self.parseDiscoveredGames(
                 json: json,
                 baseURL: config.environment.baseURL,
-                limit: self.maxPreloadCount
+                limit: self.maxPreloadCount,
+                presentation: config.gamePresentationQueryItems
             )
             self.schedule(games)
         }
@@ -265,13 +273,16 @@ final class FastoryGamePreloader: NSObject {
     }
 
     /// Parses the discovery result and keeps only URLs URLPolicy would open in the game
-    /// sheet, mapped to their load URL (embed/consent params added, like a real tap). The
-    /// script's URL scan over-collects (any origin with an `/s/` path), so this filter is
-    /// what enforces the game-sheet policy.
+    /// sheet, mapped to their load URL (embed/consent params and the host's `presentation` —
+    /// locale, theme, host login — added, like a real tap). The script's URL scan over-collects
+    /// (any origin with an `/s/` path), so this filter is what enforces the game-sheet policy.
+    /// `presentation` is required: a sheet takes its preloaded page by slug, so a page loaded
+    /// without it would be shown without it.
     static func parseDiscoveredGames(
         json: String,
         baseURL: URL,
-        limit: Int
+        limit: Int,
+        presentation: [URLQueryItem]
     ) -> [(slug: String, url: URL)] {
         guard let data = json.data(using: .utf8),
               let strings = (try? JSONSerialization.jsonObject(with: data)) as? [String] else {
@@ -288,7 +299,7 @@ final class FastoryGamePreloader: NSObject {
             let slug = url.fastoryGameSlug
             guard !slug.isEmpty, !seen.contains(slug) else { continue }
             seen.insert(slug)
-            games.append((slug: slug, url: url.fastoryEmbeddedGameURL))
+            games.append((slug: slug, url: url.fastoryEmbeddedGameURL(with: presentation)))
         }
         return games
     }

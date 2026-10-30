@@ -80,7 +80,7 @@ public enum FastoryConfigError: Error, Equatable, Sendable, CustomStringConverti
         case .conflictingIdentifier:
             return "configure with a publishableKey or a fanzoneSlug, not both"
         case .malformedPublishableKey:
-            return "publishableKey must start with fpk_live_ or fpk_test_"
+            return "publishableKey must start with fpk_live_ or fpk_test_, followed by the key itself"
         case .publishableKeyEnvironmentMismatch:
             return "publishableKey does not belong to this environment"
         }
@@ -101,6 +101,25 @@ public struct FastoryConfig: Equatable, Sendable {
     public let hubTabSlug: String
     public let locale: String?
     public let theme: FastoryTheme?
+    /// The surfaces the SDK prepares before their first opening (SPEC § 2.1) — the hub alone unless
+    /// you ask for more.
+    ///
+    /// A prepared surface opens already rendered, and it keeps a WebView resident from the moment it
+    /// is prepared. Add `.membership` when your app opens the membership panel; left out, the panel's
+    /// first opening loads when it is asked for, and its page is kept after it closes like any other.
+    /// An empty set prepares nothing ahead of time. `.game` has no effect of its own: games are
+    /// preloaded from the hub's page, so they follow `.hub`. The deprecated slug path resolves no
+    /// workspace, so it has no panel to prepare and ignores `.membership`.
+    public let prewarm: Set<FastorySurface>
+    /// Whether your app signs the fan in when a Fastory page asks it to (SPEC § 2.6).
+    ///
+    /// No page the SDK presents ever shows a login form of its own. Declared, the hub, the
+    /// membership panel and the games keep their sign-in entries, and a fan's tap on one reaches
+    /// `FastoryEventsDelegate.fastoryBridgeMessage(type:payload:)` as `fastory:login-requested`:
+    /// sign the fan in your own way, then call `Fastory.identify`. Left `false`, the pages show no
+    /// sign-in entry at all. Declare it only if you handle that message — otherwise every sign-in
+    /// entry becomes a control that does nothing.
+    public let handlesLoginRequests: Bool
 
     /// Not deprecated, so SDK-internal construction never trips the deprecation warning attached to
     /// the slug initializer below.
@@ -110,7 +129,9 @@ public struct FastoryConfig: Equatable, Sendable {
         fanzoneSlug: String?,
         hubTabSlug: String,
         locale: String?,
-        theme: FastoryTheme?
+        theme: FastoryTheme?,
+        prewarm: Set<FastorySurface> = [.hub],
+        handlesLoginRequests: Bool = false
     ) {
         self.environment = environment
         self.publishableKey = publishableKey
@@ -118,6 +139,8 @@ public struct FastoryConfig: Equatable, Sendable {
         self.hubTabSlug = hubTabSlug
         self.locale = locale
         self.theme = theme
+        self.prewarm = prewarm
+        self.handlesLoginRequests = handlesLoginRequests
     }
 
     public init(
@@ -125,7 +148,9 @@ public struct FastoryConfig: Equatable, Sendable {
         environment: FastoryEnvironment = .production,
         hubTabSlug: String = "games",
         locale: String? = nil,
-        theme: FastoryTheme? = nil
+        theme: FastoryTheme? = nil,
+        prewarm: Set<FastorySurface> = [.hub],
+        handlesLoginRequests: Bool = false
     ) {
         self.init(
             environment: environment,
@@ -133,7 +158,9 @@ public struct FastoryConfig: Equatable, Sendable {
             fanzoneSlug: nil,
             hubTabSlug: hubTabSlug,
             locale: locale,
-            theme: theme
+            theme: theme,
+            prewarm: prewarm,
+            handlesLoginRequests: handlesLoginRequests
         )
     }
 
@@ -151,7 +178,9 @@ public struct FastoryConfig: Equatable, Sendable {
         fanzoneSlug: String,
         hubTabSlug: String = "games",
         locale: String? = nil,
-        theme: FastoryTheme? = nil
+        theme: FastoryTheme? = nil,
+        prewarm: Set<FastorySurface> = [.hub],
+        handlesLoginRequests: Bool = false
     ) {
         self.init(
             environment: environment,
@@ -159,7 +188,9 @@ public struct FastoryConfig: Equatable, Sendable {
             fanzoneSlug: fanzoneSlug,
             hubTabSlug: hubTabSlug,
             locale: locale,
-            theme: theme
+            theme: theme,
+            prewarm: prewarm,
+            handlesLoginRequests: handlesLoginRequests
         )
     }
 
@@ -232,7 +263,46 @@ public struct FastoryConfig: Equatable, Sendable {
         if let theme {
             queryItems.append(URLQueryItem(name: "theme", value: theme.rawValue))
         }
+        queryItems += hostLoginQueryItems
         components.queryItems = queryItems
+        return components.url!
+    }
+
+    /// The bot page of a resolved workspace (SPEC § 3.5, "Bot URL").
+    ///
+    /// Addressed by workspace identifier, which the publishable-key exchange returns and the
+    /// deprecated slug path never learns: a fanzone slug names a fanzone, not the workspace that
+    /// owns it. `consent=0` says the host application owns the fan's analytics consent, so the page
+    /// raises no banner of its own. The appearance hint the hub and the game carry is not one of
+    /// this page's parameters, and forwarding it here would be reading the hub's rules into it.
+    ///
+    /// The host names a `sequenceId` and the page reads a `sequence` parameter. Blank is no
+    /// sequence at all: a host reading an empty field out of its own interface names none, and an
+    /// empty parameter would ask the page for a sequence with no identifier rather than for the
+    /// panel's default screen. The identifier is host-supplied text, so it travels as a query
+    /// *value* — pasted into the query string, its own `&` would mint a parameter nobody sent.
+    func membershipURL(workspaceId: String, sequenceId: String? = nil) -> URL {
+        var components = URLComponents(
+            url: environment.baseURL,
+            resolvingAgainstBaseURL: false
+        )!
+        components.path = "/embed/bot/\(workspaceId)"
+        var queryItems = [URLQueryItem(name: "consent", value: "0")]
+        if let locale {
+            queryItems.append(URLQueryItem(name: "locale", value: locale))
+        }
+        if let sequenceId, !sequenceId.isBlank {
+            queryItems.append(URLQueryItem(name: "sequence", value: sequenceId))
+        }
+        queryItems += hostLoginQueryItems
+        components.queryItems = queryItems
+        // Composing a query item escapes every character the page could read as structure except
+        // `+`: Foundation counts it legal inside a query value, while the page's own reader takes a
+        // bare `+` for a space — an identifier carrying one would arrive as a different string.
+        // Nothing else here can produce one, the parameter names being literals, so every `+` left
+        // in the composed query came from a value the host named.
+        components.percentEncodedQuery = components.percentEncodedQuery?
+            .replacingOccurrences(of: "+", with: "%2B")
         return components.url!
     }
 
@@ -241,6 +311,42 @@ public struct FastoryConfig: Equatable, Sendable {
     var staticHubURL: URL? {
         guard let fanzoneSlug else { return nil }
         return hubURL(fanzoneSlug: fanzoneSlug)
+    }
+
+    /// What the warm-up actually prepares: the surfaces `prewarm` asks for, among those this
+    /// configuration can address before any opening. A game has no address of its own until the
+    /// hub's page names it, and a fanzone slug names no workspace, so no panel.
+    var surfacesToPrewarm: Set<FastorySurface> {
+        prewarm.intersection(publishableKey != nil ? [.hub, .membership] : [.hub])
+    }
+
+    /// Reads `prewarm` off the platform channel's `configure` payload (SPEC § 5.2).
+    ///
+    /// Absent, `null` or not a list, it is the default — a caller that sends no such key asks for
+    /// what every earlier version did. A name no surface carries is ignored rather than refused,
+    /// exactly as an unrecognised `theme` is read as none.
+    static func prewarm(fromChannel value: Any?) -> Set<FastorySurface> {
+        guard let names = value as? [Any] else { return [.hub] }
+        return Set(names.compactMap { ($0 as? String).flatMap(FastorySurface.init(rawValue:)) })
+    }
+
+    /// Reads `handlesLoginRequests` off the platform channel's `configure` payload (SPEC § 5.2).
+    ///
+    /// Only a boolean `true` declares it. Absent, `null` or anything else reads as `false`, never as
+    /// an `invalid_config`: a declaration nobody can read is not one, and reading it as `true` would
+    /// hand the fan sign-in entries no host listens for. A number is not a boolean here, although
+    /// Foundation would bridge a `1` to `true`.
+    static func handlesLoginRequests(fromChannel value: Any?) -> Bool {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) == CFBooleanGetTypeID() else { return false }
+        return number.boolValue
+    }
+
+    /// `hostLogin=1` when the host declared `handlesLoginRequests`, nothing otherwise (SPEC § 3.2,
+    /// § 3.3, § 3.5). Never `hostLogin=0`: an absent parameter is what tells the page to show no
+    /// sign-in entry, so a configuration that declares nothing leaves the addresses exactly as before.
+    var hostLoginQueryItems: [URLQueryItem] {
+        handlesLoginRequests ? [URLQueryItem(name: "hostLogin", value: "1")] : []
     }
 
     /// Query parameters appended to every game URL. `embed`/`utm_source`/`consent` are added by
@@ -253,12 +359,17 @@ public struct FastoryConfig: Equatable, Sendable {
         if let theme {
             items.append(URLQueryItem(name: "theme", value: theme.rawValue))
         }
-        return items
+        return items + hostLoginQueryItems
     }
 }
 
 extension URL {
-    var fastoryEmbeddedGameURL: URL {
+    /// The URL a game is loaded with (SPEC § 3.3): `embed`, `utm_source`, `consent`, then the host's
+    /// own parameters (`FastoryConfig.gamePresentationQueryItems`), each added only when the link
+    /// does not carry it already — the fanzone builds its own game links, and a value it put there
+    /// wins. The host's parameters are required rather than defaulted: a call that forgot them would
+    /// still compile, and quietly drop the locale and theme the host configured.
+    func fastoryEmbeddedGameURL(with hostItems: [URLQueryItem]) -> URL {
         guard var components = URLComponents(url: self, resolvingAgainstBaseURL: false) else {
             return self
         }
@@ -268,27 +379,11 @@ extension URL {
             URLQueryItem(name: "utm_source", value: "sdk"),
             URLQueryItem(name: "consent", value: "0")
         ]
-        for item in embedItems where !queryItems.contains(where: { $0.name == item.name }) {
+        for item in embedItems + hostItems where !queryItems.contains(where: { $0.name == item.name }) {
             queryItems.append(item)
         }
         components.queryItems = queryItems
         return components.url ?? self
-    }
-
-    /// Adds the host's locale/theme on top of the embed parameters, without overwriting values
-    /// the fanzone already put on the link.
-    func fastoryEmbeddedGameURL(with items: [URLQueryItem]) -> URL {
-        let embedded = fastoryEmbeddedGameURL
-        guard !items.isEmpty,
-              var components = URLComponents(url: embedded, resolvingAgainstBaseURL: false) else {
-            return embedded
-        }
-        var queryItems = components.queryItems ?? []
-        for item in items where !queryItems.contains(where: { $0.name == item.name }) {
-            queryItems.append(item)
-        }
-        components.queryItems = queryItems
-        return components.url ?? embedded
     }
 
     var fastoryGameSlug: String {

@@ -33,6 +33,9 @@ internal object WorkspaceResolver {
      */
     internal const val EXCHANGE_TIMEOUT_MS = 15_000
 
+    // Spelled exactly as iOS mints it, so a fan sees the same code whichever platform they hold.
+    private const val APPLICATION_ID_REQUIRED_CODE = "sdk_application_id_required"
+
     internal data class Workspace(val id: String, val slug: String)
 
     internal sealed interface Outcome {
@@ -130,8 +133,19 @@ internal object WorkspaceResolver {
         val key = config.publishableKey ?: return
         discardOutcomeFromAnotherConfiguration(config)
         if (isResolving || outcome is Outcome.Success) return
+        // No outcome is recorded when the application id is still unknown: configure() has no
+        // Context on the standalone SDK, so the id only arrives with configure(context)/openGames()/
+        // openMembership(). Caching a failure here would make every later attempt fail too. But a
+        // parked waiter must still be answered rather than left to hang — identify(HostToken) resolves
+        // through this resolver and may run before any Context has arrived, so it fails typed here and
+        // a later openGames() retries the exchange fresh. iOS never reaches this (its id is the bundle id).
         val appId = applicationId
-        if (appId.isNullOrBlank()) return
+        if (appId.isNullOrBlank()) {
+            val pending = waiters.toList()
+            waiters.clear()
+            pending.forEach { it(Outcome.Failure(APPLICATION_ID_REQUIRED_CODE)) }
+            return
+        }
         isResolving = true
         stateConfig = config
         val url = config.bootstrapUrl

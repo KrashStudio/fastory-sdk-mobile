@@ -16,7 +16,11 @@ enum FastoryErrorView {
 
     /// Pinned to `host`'s safe area and hidden until something fails. `actions` are stacked under the
     /// message in the order given — the sheet adds a close affordance the hub already has elsewhere.
-    static func install(in host: UIView, actions: [UIButton]) -> Container {
+    ///
+    /// `coversBottomEdge` is for a host whose page runs under the home indicator: the view then
+    /// reaches `host`'s bottom edge, so no strip of the page shows beneath it, while the message and
+    /// its actions stay centred in the safe area, clear of the indicator.
+    static func install(in host: UIView, coversBottomEdge: Bool = false, actions: [UIButton]) -> Container {
         let errorView = Container()
         errorView.isHidden = true
         errorView.backgroundColor = .systemBackground
@@ -37,13 +41,16 @@ enum FastoryErrorView {
         stackView.translatesAutoresizingMaskIntoConstraints = false
         errorView.addSubview(stackView)
 
+        let safeArea = host.safeAreaLayoutGuide
         NSLayoutConstraint.activate([
-            errorView.topAnchor.constraint(equalTo: host.safeAreaLayoutGuide.topAnchor),
-            errorView.bottomAnchor.constraint(equalTo: host.safeAreaLayoutGuide.bottomAnchor),
-            errorView.leadingAnchor.constraint(equalTo: host.safeAreaLayoutGuide.leadingAnchor),
-            errorView.trailingAnchor.constraint(equalTo: host.safeAreaLayoutGuide.trailingAnchor),
+            errorView.topAnchor.constraint(equalTo: safeArea.topAnchor),
+            errorView.bottomAnchor.constraint(
+                equalTo: coversBottomEdge ? host.bottomAnchor : safeArea.bottomAnchor
+            ),
+            errorView.leadingAnchor.constraint(equalTo: safeArea.leadingAnchor),
+            errorView.trailingAnchor.constraint(equalTo: safeArea.trailingAnchor),
             stackView.centerXAnchor.constraint(equalTo: errorView.centerXAnchor),
-            stackView.centerYAnchor.constraint(equalTo: errorView.centerYAnchor),
+            stackView.centerYAnchor.constraint(equalTo: safeArea.centerYAnchor),
             stackView.leadingAnchor.constraint(greaterThanOrEqualTo: errorView.leadingAnchor, constant: 32),
             stackView.trailingAnchor.constraint(lessThanOrEqualTo: errorView.trailingAnchor, constant: -32)
         ])
