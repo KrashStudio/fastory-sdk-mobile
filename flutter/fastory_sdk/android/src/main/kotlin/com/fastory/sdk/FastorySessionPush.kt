@@ -44,8 +44,10 @@ internal object FastorySessionPush {
      */
     fun emitsSignal(trigger: String): Boolean = when (trigger) {
         "session_renewed", "session_revoked", "logout",
-        "identify_different_fan", "host_set", "host_clear" -> true
-        "identify_same_fan", "configure_replace", "identify_preflight_rejected" -> false
+        "identify_different_fan", "host_set", "host_clear",
+        "identify_resolution_failed_over_fan" -> true
+        "identify_same_fan", "configure_replace", "identify_preflight_rejected",
+        "identify_resolution_failed_no_fan" -> false
         else -> false
     }
 

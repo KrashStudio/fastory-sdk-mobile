@@ -284,8 +284,8 @@ public enum Fastory {
     // since 0.4.0 (§ 13.8). What the next web request for `type` is answered with; `nil` clears it.
     public static func setBridgeReply(for type: FastoryBridgeRequestType, payload: [String: Any]?)
 
-    // since 0.5.0 (§ 2.6.3). The provider the SDK asks when a delegated session must be renewed;
-    // `nil` unregisters it.
+    // since 0.5.0 (§ 2.6.3). The provider the SDK asks when a delegated session must be renewed,
+    // and at its registration for a `hostToken` fan restored without a session; `nil` unregisters it.
     public static func setHostTokenProvider(_ provider: FastoryHostTokenProvider?)
 }
 ```
@@ -419,8 +419,8 @@ object Fastory {
     // since 0.4.0 (§ 13.8). What the next web request for [type] is answered with; null clears it.
     fun setBridgeReply(type: FastoryBridgeRequestType, payload: Map<String, Any?>?)
 
-    // since 0.5.0 (§ 2.6.3). The provider the SDK asks when a delegated session must be renewed;
-    // null unregisters it.
+    // since 0.5.0 (§ 2.6.3). The provider the SDK asks when a delegated session must be renewed,
+    // and at its registration for a `hostToken` fan restored without a session; null unregisters it.
     fun setHostTokenProvider(provider: FastoryHostTokenProvider?)
 }
 ```
@@ -595,8 +595,8 @@ class Fastory {
     Map<String, Object?>? payload,
   );
 
-  // since 0.5.0 (§ 2.6.3). The provider the SDK asks when a delegated session must be renewed;
-  // null unregisters it.
+  // since 0.5.0 (§ 2.6.3). The provider the SDK asks when a delegated session must be renewed,
+  // and at its registration for a `hostToken` fan restored without a session; null unregisters it.
   static Future<void> setHostTokenProvider(FastoryHostTokenProvider? provider);
 
   static Stream<FastoryEvent> get events;
@@ -750,8 +750,9 @@ The whole of `identify` follows from one rule:
 - **A resolution failure leaves the SDK anonymous.** The three remaining codes — `login_cancelled`,
   `identify_rejected`, `identify_network_error` — come after the call was committed to a resolution.
   Not half-identified, and not still the previous fan: the call surfaces a typed error (§ 5.4), emits
-  no `identityResolved`, revokes the standing bridge answer (§ 13.8.6), and the next surface load
-  mints a plain anonymous visitor. A failed
+  no `identityResolved`, revokes the standing bridge answer (§ 13.8.6), signals the live games as
+  `logout()` does when a fan or an answer stood (§ 13.9.2), and the next surface load mints a plain
+  anonymous visitor. A failed
   resolution is therefore **not** a no-op — implementations MUST NOT keep the previous identity on a
   resolution failure, which is exactly the shape that leaves a live session the host believes is
   gone.
@@ -824,13 +825,36 @@ assertion obtained from the host through `setHostTokenProvider` (§ 5.2) and re-
 the stored refresh token. The SDK reads the `exp` of **its own embed session** to time this; it MUST
 NOT inspect the host's token (§ 12). Transmitting a renewed token MUST be non-blocking. A renewal that
 lands announces itself to the live game pages through the session-change signal (§ 13.9), so a page
-mid-game re-reads its session instead of running the old one to expiry.
+mid-game re-reads its session instead of running the old one to expiry. **A renewal answers only for
+the fan it began for.** Once the SDK carries another fan, because an `identify` resolved or failed in
+the meantime, the renewal MUST NOT apply anything that comes back to it, whatever it says and whichever
+step it answers: the refresh, the read of the stored refresh token, the exchange of the provider's
+assertion, the refresh token's grant, or the landing of a renewed session that waited for the
+previous fan's stored data to be erased (§ 7.4). The fan the host has just identified is never given
+the previous fan's session or identity, never signed out or revoked on their account, and the
+previous fan's refresh token is never held or presented for them. A renewal that fan needs while the
+ignored one is in flight waits for it, as any renewal does, and MUST then run for that fan rather
+than end with the answer it waited for.
 
 **The provider.** `setHostTokenProvider` registers the closure the SDK calls back — `requestHostToken`
-(§ 5.2) — when it needs a fresh assertion for a `hostToken` fan. A provider that returns `null`, or
-none registered at all, means the session simply lapses. **The SDK MUST NOT call it for a `fanId`
-fan**, nor re-exchange a host assertion on that fan's behalf: the host did not sign that fan in, so an
-assertion it returned would name the host's own user, not the fan who signed in to Fastory.
+(§ 5.2) — when it needs a fresh assertion for a `hostToken` fan. A provider that returns `null` means
+the session lapses, and so does a session that expires with none registered (*Revocation* below).
+**The SDK MUST NOT call it for a `fanId` fan**, nor re-exchange a host assertion on that fan's behalf:
+the host did not sign that fan in, so an assertion it returned would name the host's own user, not the
+fan who signed in to Fastory.
+
+**When the provider is asked for a fan restored without a session.** A `hostToken` fan restored at
+launch has no session (*Persistence* below) until a host assertion is re-exchanged for it, and a host
+may register its provider before `configure` or after it. While that fan has no session, the SDK MUST
+ask the provider at each of three moments: **at `configure`**, when a provider is registered by then;
+**at the provider's registration**, when it comes after `configure` — on a later turn of the main
+thread, never from inside the host's own call; and **at each opening of the hub or the panel** that is
+not ignored (§ 2.1). It MUST NOT ask it for a fan who has a session — that session renews as
+*Renewal* above describes — nor for a `fanId` fan or an anonymous SDK, nor while a call to it is
+already in flight: one call at a time, as for every renewal, and a moment that comes during that call
+asks nothing more. A moment that comes while an `identify` is in flight still asks, since the
+restored fan is the one identified until that `identify` resolves; its answer is then held to the
+fan it was asked for, as *Renewal* above requires.
 
 **The refresh token (`fanId`).** The exchange of the login's code (§ 2.6) returns, beside the embed
 session, a refresh token: an opaque credential bound to the publishable key, the application
@@ -886,14 +910,22 @@ normative:
 a re-exchange of a host assertion, or a `fanId` fan's refresh token — the SDK MUST drop the identity
 to anonymous — erasing per § 7.4, the stored refresh token included, and revoking the standing bridge
 answer (§ 13.8.6) — and emit `identityRevoked` (§ 5.3) carrying a `reason` the host can act on:
-`expired` when nothing could renew it — no provider, or a refresh token past its lifetime — and
-`rejected` (with the API's `code` when it named one) when a renewal was refused. A `fanId` fan's
-revocation carries one of the same two reasons; there is no other. For a `fanId` fan it often arrives
-shortly after launch, since the launch renewal is where the SDK learns that the token aged out, that
-its key was revoked or that a reuse ended its chain. A refused session MUST NOT leave a blank panel:
-the host is told, and may re-`identify` or let the fan continue anonymously. The live game pages are
-told the same way as for a renewal (§ 13.9): the signal fires, the page re-asks, and `unavailable`
-(§ 13.8.2) is the answer that tells it the fan is gone.
+`expired` when nothing could renew it — no provider for a session that expired, a provider that
+returned nothing, or a refresh token past its lifetime — and `rejected` (with the API's `code` when it
+named one) when a renewal was refused. A `fanId` fan's revocation carries one of the same two reasons;
+there is no other. For a `fanId` fan it often arrives shortly after launch, since the launch renewal is
+where the SDK learns that the token aged out, that its key was revoked or that a reuse ended its chain.
+A refused session MUST NOT leave a blank panel: the host is told, and may re-`identify` or let the fan
+continue anonymously. The live game pages are told the same way as for a renewal (§ 13.9): the signal
+fires, the page re-asks, and `unavailable` (§ 13.8.2) is the answer that tells it the fan is gone.
+
+**No provider yet is not a revocation.** A `hostToken` fan restored without a session while no
+provider is registered has no session to expire and no answer to refuse: a provider may still be
+registered. Until one is, that fan MUST stay identified without a session — the identity kept, for
+this launch and the next — with the standing bridge answer unset, so the surfaces show the fan
+anonymous, and the SDK MUST NOT emit `identityRevoked` for it. Once a provider is registered, the
+rules above apply: the SDK asks it (*When the provider is asked* above), and a provider that returns
+nothing revokes the fan with `expired`.
 
 **Persistence.** The verified identity — its `mode` and `fanId` — MUST survive between launches,
 scoped to the workspace and environment it was resolved under. Beside it, the SDK stores **a refresh
@@ -903,13 +935,14 @@ can reach a stored identity** — no later than the panel opening, so the panel 
 the last known fan — rather than re-verifying from scratch; rehydration MUST NOT emit
 `identityResolved` (it restores, it does not resolve), and the session behind it is re-established in
 the background: by the launch renewal for `fanId`, by a re-exchange through the provider for
-`hostToken`. What rehydration guarantees is the **identity**, not the surfaces' live session, which
-that background step restores. (The exact moment is a platform detail: where the SDK holds an
-application context at startup it rehydrates then; where it first receives one when the host opens the
-panel, it rehydrates there — both before anything renders.) A `fanId` identity with no readable
-refresh token beside it — after a reinstall or a restore (§ 7.5) — is purged and the fan is anonymous,
-with no event, since nothing was refused; so is a stored token with no `fanId` identity beside it.
-Neither is concluded while the device's protected data is unavailable (§ 2.7).
+`hostToken`, once a provider is registered (*When the provider is asked* above). What
+rehydration guarantees is the **identity**, not the surfaces' live session, which that background step
+restores. (The exact moment is a platform detail: where the SDK holds an application context at
+startup it rehydrates then; where it first receives one when the host opens the panel, it rehydrates
+there — both before anything renders.) A `fanId` identity with no readable refresh token beside it —
+after a reinstall or a restore (§ 7.5) — is purged and the fan is anonymous, with no event, since
+nothing was refused; so is a stored token with no `fanId` identity beside it. Neither is concluded
+while the device's protected data is unavailable (§ 2.7).
 
 ### 2.7 Threading (since 0.4.0)
 
@@ -1040,21 +1073,26 @@ When the interception policy resolves `OPEN_GAME_SHEET` (§ 4), the SDK MUST loa
 | `theme` | `light` \| `dark` | Optional; omitted when not configured |
 | `hostLogin` | `1` | *Since 0.5.0.* Present only when the configuration declares `handlesLoginRequests` (§ 2.1), never sent as `0`. The game keeps its sign-in entries and routes them to the host (§ 2.6); absent, it shows none |
 
-Existing query parameters on the intercepted URL MUST be preserved, and a parameter above that the URL already carries MUST NOT be added a second time — `utm_source` excepted, below. This matters for `locale` and `theme` in particular: the fanzone builds its own game links, and the host's preferences MUST NOT overwrite a value the page already put on the link. It holds for `hostLogin` too: a link the page built from its own address may already carry it, and it is then left as it is.
+Existing query parameters on the intercepted URL MUST be preserved **as written**: names, values and their percent-encoding, order, repeats, and the shape of a parameter without a value (`flag`) or with an empty one (`empty=`). An implementation keeps the link's own text rather than decoding it and encoding it again: `x=a%2Bb` stays `x=a%2Bb` — decoded and recomposed it becomes `x=a+b`, which the page reads as `a b` — `next=%2Fgames` stays `next=%2Fgames`, and a raw `+` stays a raw `+`. Only the parameters above change: those the SDK adds follow the link's own, in the order of the table, their values percent-encoded, and a fragment stays at the end. A parameter above that the URL already carries MUST NOT be added a second time — `utm_source` excepted, below. This matters for `locale` and `theme` in particular: the fanzone builds its own game links, and the host's preferences MUST NOT overwrite a value the page already put on the link. It holds for `hostLogin` too: a link the page built from its own address may already carry it, and it is then left as it is.
 
 **`utm_source` is always `sdk`.** The loaded URL MUST carry exactly one `utm_source`, valued `sdk`:
 a `utm_source` the intercepted URL already carries takes that value where it stands, a repeat of it
 is dropped, and one is added, in the order of the table, when the URL carries none. A game the SDK
 opens is SDK traffic whatever link led to it, and the fanzone's own tiles build their game links with
 `utm_source=fanzone`; preserved, that value would hide the most common path into a game from the
-statistics. Every other parameter keeps the rule above. The rule applies to every game URL the SDK
-builds for WebView B, preloaded games included (§ 11.2). Parameter names are compared once
-percent-decoded, for this rule and the one above: an encoded `utm%5Fsource` is a `utm_source`, and a
-link carrying `%65mbed` already carries `embed`.
+statistics. Every other parameter keeps the rule above. Both rules apply to every game the SDK loads
+in WebView B, whatever opened it: a game opened from the hub, a game opened from another game already
+in the sheet — by a link or by a window that game opens (§ 4.2) — and a preloaded game (§ 11.2).
+Parameter names are compared once percent-decoded, for this rule and the one above: an encoded
+`utm%5Fsource` is a `utm_source`, and a link carrying `%65mbed` already carries `embed`, which stays
+written `%65mbed`. An address already augmented comes out unchanged: augmenting it again yields the
+same URL.
 
 Example: intercepted `https://fanzone.me/s/summer-quiz` → loaded as `https://fanzone.me/s/summer-quiz?embed=1&utm_source=sdk&consent=0`
 
 Example: intercepted `https://story.tl/s/summer-quiz?utm_source=fanzone&ref=tile` → loaded as `https://story.tl/s/summer-quiz?utm_source=sdk&ref=tile&embed=1&consent=0`
+
+Example: intercepted `https://fanzone.me/s/summer-quiz?next=%2Fgames&x=a%2Bb#intro` → loaded as `https://fanzone.me/s/summer-quiz?next=%2Fgames&x=a%2Bb&embed=1&utm_source=sdk&consent=0#intro`
 
 ### 3.4 Game slug extraction
 
@@ -1133,7 +1171,7 @@ stories-origin URL whose path does not start with `/s/` follows rule 3 (external
 - `window.open(url, '_self')` from the hub MUST be intercepted like any main-frame navigation.
 - Sub-frame (iframe) navigations MUST NOT be intercepted; they load in place.
 - Rule matching for `/s/` MUST match the path prefix exactly: `/s/` followed by a non-empty segment. `/story/`, `/sea/` etc. do not match.
-- If a game (WebView B) navigates to another `/s/` URL, the current sheet MUST load the new game in place (emitting `gameClosed` then `gameOpened{slug}` when the slug changes).
+- If a game (WebView B) navigates to another `/s/` URL, the current sheet MUST load the new game in place (emitting `gameClosed` then `gameOpened{slug}` when the slug changes), on the URL augmented per § 3.3 — whether the game follows a link or opens a window. The load of that augmented URL is not augmented a second time.
 
 ---
 
@@ -1276,8 +1314,10 @@ with its refresh token.
 - `hasProvider` MUST advertise whether a provider now exists. The provider itself never crosses the
   channel; only whether one is registered does. `false` clears it, after which the SDK stops asking
   and lets an expiring session lapse to anonymous.
-- Returns `null`. Registering a provider does not itself renew anything — it is consulted only when a
-  session nears expiry or a refresh is refused.
+- Returns `null`. Registering a provider renews nothing for a fan who has a session — it is consulted
+  when that session nears expiry or its refresh is refused — but a `hostToken` fan restored without a
+  session is re-exchanged through it on the next turn of the main thread, right after the
+  registration, which is when `requestHostToken` follows it (§ 2.6.3).
 
 ##### `requestHostToken` (native → Dart, since 0.5.0)
 
@@ -1795,7 +1835,64 @@ Implementations MUST report:
 - Releases are tagged `sdk-vX.Y.Z` (e.g. `sdk-v0.1.0`).
 - Distribution repository: **`KrashStudio/fastory-sdk-mobile`** (GitHub, **public, release-only**) — it receives the clean release package per version, with no development history. Each release carries **two tags on the same commit**: `sdk-vX.Y.Z`, canonical for the Flutter channel and the GitHub Release, and the bare `X.Y.Z`, which exists only because SwiftPM resolves nothing else. A host pinning `ref: sdk-vX.Y.Z` on the Flutter channel and a host whose SwiftPM requirement resolves `X.Y.Z` are on the same code.
 - **Three channels, one version.** Two ship from that repository: the **Flutter plugin** (`flutter/fastory_sdk`) since v0.1, and the **native Swift package** (root `Package.swift` + `Sources/FastorySDK`) since **v0.2.0** — `Package.swift` is at the root because SwiftPM cannot resolve a package held in a subdirectory. The third, the **native Android library** `io.fastory:fastory-sdk` on Maven Central, since **v0.5.1**, is the Kotlin core itself, published by the same release at the version of the two tags; a version Central holds is never replaced, so a defect is fixed forward, as for a tag. A React Native wrapper follows in a later version; it is the only channel still unshipped.
-- This spec version: **0.5.1**. The public names in § 2 and the channel contract in § 5 are locked (they ship in third-party integrations); any later normative change requires a new spec version and a coordinated SDK release. **The lock covers what § 2 declares, and nothing else**: a name a core made public without § 2 declaring it was never part of the contract, so withdrawing it is a source break to announce, not a change to the surface this section locks.
+- This spec version: **0.5.2**. The public names in § 2 and the channel contract in § 5 are locked (they ship in third-party integrations); any later normative change requires a new spec version and a coordinated SDK release. **The lock covers what § 2 declares, and nothing else**: a name a core made public without § 2 declaring it was never part of the contract, so withdrawing it is a source break to announce, not a change to the surface this section locks.
+- **Changes in 0.5.2.** An `identify` that fails over a fan now tells the live games, as
+  `logout()` does; every game the SDK opens keeps its link's parameters as written and is
+  augmented alike; a `hostToken` fan restored without a session is re-exchanged through a
+  provider registered after `configure`, on iOS as on Android; a fan restored while no provider
+  is registered is not revoked; and a renewal answers only for the fan it began for.
+
+  **A failed `identify` signals the live games** (§ 2.6.1, § 13.9.2). § 2.6.1 and § 13.8.6 already
+  made the resolution failure a revocation: `login_cancelled`, `identify_rejected` and
+  `identify_network_error` land the SDK on no identity and drop the standing answer. § 13.9.2 did not
+  list it among the revocations that fire, so a game on screen was not told, and went on running the
+  session of a fan the host believed gone. Such a failure now fires the signal when a fan was
+  identified or an answer stood, and the page re-asks and is answered `unavailable`; with neither,
+  nothing a page reads changed and it does not fire. A pre-flight refusal still signals nothing. No
+  name and no channel shape moves; both platforms change behaviour.
+
+  **The parameters a game link carries reach the game as written** (§ 3.3). § 3.3 required them to
+  be preserved without saying in what form, and iOS rebuilt the query from its decoded parameters: an
+  encoded `%2B` reached the game as a `+`, which the page reads as a space, and an encoded `%2F` as a
+  `/`, while Android kept the link's text. § 3.3 now says they are kept as written — names, values
+  and their encoding, order, repeats and shape — and that only the parameters the SDK adds or replaces
+  change; iOS now does so. It also says that an address already augmented comes out unchanged. No
+  public name moves.
+
+  **Every game the SDK opens is augmented and attributed alike** (§ 3.3, § 4.2). On Android, a game
+  opened from a game already in the sheet — by a link or by a window that game opens — loaded on the
+  address it was given, without `embed`, `consent`, the host's parameters or `utm_source=sdk`, while
+  iOS augmented it. § 3.3 now names every way in — from the hub, from another game, preloaded — and
+  § 4.2 says the game loaded in place is loaded on its augmented URL, which is not augmented a second
+  time. Android now does so. No public name moves; a host reading its game traffic sees the games
+  opened from another game on Android move to `sdk`.
+
+  **When the provider is asked for a restored `hostToken` fan** (§ 2.6.3, § 5.2). § 2.6.3 had the
+  session of a `hostToken` fan restored at launch come back through the provider without saying when
+  the SDK asks it, and § 5.2 said that registering a provider renews nothing. iOS asked it at
+  `configure` only, so a provider registered after `configure` went unasked until the next launch,
+  while Android asked it at the next opening of the hub or the panel. § 2.6.3 now names three moments,
+  all while the fan has no session: at `configure` when a provider is registered by then, at the
+  provider's registration when it comes after `configure`, and at each opening of the hub or the panel;
+  never for a fan who has a session, a `fanId` fan or an anonymous SDK, and one call at a time. iOS now
+  asks at the registration and at each opening, Android at the registration. No public name moves.
+
+  **A renewal answers only for the fan it began for** (§ 2.6.3). An `identify` advances the generation
+  counter as it starts, so a renewal begun while it was in flight carried the current generation, and
+  its answer, coming back after the `identify` resolved, was applied to the fan just identified: on
+  both platforms a refresh of the previous fan's session replaced theirs, and a read of the previous
+  `fanId` fan's refresh token had that token held and presented in their place; on iOS a renewal that
+  changed the fan put the previous one back once the erasure it waited for ended; and on Android an
+  opening during an `identify` could have the restored fan take their place. *Renewal* now requires
+  such an answer to be ignored, whatever step it answers, and a renewal the new fan needed meanwhile to
+  run for them once it is in. No public name moves.
+
+  **No provider yet is not a revocation** (§ 2.6.3). *Revocation* listed "no provider" among the causes
+  of `expired` without separating a session that expires from a fan restored with none. A fan restored
+  while no provider is registered stays identified without a session, shown anonymous by the surfaces,
+  with no `identityRevoked`, since a provider may still come; once one is registered and returns
+  nothing, the fan is revoked with `expired`. Both platforms already did this; the document now says
+  it.
 - **Changes in 0.5.1.** A page's request to sign the fan out joins its request to sign them in,
   the membership panel shows the identified fan and follows them as the hub does, a `fanId` fan
   stays signed in from one launch to the next, and a message holding a raw nul character is ignored
@@ -2888,7 +2985,7 @@ The signal follows the truth the standing answer describes, and fires exactly wh
 |---|---|
 | The answer is **populated** — an `identify` resolves a fan where none or a different one stood, or the host sets it (§ 5.2) | fires |
 | The answer is **replaced** by the § 2.6.3 renewal — same fan, fresh session | fires |
-| The answer is **revoked** — `logout()`, an `identify` resolving a different fan (§ 13.8.6), the § 2.6.3 lifecycle revocation, or the host clearing it (§ 5.2) | fires |
+| The answer is **revoked** — `logout()`, an `identify` resolving a different fan (§ 13.8.6), an `identify` that fails after it was committed to a resolution while a fan or an answer stood (§ 2.6.1), the § 2.6.3 lifecycle revocation, or the host clearing it (§ 5.2) | fires |
 | A call **re-asserts what already stands** — an `identify` resolving the identity in force, or a pre-flight rejection (§ 2.6.1) | MUST NOT fire |
 | A `configure` **replaces the configuration** | MUST NOT fire — the § 2.1 teardown destroys the pages a signal would reach, and the § 13.8.6 revocation it implies is not observable by a page that no longer exists |
 
@@ -2896,6 +2993,13 @@ The same-fan row holds even where the resolution re-minted the session behind th
 makes a same-fan `identify` observable as nothing, and this channel is part of that nothing — the
 page's session stays valid for its own lifetime either way. The § 2.6.3 renewal is the deliberate
 exception, because it exists precisely to replace a session that is about to stop being valid.
+
+An `identify` that fails after it was committed to a resolution tells the live games what `logout()`
+tells them, but only when a page could have read something: an identified fan, or a standing answer,
+whether the session populated it or the host set it. With neither, a page was answered `unavailable`
+before the call and is answered `unavailable` after it, so nothing it reads changed and the signal
+MUST NOT fire. A pre-flight rejection never signals, whatever stood: it leaves everything as it was
+(§ 2.6.1).
 
 #### 13.9.3 Where it fires
 

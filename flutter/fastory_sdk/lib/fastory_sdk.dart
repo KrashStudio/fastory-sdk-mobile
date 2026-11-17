@@ -540,7 +540,9 @@ abstract final class Fastory {
   /// The SDK calls back into Dart (`requestHostToken`) only when it needs a token;
   /// the provider returns a fresh JWT, or `null` when the host cannot supply one — in
   /// which case the session lapses and the fan becomes anonymous. Setting the provider
-  /// never renews anything on its own.
+  /// renews nothing for a fan who has a session, but a [FastoryHostToken] fan restored
+  /// without one is re-exchanged through it right after, on the next turn of the main
+  /// thread — register it before `configure` so that happens at launch.
   static Future<void> setHostTokenProvider(
     FastoryHostTokenProvider? provider,
   ) {

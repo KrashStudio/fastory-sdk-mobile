@@ -44,7 +44,7 @@ dependencies:
     git:
       url: https://github.com/KrashStudio/fastory-sdk-mobile
       path: flutter/fastory_sdk
-      ref: sdk-v0.5.1
+      ref: sdk-v0.5.2
 ```
 
 A native Android app adds the library from Maven Central instead, pinned to the exact version — and
@@ -52,7 +52,7 @@ never alongside the plugin, whose bundled copy of the same classes would collide
 
 ```kotlin
 dependencies {
-    implementation("io.fastory:fastory-sdk:0.5.1")
+    implementation("io.fastory:fastory-sdk:0.5.2")
 }
 ```
 
@@ -138,6 +138,12 @@ and URL builders, key-prefix constants and wire names — so ask whether the hos
 Kotlin code names one before calling the upgrade free. If it does, the fix is to write the value
 itself; `README.md` → *Upgrading from 0.5.0* lists every one. Never advise a host to rely on a
 native name the `SPEC.md` § 2 blocks do not declare.
+
+**Upgrading from 0.5.1 to 0.5.2 costs no source change** (`SPEC.md` § 10 *Changes in 0.5.2*): it
+corrects behaviour only. The one change a host may notice is on Android: a provider registered after
+`configure` is asked at once for a `FastoryHostToken` fan restored without a session, so a provider
+that answers `null` signs that fan out at its registration rather than at the next opening —
+`CHANGELOG.md` → *0.5.2* → *Changed*.
 
 ## Rules for AI assistants
 

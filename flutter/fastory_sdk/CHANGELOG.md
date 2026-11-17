@@ -4,6 +4,68 @@ All notable changes to the Fastory Mobile SDK are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: [SemVer](https://semver.org),
 tags `sdk-vX.Y.Z`.
 
+## 0.5.2
+
+A game on screen now follows the fan when an `identify` fails, and a renewal of the previous fan
+no longer lands on the fan you just identified. On iOS, a `FastoryHostToken` fan restored at launch
+gets their session back from a provider you register after `configure`, as on Android. A game link
+keeps its own parameters as written on iOS, and on Android a game opened from another game is loaded
+and attributed like one opened from the hub. Nothing you call changes signature, and nothing in your
+code has to change; on Android, a provider you register after `configure` is now asked right away —
+see *Changed*.
+
+### Changed
+
+- **On Android, registering a provider after `configure` asks it right after, on the next turn of
+  the main thread, for a `FastoryHostToken` fan restored without a session**, rather than at the next
+  opening of the hub or the panel. A provider that answers `null` then drops the fan to anonymous
+  with `FastoryIdentityRevoked(reason: expired)` at its registration instead of at that opening. Until a
+  provider is registered, nothing changes on either platform: the fan stays identified without a
+  session, the surfaces show them anonymous, and no `FastoryIdentityRevoked` is emitted.
+
+### Fixed
+
+- **A game on screen no longer keeps the session of a fan whose `identify` just failed.** When an
+  `identify` failed after it had started resolving the fan — `login_cancelled`, `identify_rejected`
+  or `identify_network_error` — the SDK signed the previous fan out and stopped handing their session
+  to the games, but a game already open was not told and went on as that fan. It is now told the way
+  it is after `logout()`: it asks for the session again, learns there is none, and carries on
+  anonymous. A failure while no fan was signed in and no `setBridgeReply` value was set leaves an open
+  game as it was, and a call refused before anything was attempted — `not_configured`,
+  `invalid_host_token`, `identify_mode_unavailable` — still changes nothing, for your fan or the
+  games. Nothing to change in your code.
+- **iOS: the parameters a game link carries now reach the game exactly as written.** When it added
+  its own parameters to a game's address (`embed`, `utm_source`, `consent`, and the `locale`, `theme`
+  and `hostLogin` your configuration adds), the SDK on iOS rewrote the encoding of those the link
+  already carried: an encoded `+` (`%2B`) arrived as a bare `+`, which the game reads as a space, so
+  a value carrying one — a code, a token — reached the game altered, and other encoded characters
+  such as `%2F` were rewritten too, while Android kept them. The link's own parameters now arrive
+  untouched, on both platforms; only the ones the SDK adds or replaces change (spec § 3.3).
+- **Android: a game opened from another game is now loaded and attributed like one opened from the
+  hub.** A game your fan opened from a game already in the sheet — by a link, or by a window that
+  game opens — loaded on the bare address it was given: without `embed`, `consent`, your `locale`,
+  `theme` and `hostLogin`, and counted under whatever `utm_source` its link carried rather than `sdk`.
+  It now carries the same parameters as on iOS, `utm_source=sdk` included, so such games now show up
+  as SDK traffic in your statistics (spec § 3.3, § 4.2).
+- **On iOS, a `FastoryHostToken` fan restored at launch gets their session back from a provider you
+  register after `configure`.** The SDK asked your provider for that fan only when `configure` ran,
+  so a provider registered later went unasked until the next launch, and the hub, the panel and the
+  games showed the fan anonymous meanwhile. It is now asked right after you register it, on the next
+  turn of the main thread, and at each opening of the hub or the panel while the fan still has no
+  session, as on Android. It is never asked for a fan who has a session, a `FastoryFanId` fan or an
+  anonymous SDK, nor twice at once.
+  Registering the provider before `configure` stays the way to have the session back soonest.
+  Nothing to change in your code.
+- **A fan you identify no longer gets the previous fan's session.** A renewal of the previous fan
+  still in flight when your `identify` resolved was applied to the fan you had just identified: on
+  both platforms, a background refresh of the previous fan's session replaced theirs, and the
+  previous `FastoryFanId` fan's stored token could be presented in their place; on iOS, a renewal
+  that switched fans could put the previous fan back; and on Android, opening the hub or the panel
+  during the `identify` could have the `FastoryHostToken` fan restored at launch take their place.
+  Such an answer is now ignored once the `identify` has resolved or failed, whatever it says, and a
+  renewal the fan you identified needs meanwhile still takes place once that answer is in. Nothing to
+  change in your code.
+
 ## 0.5.1
 
 A page's request to sign the fan out joins its request to sign them in, under the same declaration,

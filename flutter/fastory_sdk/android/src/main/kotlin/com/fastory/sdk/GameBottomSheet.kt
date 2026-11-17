@@ -331,16 +331,30 @@ internal class GameBottomSheet : BottomSheetDialogFragment() {
                 view: WebView,
                 request: WebResourceRequest,
             ): Boolean {
-                val baseUrl = Fastory.config?.baseUrl ?: return false
+                val config = Fastory.config ?: return false
                 val url = request.url.toString()
-                return when (UrlPolicy.decide(url, baseUrl)) {
-                    NavigationDecision.ALLOW,
-                    NavigationDecision.OPEN_GAME_SHEET,
-                    -> {
+                return when (UrlPolicy.decide(url, config.baseUrl)) {
+                    NavigationDecision.ALLOW -> {
                         // A new main-frame document may fail on its own account, and a failure
                         // reported for the previous one must not swallow that.
                         if (request.isForMainFrame) load?.restart()
                         false
+                    }
+                    NavigationDecision.OPEN_GAME_SHEET -> {
+                        if (!request.isForMainFrame) return false
+                        load?.restart()
+                        // A redirect continues a load the sheet already completed: completing its
+                        // target too would loop forever on a server that strips the parameters.
+                        if (request.isRedirect) return false
+                        // An address already completed comes back unchanged and is let through:
+                        // that is what keeps the completed load from being completed again.
+                        val completed = gameUrl(url, config)
+                        if (completed == url) {
+                            false
+                        } else {
+                            view.loadUrl(completed)
+                            true
+                        }
                     }
                     NavigationDecision.OPEN_EXTERNAL_BROWSER -> {
                         Fastory.openExternalBrowser(requireContext(), url)
@@ -414,18 +428,23 @@ internal class GameBottomSheet : BottomSheetDialogFragment() {
     }
 
     private fun routePopupUrl(url: String) {
-        val baseUrl = Fastory.config?.baseUrl ?: return
-        when (UrlPolicy.decide(url, baseUrl)) {
-            NavigationDecision.ALLOW,
-            NavigationDecision.OPEN_GAME_SHEET,
-            -> {
+        val config = Fastory.config ?: return
+        when (UrlPolicy.decide(url, config.baseUrl)) {
+            NavigationDecision.ALLOW -> {
                 load?.restart()
                 webView?.loadUrl(url)
+            }
+            NavigationDecision.OPEN_GAME_SHEET -> {
+                load?.restart()
+                webView?.loadUrl(gameUrl(url, config))
             }
             NavigationDecision.OPEN_EXTERNAL_BROWSER ->
                 Fastory.openExternalBrowser(requireContext(), url)
         }
     }
+
+    private fun gameUrl(url: String, config: FastoryConfig): String =
+        UrlPolicy.embeddedGameUrl(url, config.gamePresentationQuery.toList())
 
     companion object {
         const val TAG = "FastoryGameBottomSheet"

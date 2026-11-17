@@ -5,7 +5,7 @@ Flutter plugin of the Fastory Mobile SDK. It opens a Fanzone's games hub in a fu
 browser. The real logic is native — this package is a thin bridge over the same Swift and Kotlin cores
 the native channels ship.
 
-Scope: Fastory Mobile SDK v0.5.1 (ultra-light, WebView-based).
+Scope: Fastory Mobile SDK v0.5.2 (ultra-light, WebView-based).
 
 This file is the Dart reference: every method, event and error the plugin exposes. `README.md` at the
 repository root is the full integration guide (it also covers the native iOS and Android channels), and `SPEC.md`
@@ -39,7 +39,7 @@ dependencies:
     git:
       url: https://github.com/KrashStudio/fastory-sdk-mobile
       path: flutter/fastory_sdk
-      ref: sdk-v0.5.1
+      ref: sdk-v0.5.2
 ```
 
 ## Upgrading from 0.5.0: nothing in Dart
@@ -228,8 +228,9 @@ await Fastory.close();
 already on screen it does nothing at all — no second hub, and nothing to catch, so a tab-bar entry a
 fan double-taps needs no debouncing of its own. You get one `hubOpened` and one `hubClosed` per hub
 the SDK presents. Tapping a game (`/s/{slug}`) opens the native bottom sheet
-with `embed=1&utm_source=sdk&consent=0` — `utm_source=sdk` replacing the `utm_source` the hub's own
-link carries, so every game opened from the hub is counted as SDK traffic. A `/s/` link on a Fastory stories domain
+with `embed=1&utm_source=sdk&consent=0` — `utm_source=sdk` replacing the `utm_source` the link
+carries, so every game the SDK opens is counted as SDK traffic, a game opened from another game in the
+sheet included; the link's other parameters reach the game exactly as written. A `/s/` link on a Fastory stories domain
 (`https://story.tl`, `https://staging.story.tl` — both, whichever environment you configured) is a
 game too and opens the same sheet. Any other origin, and any non-http(s) scheme (`mailto`, `tel`,
 `intent`, `market`), opens in the system browser. On Android the back button
@@ -429,9 +430,9 @@ Fastory.setHostTokenProvider(() async => await yourBackend.freshJwt()); // retur
 ```
 
 - It refreshes the session server-side while it is still valid, asking no one; it calls your provider
-  when that refresh fails or there is no session to refresh — once the session has expired, or at
-  launch for a fan restored without a session (below). The call is non-blocking and the SDK never inspects your token.
-  Pass `null` to clear it; with no provider a session simply lapses when it expires. The SDK never
+  when that refresh fails or there is no session to refresh — once the session has expired, or for a
+  fan restored without a session (below). The call is non-blocking and the SDK never inspects your
+  token. Pass `null` to clear it; with no provider a session simply lapses when it expires. The SDK never
   calls it for a `FastoryFanId` fan, whom it keeps signed in on its own (below).
 - When a session cannot be renewed, the SDK drops the fan to anonymous and emits
   `FastoryIdentityRevoked` — `reason == FastoryRevocationReason.expired` when nothing could renew it,
@@ -439,15 +440,23 @@ Fastory.setHostTokenProvider(() async => await yourBackend.freshJwt()); // retur
   or let the fan continue anonymously; `logout()` never emits it.
 - A verified fan survives an app restart: the SDK stores the identity — its mode and `fanId`, an
   account identifier — and **no token** for a `FastoryHostToken` fan, and restores it at `configure`,
-  with no `FastoryIdentityResolved`. The session is not stored: the SDK asks your provider for a
-  fresh token when `configure` runs — on Android also at each opening of the hub or the panel while
-  the fan has no session — and exchanges it in the background, with nothing waiting for it, so
-  **register the provider before you call `configure`**. A hub or a panel that loads before the
-  session is back shows the fan anonymous: a game picks the session up as soon as it is back, and
-  the hub and the panel at their next opening, but a panel already on screen is not reloaded for
-  it. Without a provider the session does not come back on its own: the surfaces show the fan
-  anonymous, with no event, until you call `identify` again — or, if you register one later, until
-  the SDK next asks it: at your next `configure`, and on Android at the next opening.
+  with no `FastoryIdentityResolved`. The session is not stored: while the fan has no session, the
+  SDK asks your provider for a fresh token when `configure` runs if the provider is registered by
+  then, right after you register it if that comes after `configure` — on the next turn of the main
+  thread — and at each opening of the hub or the panel — one call at a time, never for a fan who has
+  a session — and exchanges it in the
+  background, with nothing waiting for it, so **register the provider before you call `configure`**:
+  the session then comes back soonest. A hub or a panel that loads before the session is back shows
+  the fan anonymous: a game picks the session up as soon as it is back, and the hub and the panel at
+  their next opening, but a panel already on screen is not reloaded for it.
+- Until you register a provider, a restored fan's session does not come back: the fan stays
+  identified and is restored again at the next launch, the surfaces show them anonymous, and your
+  app receives nothing — no `FastoryIdentityRevoked`, no `FastoryIdentityResolved` — since a
+  provider may still come. Register one and the SDK asks it right after, on the next turn of the
+  main thread: a token for the same fan brings the session back with no event, and `null` drops the
+  fan to anonymous with `FastoryIdentityRevoked(reason: expired)`. Calling `identify` again works
+  too, and an answer for the restored fan that comes back once `identify` has resolved or failed is
+  ignored.
 
 ### Keeping a `fanId` fan signed in
 
@@ -668,8 +677,9 @@ session is anonymous.
   return path for the message that asked, so data reaches a page only as the answer to its own
   request. Since 0.5.0 the SDK speaks first in exactly one way: the session-change signal, a
   constant, payload-free event it dispatches in the game pages it owns when the answer they would get
-  changes — a session renewed or revoked, a fan identified or signed out, a value you set or clear
-  with `setBridgeReply`. It says *that* the answer changed, never what it became: the game asks again
+  changes — a session renewed or revoked, a fan identified or signed out, an `identify` that fails
+  while a fan is signed in or a reply is set, a value you set or clear with `setBridgeReply`. It
+  says *that* the answer changed, never what it became: the game asks again
   and is answered here.
 - On Android this channel needs the WebView floor stated under *Requirements*.
 

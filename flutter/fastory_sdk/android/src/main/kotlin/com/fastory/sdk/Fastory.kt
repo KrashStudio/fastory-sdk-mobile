@@ -211,12 +211,28 @@ public object Fastory {
 
     /**
      * Registers the closure the SDK calls to obtain a fresh host assertion when a delegated session
-     * must be renewed (SPEC § 2.6.3). Callable from any thread; null clears it. Setting it does not
-     * itself renew anything — it is consulted the next time a session nears expiry or a refresh is
-     * refused.
+     * must be renewed (SPEC § 2.6.3). Callable from any thread; null clears it. A `HostToken` fan
+     * restored without a session is re-exchanged through it on the next main-thread turn, right after
+     * the registration; otherwise it is consulted the next time a session nears expiry or a refresh
+     * is refused.
      */
     public fun setHostTokenProvider(provider: FastoryHostTokenProvider?) {
         hostTokenProvider = provider
+        if (provider == null) return
+        val generation = sessionGeneration.get()
+        Handler(Looper.getMainLooper()).post {
+            if (generation == sessionGeneration.get()) reexchangeSessionlessHostTokenFan()
+        }
+    }
+
+    private fun reexchangeSessionlessHostTokenFan() {
+        if (config != null &&
+            identity?.mode == FastoryIdentityMode.HOST_TOKEN &&
+            delegatedSessionToken == null &&
+            hostTokenProvider != null
+        ) {
+            renewDelegatedSessionNow(null)
+        }
     }
 
     /**
@@ -989,8 +1005,15 @@ public object Fastory {
         callback: ((Result<FastoryResolvedIdentity>) -> Unit)?,
     ) {
         val transition = FastoryIdentityRules.afterResolutionFailure(Fastory.identity)
+        // Read before applyTransition revokes the answer: with no fan and no answer standing, a live
+        // game read `unavailable` and still does, so it is not signalled (SPEC § 13.9.2).
+        val gamesHeldASession = Fastory.identity?.fanId != null ||
+            FastoryBridgeResponder.standingReply(FastoryBridgeRequestType.USER_TOKEN) != null
         applyTransition(transition, config) {
             Fastory.identity = null
+            if (gamesHeldASession) {
+                FastorySessionPush.broadcast()
+            }
             callback?.invoke(Result.failure(error))
         }
     }
@@ -1041,6 +1064,7 @@ public object Fastory {
         }
         val generation = sessionGeneration.get()
         if (renewalInFlight == generation) {
+            if (renewalFan != identity) renewalOwedToCurrentFan = true
             onDone?.let { renewalWaiters += it }
             return
         }
@@ -1049,7 +1073,7 @@ public object Fastory {
         if (token != null && origin != null) {
             beginRenewal(generation, onDone)
             DelegatedSessionClient.refresh(token, origin, config) { result ->
-                if (generation != sessionGeneration.get()) return@refresh
+                if (!renewalStillCurrent(generation)) return@refresh
                 result.fold(
                     onSuccess = { renewed ->
                         // The same session extended: identity and persistence untouched, only the
@@ -1108,7 +1132,7 @@ public object Fastory {
             return
         }
         store.read(account) { result ->
-            if (generation != sessionGeneration.get()) return@read
+            if (!renewalStillCurrent(generation)) return@read
             when (val pairing = FastoryIdentityPersistence.pairing(identity, result)) {
                 is FastoryIdentityPersistence.Pairing.Renew -> {
                     swapRefreshToken(HeldRefreshToken(pairing.token, account, config))
@@ -1238,7 +1262,7 @@ public object Fastory {
         config: FastoryConfig,
         generation: Int,
     ) {
-        if (generation != sessionGeneration.get()) return
+        if (!renewalStillCurrent(generation)) return
         when (answer) {
             is RenewalAnswer.Renewed -> {
                 val session = answer.session
@@ -1306,17 +1330,25 @@ public object Fastory {
 
     // One renewal at a time, under one generation
 
-    /** The generation the renewal in flight was started under, and the callers waiting for it. UI-thread-confined. */
+    /**
+     * The generation the renewal in flight was started under, the fan it renews, and the callers
+     * waiting for it. UI-thread-confined.
+     */
     private var renewalInFlight: Int? = null
+    private var renewalFan: FastoryResolvedIdentity? = null
+    private var renewalOwedToCurrentFan = false
     private val renewalWaiters = mutableListOf<() -> Unit>()
 
     private fun beginRenewal(generation: Int, onDone: (() -> Unit)?) {
         renewalInFlight = generation
+        renewalFan = identity
         onDone?.let { renewalWaiters += it }
     }
 
     private fun finishRenewal() {
         renewalInFlight = null
+        renewalFan = null
+        renewalOwedToCurrentFan = false
         endLaunchWait()
         releaseRenewalWaiters()
     }
@@ -1324,7 +1356,40 @@ public object Fastory {
     /** The generation moved on: the renewal in flight answers into nothing, so nothing waits for it. */
     private fun abandonRenewals() {
         renewalInFlight = null
+        renewalFan = null
+        renewalOwedToCurrentFan = false
         releaseRenewalWaiters()
+    }
+
+    /**
+     * Asked by every step of a renewal before it writes anything. `identify` advances the generation
+     * as it starts, not as it resolves: a renewal begun while it was in flight carries the current
+     * generation, yet answers for the fan it replaced, so the fan is checked too. A renewal a newer
+     * generation let go is already released; one a fan took over hands over to them.
+     */
+    private fun renewalStillCurrent(generation: Int): Boolean {
+        if (generation != sessionGeneration.get()) return false
+        if (identity != renewalFan) {
+            renewTheFanWhoTookOver()
+            return false
+        }
+        return true
+    }
+
+    /**
+     * A renewal asked for the current fan while another fan's was in flight joined that one instead
+     * of starting, and that one answered for nobody: it is still owed.
+     */
+    private fun renewTheFanWhoTookOver() {
+        val owed = renewalOwedToCurrentFan
+        val waiters = renewalWaiters.toList()
+        renewalWaiters.clear()
+        finishRenewal()
+        if (!owed) {
+            waiters.forEach { it() }
+            return
+        }
+        renewDelegatedSessionNow { waiters.forEach { it() } }
     }
 
     private fun releaseRenewalWaiters() {
@@ -1409,9 +1474,7 @@ public object Fastory {
             return
         }
         endLaunchWait()
-        if (mode == FastoryIdentityMode.HOST_TOKEN && delegatedSessionToken == null && hostTokenProvider != null) {
-            renewDelegatedSessionNow(null)
-        }
+        reexchangeSessionlessHostTokenFan()
         if (mode != FastoryIdentityMode.FAN_ID) {
             eraseUnpairedRefreshToken(config, generation)
         }
@@ -1752,6 +1815,8 @@ public object Fastory {
         sweptAccount = null
         launchedConfig = null
         renewalInFlight = null
+        renewalFan = null
+        renewalOwedToCurrentFan = false
         renewalWaiters.clear()
         launchWaitPending = false
         launchWait = 0

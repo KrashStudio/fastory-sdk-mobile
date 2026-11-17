@@ -426,13 +426,35 @@ public enum Fastory {
     }
 
     /// Registers the closure the SDK calls to obtain a fresh host assertion when a delegated session
-    /// must be renewed (SPEC § 2.6.3). Callable from any thread; `nil` clears it. Setting it does not
-    /// itself renew anything — it is consulted the next time a session nears expiry or a refresh is
-    /// refused.
+    /// must be renewed (SPEC § 2.6.3). Callable from any thread; `nil` clears it. A `hostToken` fan
+    /// restored without a session is re-exchanged through it on the next main-thread turn, right after
+    /// the registration; otherwise it is consulted the next time a session nears expiry or a refresh
+    /// is refused.
     public static func setHostTokenProvider(_ provider: FastoryHostTokenProvider?) {
         stateLock.lock()
         storedHostTokenProvider = provider
         stateLock.unlock()
+        if provider != nil {
+            reexchangeSessionlessHostTokenFanOnNextTurn()
+        }
+    }
+
+    private static func reexchangeSessionlessHostTokenFanOnNextTurn() {
+        let generation = sessionGeneration
+        DispatchQueue.main.async {
+            guard generation == sessionGeneration else { return }
+            reexchangeSessionlessHostTokenFan()
+        }
+    }
+
+    private static func reexchangeSessionlessHostTokenFan() {
+        guard config != nil,
+              identity?.mode == .hostToken,
+              delegatedSessionToken == nil,
+              hostTokenProvider != nil else {
+            return
+        }
+        renewDelegatedSessionNow()
     }
 
     /// Callable from any thread (SPEC § 2.7), and it returns without doing the work that would make
@@ -533,9 +555,7 @@ public enum Fastory {
             return
         }
         endLaunchWait()
-        if mode == .hostToken, delegatedSessionToken == nil, hostTokenProvider != nil {
-            renewDelegatedSessionNow()
-        }
+        reexchangeSessionlessHostTokenFan()
         if mode != .fanId {
             eraseUnpairedRefreshToken(config: config, generation: generation)
         }
@@ -697,6 +717,8 @@ public enum Fastory {
         openingRequests += 1
         let request = openingRequests
         stateLock.unlock()
+        // A later turn: the host's provider never runs ahead of the presentation it was asked from.
+        reexchangeSessionlessHostTokenFanOnNextTurn()
         let anchor = settledAncestor(of: presenter)
         let leaving = leavingSurface
         if leaving == nil, isSettled(anchor) {
@@ -1115,8 +1137,15 @@ public enum Fastory {
         completion: ((Result<FastoryResolvedIdentity, FastoryIdentifyError>) -> Void)?
     ) {
         let transition = FastoryIdentityRules.afterResolutionFailure(from: identity)
+        // Read before `apply` revokes the answer: with no fan and no answer standing, a live game
+        // read `unavailable` and still does, so it is not signalled (SPEC § 13.9.2).
+        let gamesHeldASession = identity?.fanId != nil
+            || FastoryBridgeResponder.standingReply(for: .userToken) != nil
         apply(transition, config: config) {
             store(identity: nil)
+            if gamesHeldASession {
+                FastorySessionPush.broadcast()
+            }
             completion?(.failure(error))
         }
     }
@@ -1199,6 +1228,9 @@ public enum Fastory {
         }
         let generation = sessionGeneration
         if renewalInFlight == generation {
+            if renewalFan != identity {
+                renewalOwedToCurrentFan = true
+            }
             if let completion {
                 renewalWaiters.append(completion)
             }
@@ -1211,7 +1243,7 @@ public enum Fastory {
                 origin: origin,
                 environment: config.environment
             ) { result in
-                guard generation == sessionGeneration else { return }
+                guard renewalStillCurrent(generation) else { return }
                 switch result {
                 case .success(let renewed):
                     // The same session extended: identity and persistence are untouched, only the
@@ -1256,13 +1288,13 @@ public enum Fastory {
             return
         }
         refreshTokenStore.read(account: account) { result in
-            guard generation == sessionGeneration else { return }
+            guard renewalStillCurrent(generation) else { return }
             switch FastoryIdentityPersistence.pairing(identity: identity, token: result) {
             case .renew(let token):
                 _ = swapRefreshToken(HeldRefreshToken(token: token, account: account, environment: config.environment))
                 presentRefreshToken(token, config: config, generation: generation)
             case .signOut:
-                signOutWithoutToken(config: config)
+                signOutWithoutToken(config: config, generation: generation)
             case .waitForUnlock:
                 renewOnceProtectedDataIsAvailable(config: config, generation: generation)
                 finishRenewal()
@@ -1382,13 +1414,14 @@ public enum Fastory {
         config: FastoryConfig,
         generation: Int
     ) {
-        guard generation == sessionGeneration else { return }
+        guard renewalStillCurrent(generation) else { return }
         switch answer {
         case .renewed(let session):
             let resolved = FastoryResolvedIdentity(mode: mode, fanId: session.fanId)
             let transition = FastoryIdentityRules.afterResolution(resolved, from: identity)
             _ = swapRefreshToken(nil)
             apply(transition, config: config) {
+                guard renewalStillCurrent(generation) else { return }
                 store(identity: resolved)
                 adoptDelegatedSession(session, origin: origin ?? "", config: config)
                 // A renewal through the credential is a fresh session whether or not the fan changed,
@@ -1400,7 +1433,7 @@ public enum Fastory {
                 finishRenewal()
             }
         case .refused(let revocation):
-            revokeDelegatedSession(revocation, config: config) { finishRenewal() }
+            revokeDelegatedSession(revocation, config: config, generation: generation)
         case .transient:
             // A failure that refused nothing keeps the identity and re-arms a bounded retry rather than
             // signing a fan out over a lost connection — the armed timer that fired this renewal is
@@ -1418,7 +1451,7 @@ public enum Fastory {
     private static func revokeDelegatedSession(
         _ revocation: FastoryIdentityRevocation,
         config: FastoryConfig,
-        completion: (() -> Void)? = nil
+        generation: Int
     ) {
         let transition = FastoryIdentityRules.afterResolutionFailure(from: identity)
         _ = swapRefreshToken(nil)
@@ -1426,20 +1459,22 @@ public enum Fastory {
         // only fired inside `then` — completing before that would report a revocation that has not
         // happened yet.
         apply(transition, config: config) {
+            guard renewalStillCurrent(generation) else { return }
             store(identity: nil)
             // The standing answer was revoked, so a live game must re-ask and get `unavailable`,
             // which is how it learns the fan is gone (SPEC § 13.9).
             FastorySessionPush.broadcast()
             eventsDelegate?.fastoryIdentityRevoked(revocation)
-            completion?()
+            finishRenewal()
         }
     }
 
     /// A `fanId` fan whose refresh token is gone — a reinstall, a restore — cannot be renewed: the
     /// fan is signed out the way `logout()` does it, with no event, since nothing was refused and the
     /// host signed no one out (SPEC § 2.6.3).
-    private static func signOutWithoutToken(config: FastoryConfig) {
+    private static func signOutWithoutToken(config: FastoryConfig, generation: Int) {
         apply(FastoryIdentityRules.logout(from: identity), config: config) {
+            guard renewalStillCurrent(generation) else { return }
             store(identity: nil)
             FastorySessionPush.broadcast()
             finishRenewal()
@@ -1448,13 +1483,16 @@ public enum Fastory {
 
     // MARK: - One renewal at a time, under one generation
 
-    /// The generation the renewal in flight was started under, and the callers waiting for it.
-    /// Main-thread-only, like the armed renewal.
+    /// The generation the renewal in flight was started under, the fan it renews, and the callers
+    /// waiting for it. Main-thread-only, like the armed renewal.
     private static var renewalInFlight: Int?
+    private static var renewalFan: FastoryResolvedIdentity?
+    private static var renewalOwedToCurrentFan = false
     private static var renewalWaiters: [() -> Void] = []
 
     private static func beginRenewal(generation: Int, completion: (() -> Void)?) {
         renewalInFlight = generation
+        renewalFan = identity
         if let completion {
             renewalWaiters.append(completion)
         }
@@ -1462,6 +1500,8 @@ public enum Fastory {
 
     private static func finishRenewal() {
         renewalInFlight = nil
+        renewalFan = nil
+        renewalOwedToCurrentFan = false
         endLaunchWait()
         releaseRenewalWaiters()
     }
@@ -1469,7 +1509,36 @@ public enum Fastory {
     /// The generation moved on: the renewal in flight answers into nothing, so nothing waits for it.
     private static func abandonRenewals() {
         renewalInFlight = nil
+        renewalFan = nil
+        renewalOwedToCurrentFan = false
         releaseRenewalWaiters()
+    }
+
+    /// Asked by every step of a renewal before it writes anything. `identify` advances the generation
+    /// as it starts, not as it resolves: a renewal begun while it was in flight carries the current
+    /// generation, yet answers for the fan it replaced, so the fan is checked too. A renewal a newer
+    /// generation let go is already released; one a fan took over hands over to them.
+    private static func renewalStillCurrent(_ generation: Int) -> Bool {
+        guard generation == sessionGeneration else { return false }
+        guard identity == renewalFan else {
+            renewTheFanWhoTookOver()
+            return false
+        }
+        return true
+    }
+
+    /// A renewal asked for the current fan while another fan's was in flight joined that one instead
+    /// of starting, and that one answered for nobody: it is still owed.
+    private static func renewTheFanWhoTookOver() {
+        let owed = renewalOwedToCurrentFan
+        let waiters = renewalWaiters
+        renewalWaiters = []
+        finishRenewal()
+        guard owed else {
+            waiters.forEach { $0() }
+            return
+        }
+        renewDelegatedSessionNow { waiters.forEach { $0() } }
     }
 
     private static func releaseRenewalWaiters() {
@@ -2035,6 +2104,8 @@ public enum Fastory {
         FastoryDelegatedSessionClient.shared.reset()
         FastoryFanLoginController.shared.reset()
         renewalInFlight = nil
+        renewalFan = nil
+        renewalOwedToCurrentFan = false
         renewalWaiters.removeAll()
         launchBound?.cancel()
         launchBound = nil

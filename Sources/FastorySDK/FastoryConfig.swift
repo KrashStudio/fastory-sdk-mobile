@@ -369,31 +369,52 @@ extension URL {
     /// The URL a game is loaded with (SPEC § 3.3): `embed`, `utm_source`, `consent`, then the host's
     /// own parameters (`FastoryConfig.gamePresentationQueryItems`), each added only when the link
     /// does not carry it already — the fanzone builds its own game links, and a value it put there
-    /// wins. `utm_source` is the exception: a game the SDK opens is SDK traffic, so the link's own
-    /// takes the value `sdk` where it stands and a repeat of it is dropped. The host's parameters are
-    /// required rather than defaulted: a call that forgot them would still compile, and quietly drop
-    /// the locale and theme the host configured.
+    /// wins, a name being matched once decoded. `utm_source` is the exception: a game the SDK opens
+    /// is SDK traffic, so the link's own takes the value `sdk` where it stands and a repeat of it is
+    /// dropped. The host's parameters are required rather than defaulted: a call that forgot them
+    /// would still compile, and quietly drop the locale and theme the host configured.
+    ///
+    /// The link's own pairs are kept as raw text, never decoded and composed again: `queryItems`
+    /// would hand `a%2Bb` back as `a+b`, which the page reads as `a b`. The host's values are
+    /// encoded as Android's `URLEncoder` encodes them, so both platforms load the same address.
     func fastoryEmbeddedGameURL(with hostItems: [URLQueryItem]) -> URL {
         guard var components = URLComponents(url: self, resolvingAgainstBaseURL: false) else {
             return self
         }
-        var queryItems = components.queryItems ?? []
-        if let attribution = queryItems.firstIndex(where: { $0.name == "utm_source" }) {
-            queryItems[attribution].value = "sdk"
-            queryItems = queryItems.enumerated()
-                .filter { $0.offset == attribution || $0.element.name != "utm_source" }
-                .map(\.element)
+        var attributed = false
+        let carried: [String] = components.percentEncodedQuery?
+            .components(separatedBy: "&")
+            .compactMap { pair -> String? in
+                guard Self.decodedQueryName(of: pair) == "utm_source" else { return pair }
+                guard !attributed else { return nil }
+                attributed = true
+                return "utm_source=sdk"
+            } ?? []
+        let carriedNames = Set(carried.filter { !$0.isEmpty }.map(Self.decodedQueryName(of:)))
+        let embedPairs = [("embed", "1"), ("utm_source", "sdk"), ("consent", "0")]
+        let hostPairs = hostItems.map { ($0.name, Self.formEncoded($0.value ?? "")) }
+        let missing = (embedPairs + hostPairs)
+            .filter { !carriedNames.contains($0.0) }
+            .map { "\($0.0)=\($0.1)" }
+        if components.percentEncodedQuery == nil, missing.isEmpty {
+            return self
         }
-        let embedItems = [
-            URLQueryItem(name: "embed", value: "1"),
-            URLQueryItem(name: "utm_source", value: "sdk"),
-            URLQueryItem(name: "consent", value: "0")
-        ]
-        for item in embedItems + hostItems where !queryItems.contains(where: { $0.name == item.name }) {
-            queryItems.append(item)
-        }
-        components.queryItems = queryItems
+        components.percentEncodedQuery = (carried + missing).joined(separator: "&")
         return components.url ?? self
+    }
+
+    private static func decodedQueryName(of pair: String) -> String {
+        let name = pair.firstIndex(of: "=").map { String(pair[..<$0]) } ?? pair
+        return name.removingPercentEncoding ?? name
+    }
+
+    private static let formValueAllowed = CharacterSet(
+        charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-*_ "
+    )
+
+    private static func formEncoded(_ value: String) -> String {
+        (value.addingPercentEncoding(withAllowedCharacters: formValueAllowed) ?? "")
+            .replacingOccurrences(of: " ", with: "+")
     }
 
     var fastoryGameSlug: String {

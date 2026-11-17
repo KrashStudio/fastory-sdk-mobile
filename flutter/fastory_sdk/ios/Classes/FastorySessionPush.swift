@@ -29,9 +29,11 @@ enum FastorySessionPush {
     static func emitsSignal(trigger: String) -> Bool {
         switch trigger {
         case "session_renewed", "session_revoked", "logout",
-             "identify_different_fan", "host_set", "host_clear":
+             "identify_different_fan", "host_set", "host_clear",
+             "identify_resolution_failed_over_fan":
             return true
-        case "identify_same_fan", "configure_replace", "identify_preflight_rejected":
+        case "identify_same_fan", "configure_replace", "identify_preflight_rejected",
+             "identify_resolution_failed_no_fan":
             return false
         default:
             return false
