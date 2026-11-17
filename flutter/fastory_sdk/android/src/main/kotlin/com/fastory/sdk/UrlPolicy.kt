@@ -1,15 +1,16 @@
 package com.fastory.sdk
 
 import java.net.URI
+import java.net.URLDecoder
 import java.net.URLEncoder
 
-enum class NavigationDecision {
+internal enum class NavigationDecision {
     ALLOW,
     OPEN_GAME_SHEET,
     OPEN_EXTERNAL_BROWSER,
 }
 
-object UrlPolicy {
+internal object UrlPolicy {
 
     const val GAME_PATH_PREFIX = "/s/"
 
@@ -56,27 +57,46 @@ object UrlPolicy {
      * Augments a game URL for embedded rendering (SPEC §3.3): `embed=1`, `utm_source=sdk`,
      * `consent=0`, then [extra], the host's own parameters (locale, theme, host login), each added
      * only when the link does not carry it already — the fanzone builds its own game links, and a
-     * value it put there wins. The host's values are encoded; the embed ones are constants.
-     * `@JvmOverloads` keeps the one-argument method every earlier version exposed to the JVM.
+     * value it put there wins, a name being matched once decoded, as iOS does. `utm_source` is the
+     * exception: a game the SDK opens is SDK traffic, so the link's own takes the value `sdk` where
+     * it stands and a repeat of it is dropped. The host's values are encoded; the embed ones are constants.
      */
-    @JvmOverloads
     fun embeddedGameUrl(url: String, extra: List<Pair<String, String>> = emptyList()): String {
         val fragmentSplit = url.split('#', limit = 2)
         val base = fragmentSplit[0]
         val fragment = fragmentSplit.getOrNull(1)
-        val existingNames = base.substringAfter('?', "")
+        val queryStart = base.indexOf('?')
+        val path = if (queryStart < 0) base else base.substring(0, queryStart)
+        var attributed = false
+        val query = if (queryStart < 0) null else base.substring(queryStart + 1)
             .split('&')
+            .mapNotNull { pair ->
+                when {
+                    pair.substringBefore('=').decodedOrRaw() != ATTRIBUTION -> pair
+                    attributed -> null
+                    else -> "$ATTRIBUTION=sdk".also { attributed = true }
+                }
+            }
+        val existingNames = query.orEmpty()
             .filter { it.isNotEmpty() }
-            .map { it.substringBefore('=') }
+            .map { it.substringBefore('=').decodedOrRaw() }
             .toSet()
         val hostParams = extra.map { (name, value) -> name to URLEncoder.encode(value, "UTF-8") }
-        val missing = (listOf("embed" to "1", "utm_source" to "sdk", "consent" to "0") + hostParams)
+        val missing = (listOf("embed" to "1", ATTRIBUTION to "sdk", "consent" to "0") + hostParams)
             .filter { it.first !in existingNames }
-        if (missing.isEmpty()) return url
-        val separator = if (base.contains('?')) "&" else "?"
-        val augmented = base + separator + missing.joinToString("&") { "${it.first}=${it.second}" }
+            .joinToString("&") { "${it.first}=${it.second}" }
+        val augmented = when {
+            query == null && missing.isEmpty() -> path
+            query == null -> "$path?$missing"
+            missing.isEmpty() -> "$path?${query.joinToString("&")}"
+            else -> "$path?${query.joinToString("&")}&$missing"
+        }
         return if (fragment != null) "$augmented#$fragment" else augmented
     }
+
+    private const val ATTRIBUTION = "utm_source"
+
+    private fun String.decodedOrRaw(): String = runCatching { URLDecoder.decode(this, "UTF-8") }.getOrDefault(this)
 
     private fun String.toUriOrNull(): URI? = runCatching { URI(this) }.getOrNull()
 

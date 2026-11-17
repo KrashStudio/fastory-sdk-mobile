@@ -1,14 +1,14 @@
 import Foundation
 
 /// Why a publishable key could not be exchanged for a workspace. `code` carries the API's
-/// machine-readable failure code (`sdk_key_revoked`, `sdk_application_not_allowed`, …) so hosts
-/// branch on it instead of on a message.
-public enum FastoryBootstrapError: Error, Equatable, Sendable, CustomStringConvertible {
+/// machine-readable failure code (`sdk_key_revoked`, `sdk_application_not_allowed`, …), which reaches
+/// the host as `FastoryLoadFailure.code` or `FastoryIdentifyError.rejected(code:)`.
+enum FastoryBootstrapError: Error, Equatable, Sendable, CustomStringConvertible {
     case unreachable
     case rejected(code: String)
     case malformedResponse
 
-    public var description: String {
+    var description: String {
         switch self {
         case .unreachable:
             return "could not reach the Fastory API to resolve the publishable key"

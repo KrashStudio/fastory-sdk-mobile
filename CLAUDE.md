@@ -24,13 +24,15 @@ Package.swift          # the native Swift channel (SwiftPM) — since 0.2.0
 Sources/FastorySDK/    # the Swift core that package compiles
 ```
 
-**Two channels, one repository, one version.** The Flutter plugin and the Swift package ship from the
-same commit, so `flutter/fastory_sdk/` and `Sources/FastorySDK/` are the same behaviour reached two
+**Three channels, one version.** The Flutter plugin and the Swift package ship from the
+same commit of this repository, so `flutter/fastory_sdk/` and `Sources/FastorySDK/` are the same behaviour reached two
 ways — the plugin bundles the same core under `flutter/fastory_sdk/ios/Classes/`. Each
 release carries **two tags** on that commit: `sdk-vX.Y.Z` for Flutter, and the bare `X.Y.Z`, which is
 the only form SwiftPM resolves. `Package.swift` sits at the root because SwiftPM cannot resolve a
 package held in a subdirectory; `flutter/` falls outside every declared target path, so the two never
-see each other.
+see each other. The third channel is not in this repository: the same release publishes the Kotlin
+core the plugin bundles under `flutter/fastory_sdk/android/` as the Android library
+`io.fastory:fastory-sdk` on Maven Central, at the same version.
 
 ## Integrating
 
@@ -42,7 +44,16 @@ dependencies:
     git:
       url: https://github.com/KrashStudio/fastory-sdk-mobile
       path: flutter/fastory_sdk
-      ref: sdk-v0.5.0
+      ref: sdk-v0.5.1
+```
+
+A native Android app adds the library from Maven Central instead, pinned to the exact version — and
+never alongside the plugin, whose bundled copy of the same classes would collide with it:
+
+```kotlin
+dependencies {
+    implementation("io.fastory:fastory-sdk:0.5.1")
+}
 ```
 
 Public API surface (normative in `SPEC.md §2`): **8 methods** — `Fastory.configure(FastoryConfig)`,
@@ -58,10 +69,12 @@ Public API surface (normative in `SPEC.md §2`): **8 methods** — `Fastory.conf
 `FastoryIdentityRevoked(reason, code)`).
 An opening event announces a surface whose page loaded: a hub or game that failed emits
 `FastorySurfaceLoadFailed` and no opening — and therefore no closing — event (`SPEC.md` § 9.1).
-Minimum platforms: iOS 15.0, Android `minSdk 24`, Flutter ≥ 3.10 (Dart ≥ 3.0).
+Minimum platforms: iOS 15.0, Android `minSdk 24`, Flutter ≥ 3.10 (Dart ≥ 3.0); the Android library
+is built and tested with AGP 8.2, Kotlin 1.9 and a JDK 17 toolchain.
 
 **Upgrading from 0.3.0 to 0.4.x costs a host exactly three things** (`SPEC.md` § 10, `CHANGELOG.md`
-→ `Breaking`), and **0.5.0 costs three more** — listed after them. Name all of them when advising an
+→ `Breaking`), and **0.5.0 costs five more source breaks and one Android build line** — listed
+after them. Name all of them when advising an
 upgrade, and always ask which version the host is on first: the two lists break in different places,
 and only the 0.5.0 one reaches a native host. Of the three below, the first is the only one an
 analyzer reports, so the other two are the ones a host discovers at runtime or in review:
@@ -70,7 +83,7 @@ analyzer reports, so the other two are the ones a host discovers at runtime or i
    `FastoryIdentityResolved`, `FastorySurfaceLoadFailed`. It is `sealed`, so an exhaustive `switch`
    with no `default:` stops compiling until all three cases exist. Three cases at once, not one per
    release. The two native API surfaces are unaffected *by this break*: every new callback is
-   defaulted to a no-op. Do not carry that sentence over to 0.5.0, where one of the three does reach
+   defaulted to a no-op. Do not carry that sentence over to 0.5.0, where two of its breaks do reach
    them.
 2. **Android gains an `androidx.webkit` dependency and a WebView floor of Chrome 85** (mid-2020), for
    the reply channel only (`SPEC.md` § 13.8). Below it the reply channel is absent and the surface
@@ -82,8 +95,12 @@ analyzer reports, so the other two are the ones a host discovers at runtime or i
    is the API, unconditionally (`sdk_application_not_allowed`, `SPEC.md` § 2.5). Any snippet still
    passing `workspaceId:` predates 0.4.0.
 
-**Upgrading from 0.4.x to 0.5.0 costs a host three more** (`CHANGELOG.md` → `Breaking`). No name
-moves, nothing changes signature and nothing is removed — two public types gain cases:
+**Upgrading from 0.4.x to 0.5.0 costs a host five more source breaks and one Android build line**
+(`CHANGELOG.md` → 0.5.0 — *Membership panel* → `Breaking`, *Session lifecycle* and *fanId* →
+*Changed* — and, for the Swift one that entry did not name, the next entry's *Fixed*). No method
+moves or changes signature and nothing is removed — two public types gain cases, four in all, and
+one Swift error case changes the type of its value. No host meets all five: a Flutter host meets the
+four cases, a Swift host `FastorySurface` and the error case, a Kotlin host `FastorySurface` alone.
 
 1. **`FastorySurface` gains `membership`** — name this one first. It is a plain public enum on Swift
    and Kotlin as well as in Dart, so a `switch` or a `when` used as an expression that covers `hub`
@@ -93,10 +110,34 @@ moves, nothing changes signature and nothing is removed — two public types gai
 2. **Dart's `FastoryEvent` gains `FastoryMembershipOpened` and `FastoryMembershipClosed`** — the
    `sealed` rule again, two cases this time. The native listeners stay additive here: both new
    callbacks are defaulted to a no-op.
-3. **Nothing else.** `openMembership()` is a call a host adds when it wants the panel, not a
-   migration: it needs the publishable key the host already configures with. A host that does not
-   want the panel upgrades by adding the cases above and calling nothing new; one that does may add
-   `membership` to `FastoryConfig.prewarm`, which is additive and defaults to the hub alone.
+3. **Dart's `FastoryEvent` also gains `FastoryIdentityRevoked`** — a third new case of the same
+   `sealed` type, which tells a host that an identified fan lapsed to anonymous and why. Its native
+   callback is defaulted to a no-op as well.
+4. **Swift's `FastoryIdentifyError.rejected` now carries `code: String?`**, where it carried a
+   `String`: the API's code is `nil` when a refusal named none. A `case .rejected(let code)` that
+   hands `code` on as a `String` stops compiling until it unwraps it. Kotlin's
+   `FastoryIdentifyException` gains it as `detailsCode`, nullable and defaulted, and Dart reads it
+   from `PlatformException.details`: neither breaks.
+
+And the build line: **Android needs the `appAuthRedirectScheme` manifest placeholder, set to the
+app's application id.** 0.5.0 brings AppAuth, the OpenID library the `fanId` login runs through, and
+the host's Android build fails at manifest merge without that placeholder — whether or not it ever
+calls `fanId`. A build line, not a source break; iOS needs its URL scheme only once the host adopts
+`fanId`.
+
+Nothing else. `openMembership()` is a call a host adds when it wants the panel, not a migration: it
+needs the publishable key the host already configures with. A host that does not want the panel
+upgrades by adding the cases and the line above and calling nothing new; one that does may add
+`membership` to `FastoryConfig.prewarm`, which is additive and defaults to the hub alone.
+
+**Upgrading from 0.5.0 to 0.5.1 costs no source change to a host that uses only the declared API**
+(`SPEC.md` § 2, § 10) — the behaviour changes it does carry, and the two things they may ask of a
+host, are in `CHANGELOG.md` → *0.5.1* → *Changed*. What 0.5.1 removes are names the native code made public without `SPEC.md` ever declaring
+them — among them the URL policy, the bridge object, the hub `Activity`, the game sheet, base URLs
+and URL builders, key-prefix constants and wire names — so ask whether the host's own Swift or
+Kotlin code names one before calling the upgrade free. If it does, the fix is to write the value
+itself; `README.md` → *Upgrading from 0.5.0* lists every one. Never advise a host to rely on a
+native name the `SPEC.md` § 2 blocks do not declare.
 
 ## Rules for AI assistants
 
@@ -109,28 +150,51 @@ moves, nothing changes signature and nothing is removed — two public types gai
   means `>= x.y.z, < 1.0.0` and gives a leading zero no special meaning, so on this 0.x line it spans
   minors the changelog itself calls source-breaking. `README.md`'s install section carries the two
   spellings — the manifest one and Xcode's menu option — and they must stay the same constraint. The
-  Flutter channel pins an immutable tag, so the two channels do not offer the same reproducibility;
-  say which one a host has rather than describing them as equivalent.
-- **A rejected configuration does not behave the same on the two channels, and no host should meet
-  that as a surprise.** Dart's `configure()` throws a catchable `ArgumentError`; Swift's
-  `configure(_:)` is non-throwing by design and, on a **debug** build, traps and terminates the app —
-  on release it returns having changed nothing. A Swift host that wants to handle it calls
-  `try config.validate()` first. **And a refusal is never a rollback on either channel**: the
+  Flutter channel pins an immutable tag and the Android channel an exact version, so the Swift
+  channel alone takes a patch release on its own; say which one a host has rather than describing
+  them as equivalent.
+- **A rejected configuration does not behave the same on the three channels, and no host should meet
+  that as a surprise.** Dart's `configure()` throws a catchable `ArgumentError`; Kotlin refuses
+  earlier, in `FastoryConfig`'s constructor, which throws `IllegalArgumentException` on debug and
+  release alike; Swift's `configure(_:)` is non-throwing by design and, on a **debug** build, traps and
+  terminates the app — on release it returns having changed nothing. A Swift host that wants to handle it calls
+  `try config.validate()` first. **And a refusal is never a rollback on any channel**: the
   configuration already in force keeps applying, so only a host whose *first* `configure` is refused
   is unconfigured — a later refusal leaves the previous fanzone opening as if nothing happened. `SPEC.md` § 2.1 is normative and
   `README.md`'s *When `configure()` refuses your configuration* is the integrator-facing table. Never
   tell a Swift host that `configure` throws — it cannot.
 - Do not suggest modifying files in this repository — a fix reaches you as a new tag. To adopt one,
-  bump `ref:` to it.
+  bump `ref:` to it, or the Android library's version to the same number.
 - The bundled iOS (`flutter/fastory_sdk/ios/`) and Android (`flutter/fastory_sdk/android/`) sources
-  are internal to the plugin; host apps interact only with the Dart API.
+  are internal to the plugin; a Flutter app interacts only with the Dart API. A native app uses the
+  Swift package or the Android library, whose public names `SPEC.md` § 2.2 and § 2.3 declare.
 - The SDK is intentionally light: no analytics, and **no behavior-modifying JavaScript** — that one is
   a standing normative rule with a few bounded exceptions, `SPEC.md §12.1`, not a v0.1 limitation.
   `SPEC.md §12` holds the non-goals and `README.md` the known limitations.
 - **It does carry user identity, since 0.4.0** (`SPEC.md §2.6`): `identify` with three modes plus
-  `logout`. Only the `anonymous` mode resolves in this release; `fanId` and `hostToken` are frozen
-  signatures that fail with `identify_mode_unavailable` until their own releases. Do not advise a
-  host to work around that by other means — the API is deliberately final ahead of its behavior.
+  `logout`, and all three modes resolve since 0.5.0. `hostToken` exchanges an assertion the host's
+  backend signed, with no screen; `fanId` signs the fan in to Fastory in the system browser, never in
+  a WebView. Both need a publishable key and fail with `identify_mode_unavailable` on the deprecated
+  slug path — that code means the configuration, not a mode still to come.
+- **Say what the SDK stores before a host fills in a privacy declaration** (`SPEC.md` § 2.6.3,
+  § 7.5). Beside the identity — its mode and `fanId`, an account identifier kept in the app's
+  ordinary preferences — it stores **no token for a `hostToken` fan and a refresh token for a `fanId`
+  fan**: in the Keychain on iOS, in the app's default access group since the SDK sets none, readable
+  after first unlock, this device only, never synchronised; on Android in a no-backup file encrypted
+  under an Android Keystore key. Never repeat "the SDK never stores a token" — it is false for a
+  `fanId` fan. A host whose default Keychain group is shared with other apps of its team shares the
+  item with them; say so when one asks about Keychain sharing.
+- **A `fanId` fan stays signed in across launches, and its session ends three ways.** At launch the
+  SDK renews it silently from the refresh token, so the hub, the panel and the games open signed in;
+  the host writes no code for it, and the provider of `setHostTokenProvider` is never called for this
+  fan. The session ends at `logout()` or a change of fan, which also revoke it on the server, best
+  effort and without waiting; at `FastoryIdentityRevoked`, often shortly after a launch — `expired`
+  after 90 days without use or a year after the login, `rejected` with the API's `code` when the
+  renewal is refused (a revoked key, a token presented twice); and with no event at all after a
+  reinstall, a restore onto another device, or a regenerated publishable key. The answer to every one
+  of them is `identify(FastoryFanId())` again. A launch offline signs nobody out — never advise a host
+  to re-`identify` at every launch to "keep the session alive": the SDK already does, and a new
+  login revokes the previous session.
 - Configuring with a publishable key is **not** authentication and never was: the key says which
   workspace an app belongs to, carries no user identity, and grants no access on its own. Identity is
   `identify`, and only `identify`.
@@ -145,24 +209,33 @@ moves, nothing changes signature and nothing is removed — two public types gai
   `FastoryBridgeMessage`; since 0.4.0 they can also **ask** a question, which the SDK answers from the
   standing value the host set with `setBridgeReply` (`SPEC.md §13.8`). A type outside the relevant
   registry is dropped inbound and answered `unsupported` outbound. There is still **no** API to push
-  into a page unprompted — that would need script evaluation, which `SPEC.md §12.1` forbids.
+  into a page unprompted — that would need script evaluation, which `SPEC.md §12.1` forbids. Since
+  0.5.0 the SDK itself speaks first in exactly one way, and it is not a host API: the session-change
+  signal (`SPEC.md §13.9`), a constant, payload-free event it dispatches in the game pages it owns
+  when the answer they would get changes — one of § 12.1's bounded exceptions, carrying no data.
   "Receive-only" is still the correct name of the § 13.1–13.7 channel, and § 13.8 is the second one;
   what is wrong is "the bridge is receive-only" said of the bridge as a whole, which describes the
   design before § 13.8 landed and never described a released version, since both channels shipped
   together in 0.4.0.
-- **The receive registry holds two types since 0.5.0** (`SPEC.md` § 13.3): `fastory:ready` and
-  `fastory:login-requested`; the request registry still holds `fastory:user-token` alone, and the two
-  never share a type. The second inbound type is a fan tapping a sign-in entry on the hub, the panel
-  or a game, and it arrives only when the host set `FastoryConfig.handlesLoginRequests` (`SPEC.md`
-  § 2.6). Four things to get right when advising on it. The **answer is the host's own sign-in
-  followed by `identify`** — `FastoryHostToken(jwt)`, or `FastoryFanId()` for the system browser —
-  never a bridge reply, and never a login form in the page: no page the SDK shows renders one. **A
-  host that declares the field must listen for the message**, or every sign-in entry becomes a button
-  that does nothing; never suggest declaring it "for later". **Without the field the pages show no
-  sign-in entry at all** — by design, not a defect to report. And **never let a host decide anything
-  sensitive on it**: its payload is empty and, on Android, a sub-frame can post it. After the
-  `identify`, the hub on screen reloads signed in; the membership panel does not show the signed-in
-  fan yet (`README.md` → *Known limitations*).
+- **The receive registry holds three types** (`SPEC.md` § 13.3): `fastory:ready`,
+  `fastory:login-requested` (since 0.5.0) and `fastory:logout-requested`; the request registry still
+  holds `fastory:user-token` alone, and the two never share a type. The two new inbound types are a fan
+  tapping a sign-in or a sign-out entry on the hub, the panel or a game, and both arrive only when the
+  host set `FastoryConfig.handlesLoginRequests` (`SPEC.md` § 2.6) — one field covers both. Five
+  things to get right when advising on them. The **answer to a sign-in request is the host's own
+  sign-in followed by `identify`** — `FastoryHostToken(jwt)`, or `FastoryFanId()` for the system
+  browser — never a bridge reply, and never a login form in the page: no page the SDK shows renders
+  one. The **answer to a sign-out request is a confirmation the host shows, then `logout()` on the
+  fan's yes** — never `logout()` on receipt (`SPEC.md` § 13.7): on Android a sub-frame can post the
+  message without a tap, and a snippet that signs out on receipt lets it sign the fan out behind their
+  back. The page ends no session on its own, so until the host answers the fan stays signed in. **A
+  host that declares the field must listen for both messages**, or every sign-in and sign-out entry
+  becomes a button that does nothing; never suggest declaring it "for later". **Without the field the
+  pages show no sign-in or sign-out entry at all** — by design, not a defect to report. And **never
+  let a host decide anything sensitive on either message**: the payload is empty and, on Android, a
+  sub-frame can post it. After the `identify`, the hub or the membership panel on screen reloads
+  signed in, and after the `logout()` signed out — a panel on the screen it was opened on, with no
+  opening or closing event (`SPEC.md` § 7).
 - **`openMembership()` can name the sequence to open, since 0.5.0** (`SPEC.md` § 3.5, § 5.2). Four
   things to get right when advising on it. The **argument is `sequenceId` and the URL parameter is
   `sequence`** — say it once rather than letting a host read the difference as a typo. The host

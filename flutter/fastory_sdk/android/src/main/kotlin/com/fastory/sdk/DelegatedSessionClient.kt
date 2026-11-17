@@ -14,8 +14,26 @@ import java.util.concurrent.Executors
  * [fanId] is the account's `oauthUserId`, stringified — the only identifier the exchange returns that
  * is present on the first sight of a delegated fan and stable across replays of the same subject
  * (SPEC § 2.6.2).
+ *
+ * [refreshToken] is what renews a `FanId` fan's session from one launch to the next (SPEC § 2.6.3):
+ * returned by the login code's exchange and by every renewal. It is null for a `HostToken` session,
+ * and for an API that issues none, in which case the session works exactly as before.
  */
-internal data class FastoryDelegatedSession(val token: String, val fanId: String)
+internal data class FastoryDelegatedSession(
+    val token: String,
+    val fanId: String,
+    val refreshToken: String? = null,
+)
+
+/**
+ * The answer to a refresh-token grant: a renewed session carrying its rotated token, or the
+ * classified reason it was not renewed.
+ */
+internal sealed class FastoryRefreshGrantResult {
+    data class Renewed(val session: FastoryDelegatedSession) : FastoryRefreshGrantResult()
+
+    data class Failed(val outcome: FastoryRefreshGrantOutcome) : FastoryRefreshGrantResult()
+}
 
 /**
  * Maps an identity-exchange outcome to the `identify` error a host branches on (SPEC § 5.4).
@@ -63,6 +81,44 @@ internal object FastoryIdentityExchangeClassifier {
     }
 }
 
+/** What the answer to a refresh-token grant means for the fan on the device (SPEC § 2.6.3). */
+internal sealed class FastoryRefreshGrantOutcome {
+    /**
+     * No verdict was reached: the stored token and the identity stay, and the next launch tries
+     * again.
+     */
+    object Transient : FastoryRefreshGrantOutcome()
+
+    data class Refused(
+        val reason: FastoryRevocationReason,
+        val code: String?,
+    ) : FastoryRefreshGrantOutcome()
+}
+
+/**
+ * Classifies a refresh-token grant that did not succeed. Pure and table-driven, like the exchange
+ * classifier above, so a 503 cannot sign a fan out on one platform and keep them on the other. Unlike
+ * that classifier, a refusal here is not an `identify` error: it ends a session the host already
+ * holds, so it becomes an `identityRevoked` reason.
+ */
+internal object FastoryRefreshGrantClassifier {
+    const val EXPIRED_CODE = "refresh_token_expired"
+
+    /**
+     * [httpStatus] is null when no answer arrived. A refusal's reason is read from the API code, not
+     * the status, so an expired token is told apart from a rejected one whatever 4xx carries it.
+     */
+    fun classify(httpStatus: Int?, apiCode: String?): FastoryRefreshGrantOutcome {
+        if (httpStatus == null || httpStatus == 429 || httpStatus >= 500) {
+            return FastoryRefreshGrantOutcome.Transient
+        }
+        if (apiCode == EXPIRED_CODE) {
+            return FastoryRefreshGrantOutcome.Refused(FastoryRevocationReason.EXPIRED, null)
+        }
+        return FastoryRefreshGrantOutcome.Refused(FastoryRevocationReason.REJECTED, apiCode)
+    }
+}
+
 /**
  * Exchanges a host attestation for a fan session, and mints the single-use token the hub needs to
  * adopt it. No browser and no form: the partner already authenticated the fan, so the JWT is
@@ -75,6 +131,12 @@ internal object DelegatedSessionClient {
 
     private val handler = Handler(Looper.getMainLooper())
     private val executor = Executors.newSingleThreadExecutor()
+
+    /**
+     * Revocations only. Best effort and answered by nothing the fan waits on, so a revocation that
+     * hangs never delays the grant or the exchange queued behind it.
+     */
+    private val revokeExecutor = Executors.newSingleThreadExecutor()
 
     internal data class Request(
         val url: String,
@@ -112,7 +174,7 @@ internal object DelegatedSessionClient {
         )
         executor.execute {
             val (status, responseBody) = safeRequest(request)
-            handler.post { callback(session(status, responseBody)) }
+            handler.post { callback(session(status, responseBody, keepsRefreshToken = false)) }
         }
     }
 
@@ -121,7 +183,8 @@ internal object DelegatedSessionClient {
      * The caller is proven by the publishable key and the application identifier — the pair the code
      * was minted for — and the PKCE verifier ties the exchange to the app that started the login.
      * The session comes back bound to the games' stories origin, exactly like the attestation
-     * exchange above; a code replayed, expired or presented by another caller is refused.
+     * exchange above; a code replayed, expired or presented by another caller is refused. It carries
+     * the refresh token the API issued beside it, or none.
      */
     fun exchangeLoginCode(
         code: String,
@@ -147,7 +210,71 @@ internal object DelegatedSessionClient {
         )
         executor.execute {
             val (status, responseBody) = safeRequest(request)
-            handler.post { callback(session(status, responseBody)) }
+            handler.post { callback(session(status, responseBody, keepsRefreshToken = true)) }
+        }
+    }
+
+    /**
+     * Presents a `FanId` fan's stored refresh token for a new session, with no browser
+     * (SPEC § 2.6.3). The token presented is spent: a renewal comes back with its successor, which
+     * replaces it.
+     *
+     * Anything but a renewal is classified by [FastoryRefreshGrantClassifier]. A success whose body
+     * cannot be read is classified as no answer at all — something other than the API answered, or
+     * the answer was lost — so it never signs the fan out.
+     */
+    fun refreshGrant(
+        refreshToken: String,
+        publishableKey: String,
+        applicationId: String,
+        config: FastoryConfig,
+        callback: (FastoryRefreshGrantResult) -> Unit,
+    ) {
+        val body = JSONObject(
+            mapOf(
+                "grant_type" to "refresh_token",
+                "refresh_token" to refreshToken,
+                "publishableKey" to publishableKey,
+                "applicationId" to applicationId,
+            ),
+        ).toString()
+        val request = Request(
+            url = config.embedTokenUrl,
+            headers = mapOf("Content-Type" to "application/json"),
+            body = body,
+        )
+        executor.execute {
+            val (status, responseBody) = safeRequest(request)
+            handler.post { callback(grantResult(status, responseBody)) }
+        }
+    }
+
+    /**
+     * Asks the API to end the family of a refresh token the SDK is letting go of. Best effort: the
+     * answer, whatever it is, changes nothing on the device, so [callback] reports only that the
+     * attempt is over.
+     */
+    fun revoke(
+        refreshToken: String,
+        config: FastoryConfig,
+        callback: () -> Unit = {},
+    ) {
+        revoke(refreshToken, config.apiBaseUrl, callback)
+    }
+
+    fun revoke(
+        refreshToken: String,
+        apiBaseUrl: String,
+        callback: () -> Unit = {},
+    ) {
+        val request = Request(
+            url = FastoryConfig.revokeUrlAt(apiBaseUrl),
+            headers = mapOf("Content-Type" to "application/json"),
+            body = JSONObject(mapOf("refresh_token" to refreshToken)).toString(),
+        )
+        revokeExecutor.execute {
+            safeRequest(request)
+            handler.post { callback() }
         }
     }
 
@@ -262,7 +389,11 @@ internal object DelegatedSessionClient {
             -1 to null
         }
 
-    private fun session(status: Int, body: String?): Result<FastoryDelegatedSession> {
+    private fun session(
+        status: Int,
+        body: String?,
+        keepsRefreshToken: Boolean,
+    ): Result<FastoryDelegatedSession> {
         if (status < 0 || body == null) {
             return Result.failure(
                 FastoryIdentityExchangeClassifier.error(
@@ -293,7 +424,47 @@ internal object DelegatedSessionClient {
                 ),
             )
         }
-        return Result.success(FastoryDelegatedSession(token = token, fanId = fanId))
+        return Result.success(
+            FastoryDelegatedSession(
+                token = token,
+                fanId = fanId,
+                refreshToken = if (keepsRefreshToken) json?.let(::refreshToken) else null,
+            ),
+        )
+    }
+
+    private fun grantResult(status: Int, body: String?): FastoryRefreshGrantResult {
+        val noAnswer = FastoryRefreshGrantResult.Failed(
+            FastoryRefreshGrantClassifier.classify(httpStatus = null, apiCode = null),
+        )
+        if (status < 0) return noAnswer
+        val json = body?.let {
+            try {
+                JSONObject(it)
+            } catch (_: Exception) {
+                null
+            }
+        }
+        if (status !in 200..299) {
+            return FastoryRefreshGrantResult.Failed(
+                FastoryRefreshGrantClassifier.classify(
+                    httpStatus = status,
+                    apiCode = json?.optString("code")?.ifBlank { null },
+                ),
+            )
+        }
+        val token = json?.optString("token")?.ifBlank { null }
+        val fanId = json?.let(::fanId)
+        val refreshToken = json?.let(::refreshToken)
+        if (token == null || fanId == null || refreshToken == null) return noAnswer
+        return FastoryRefreshGrantResult.Renewed(
+            FastoryDelegatedSession(token = token, fanId = fanId, refreshToken = refreshToken),
+        )
+    }
+
+    private fun refreshToken(json: JSONObject): String? {
+        if (!json.has("refreshToken") || json.isNull("refreshToken")) return null
+        return json.optString("refreshToken").ifBlank { null }
     }
 
     /** `oauthUserId` is a number in the response and a string on the identity surface. */

@@ -32,7 +32,7 @@ import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
 
-class GameBottomSheet : BottomSheetDialogFragment() {
+internal class GameBottomSheet : BottomSheetDialogFragment() {
 
     private var webView: WebView? = null
     private var errorView: LinearLayout? = null

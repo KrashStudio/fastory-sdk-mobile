@@ -2,7 +2,7 @@ package com.fastory.sdk
 
 import java.net.URLEncoder
 
-enum class FastoryEnvironment(
+public enum class FastoryEnvironment(
     internal val defaultBaseUrl: String?,
     // Origin the fanzone builds its game links on (the web's storiesUrl). Preload URLs
     // must match the URL a real tap would produce, so cache entries line up. Development
@@ -34,12 +34,12 @@ enum class FastoryEnvironment(
  * Appearance the host app asks the web surfaces to render in. Forwarded as a `theme` query
  * parameter; the web side does not read it yet, so setting it is inert until it ships there.
  */
-enum class FastoryTheme(internal val value: String) {
+public enum class FastoryTheme(internal val value: String) {
     LIGHT("light"),
     DARK("dark"),
 }
 
-data class FastoryConfig(
+public data class FastoryConfig(
     /**
      * Deprecated identifier, kept for the whole 0.x compatibility window. Null when configured
      * by publishable key, in which case the fanzone is resolved from the API.
@@ -74,14 +74,17 @@ data class FastoryConfig(
      */
     val prewarm: Set<FastorySurface> = setOf(FastorySurface.HUB),
     /**
-     * Whether your app signs the fan in when a Fastory page asks it to (SPEC § 2.6).
+     * Whether your app signs the fan in and out when a Fastory page asks it to (SPEC § 2.6).
      *
-     * No page the SDK presents ever shows a login form of its own. Declared, the hub, the membership
-     * panel and the games keep their sign-in entries, and a fan's tap on one reaches
-     * [FastoryEventsListener.onBridgeMessage] as `fastory:login-requested`: sign the fan in your own
-     * way, then call [Fastory.identify]. Left `false`, the pages show no sign-in entry at all.
-     * Declare it only if you handle that message — otherwise every sign-in entry becomes a control
-     * that does nothing.
+     * No page the SDK presents ever shows a login form of its own, nor signs the fan out on its own.
+     * Declared, the hub, the membership panel and the games keep their sign-in and sign-out entries,
+     * and a fan's tap on one reaches [FastoryEventsListener.onBridgeMessage]:
+     * - `fastory:login-requested`: sign the fan in your own way, then call [Fastory.identify].
+     * - `fastory:logout-requested`: ask the fan to confirm, then call [Fastory.logout]. Never sign
+     *   the fan out on the message alone — any frame of a page can post it without the fan's tap.
+     *
+     * Left `false`, the pages show no sign-in or sign-out entry at all. Declare it only if you handle
+     * both messages — otherwise each of those entries becomes a control that does nothing.
      *
      * The last parameter, so a call that passes the others by position compiles unchanged.
      */
@@ -111,7 +114,7 @@ data class FastoryConfig(
         }
     }
 
-    val baseUrl: String
+    internal val baseUrl: String
         get() = environment.defaultBaseUrl ?: developmentBaseUrl!!.trimEnd('/')
 
     internal val apiBaseUrl: String
@@ -132,11 +135,15 @@ data class FastoryConfig(
     internal val embedRefreshUrl: String
         get() = "${apiBaseUrl.trimEnd('/')}/embed/auth/refresh"
 
+    /** Ends the family of a refresh token the SDK lets go of. */
+    internal val embedRevokeUrl: String
+        get() = revokeUrlAt(apiBaseUrl)
+
     /**
      * The hub URL for a resolved fanzone slug. Configured by key, the slug is only known once
      * `/sdk/auth/bootstrap` answers, so this takes it as a parameter.
      */
-    fun hubUrl(fanzoneSlug: String): String = buildString {
+    internal fun hubUrl(fanzoneSlug: String): String = buildString {
         append(baseUrl.trimEnd('/'))
         append('/')
         append(fanzoneSlug)
@@ -170,7 +177,7 @@ data class FastoryConfig(
      * than composed, so it is escaped here — pasted in as it came, its own `&` would mint a
      * parameter nobody sent and leave the page with a truncated identifier.
      */
-    fun membershipUrl(workspaceId: String, sequenceId: String? = null): String = buildString {
+    internal fun membershipUrl(workspaceId: String, sequenceId: String? = null): String = buildString {
         append(baseUrl.trimEnd('/'))
         append("/embed/bot/")
         append(workspaceId)
@@ -202,7 +209,7 @@ data class FastoryConfig(
      * Non-null only when configured by slug — the one case where the hub URL is known without a
      * round trip, and therefore the only one that can warm a webview at configure time.
      */
-    val staticHubUrl: String?
+    internal val staticHubUrl: String?
         get() {
             @Suppress("DEPRECATION")
             val slug = fanzoneSlug ?: return null
@@ -234,7 +241,7 @@ data class FastoryConfig(
             putAll(hostLoginQuery)
         }
 
-    companion object {
+    internal companion object {
         const val LIVE_PUBLISHABLE_KEY_PREFIX = "fpk_live_"
         const val TEST_PUBLISHABLE_KEY_PREFIX = "fpk_test_"
         private const val MALFORMED_PUBLISHABLE_KEY = "publishableKey must start with " +
@@ -262,6 +269,8 @@ data class FastoryConfig(
          * the fan sign-in entries no host listens for.
          */
         internal fun handlesLoginRequestsFromChannel(value: Any?): Boolean = value == true
+
+        internal fun revokeUrlAt(apiBaseUrl: String): String = "${apiBaseUrl.trimEnd('/')}/embed/auth/revoke"
 
         internal fun validatePublishableKey(key: String, environment: FastoryEnvironment) {
             val prefix = when {

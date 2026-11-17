@@ -14,12 +14,12 @@ import android.webkit.WebStorage
  * A sealed class rather than a flag bag, so constructing more than one mode is impossible by
  * construction instead of rejected at runtime.
  */
-sealed class FastoryIdentity {
-    object Anonymous : FastoryIdentity()
+public sealed class FastoryIdentity {
+    public object Anonymous : FastoryIdentity()
 
-    object FanId : FastoryIdentity()
+    public object FanId : FastoryIdentity()
 
-    data class HostToken(val jwt: String) : FastoryIdentity()
+    public data class HostToken(val jwt: String) : FastoryIdentity()
 
     internal val mode: FastoryIdentityMode
         get() = when (this) {
@@ -30,7 +30,7 @@ sealed class FastoryIdentity {
 }
 
 /** [wireName] is the string that crosses the platform channel (SPEC § 5.2). */
-enum class FastoryIdentityMode(internal val wireName: String) {
+public enum class FastoryIdentityMode(internal val wireName: String) {
     ANONYMOUS("anonymous"),
     FAN_ID("fanId"),
     HOST_TOKEN("hostToken"),
@@ -46,7 +46,7 @@ enum class FastoryIdentityMode(internal val wireName: String) {
  * @property fanId always null for [FastoryIdentityMode.ANONYMOUS]: the device visitor is minted per
  * origin by the web page, so the native side never sees it (SPEC § 2.6.2).
  */
-data class FastoryResolvedIdentity(
+public data class FastoryResolvedIdentity(
     val mode: FastoryIdentityMode,
     val fanId: String? = null,
 ) {
@@ -62,10 +62,10 @@ data class FastoryResolvedIdentity(
  * (`identify_rejected`); null otherwise. It crosses the channel as `details.code` so a host branches
  * on the API's reason without parsing a message.
  */
-class FastoryIdentifyException(
-    val code: String,
+public class FastoryIdentifyException(
+    public val code: String,
     message: String? = null,
-    val detailsCode: String? = null,
+    public val detailsCode: String? = null,
 ) : Exception(message ?: code) {
 
     internal companion object {
@@ -75,18 +75,6 @@ class FastoryIdentifyException(
         const val LOGIN_CANCELLED = "login_cancelled"
         const val REJECTED = "identify_rejected"
         const val NETWORK_ERROR = "identify_network_error"
-
-        /**
-         * A pre-flight rejection is decided before anything is attempted, so it leaves the current
-         * identity untouched. A resolution failure happened after the previous session was already
-         * erased, so it leaves the SDK anonymous (SPEC § 2.6.1). Conflating the two is how asking
-         * for a not-yet-released mode would sign a fan out.
-         */
-        fun isPreflight(code: String): Boolean = code in setOf(
-            MODE_UNAVAILABLE,
-            INVALID_IDENTITY_MODE,
-            INVALID_HOST_TOKEN,
-        )
     }
 }
 
@@ -95,13 +83,16 @@ class FastoryIdentifyException(
  * event (SPEC § 5.3). A host-driven drop (`logout()`, a replacing `configure()`) is never a
  * revocation: the host already knows, so it gets no event.
  */
-enum class FastoryRevocationReason(internal val wireName: String) {
-    /** A background re-exchange was refused by the API. Carries the API's own code when it named one. */
+public enum class FastoryRevocationReason(internal val wireName: String) {
+    /**
+     * A background renewal was refused by the API — a host-token re-exchange, or the renewal of a
+     * `FanId` fan's stored session. Carries the API's own code when it named one.
+     */
     REJECTED("rejected"),
 
     /**
-     * The embed session expired and could not be renewed — no host-token provider was registered,
-     * so there was no fresh assertion to re-exchange. Carries no code: nothing refused it.
+     * The session lapsed and could not be renewed: no host-token provider was registered, or a
+     * `FanId` fan's stored session outlived its lifetime. Carries no code.
      */
     EXPIRED("expired"),
 }
@@ -110,7 +101,7 @@ enum class FastoryRevocationReason(internal val wireName: String) {
  * The `identityRevoked` event's payload. [code] is the API's machine-readable reason, present only
  * for [FastoryRevocationReason.REJECTED] and only when the refusal named one (SPEC § 5.3, § 5.4).
  */
-data class FastoryIdentityRevocation(
+public data class FastoryIdentityRevocation(
     val reason: FastoryRevocationReason,
     val code: String? = null,
 )
@@ -241,8 +232,7 @@ internal object FastoryIdentityRules {
         requested is FastoryIdentity.HostToken && requested.jwt.isBlank() ->
             rejected(FastoryIdentifyException.INVALID_HOST_TOKEN)
 
-        // A pre-flight rejection, so asking for a mode this version does not implement must not sign
-        // the current fan out.
+        // A pre-flight refusal (SPEC § 2.6.1), so it never signs the current fan out.
         requested !is FastoryIdentity.Anonymous ->
             rejected(FastoryIdentifyException.MODE_UNAVAILABLE)
 
@@ -300,10 +290,10 @@ internal object FastoryIdentityRules {
             errorCode = null,
             erasesStorage = current != null,
             emitsIdentityResolved = false,
-            // Unconditional, unlike the erasure: nothing populates the standing answer
-            // automatically yet, so today it is only ever there because the host put it there —
-            // with no identify() call anywhere in that story. Gating this on `current != null` would
-            // make logout() silently keep serving the fan it announces it signed out.
+            // Unconditional, unlike the erasure: the standing answer can be there because the host
+            // put it there, with no identify() call anywhere in that story, as well as because a
+            // delegated session set it. Gating this on `current != null` would make logout()
+            // silently keep serving the fan it announces it signed out.
             revokesBridgeReplies = true,
         )
 
@@ -319,32 +309,45 @@ internal object FastoryIdentityRules {
 }
 
 /**
- * The observable effects of one host-token lifecycle event, decided without any I/O so both
- * platforms map the same trigger to the same outcome — the renewal analogue of the exchange
- * classifier.
+ * The observable effects of one lifecycle event, decided without any I/O so both platforms map the
+ * same trigger to the same outcome — the renewal analogue of the exchange classifier.
  *
  * @property revocation the `identityRevoked` event to emit, or null. Only a background drop carries
  * one — a host-driven `logout`/`configReplaced` never surprises the host with news it already has.
+ * @property serverRevocation whether the SDK asks the server to revoke the token family it held, best
+ * effort and without waiting. A family the server refused is already over, so a refusal never asks
+ * again.
  */
 internal data class FastoryLifecycleEffects(
     val identity: Identity,
     val standingAnswer: StandingAnswer,
     val revocation: FastoryIdentityRevocation?,
     val persistence: Persistence,
+    val refreshToken: RefreshToken,
+    val serverRevocation: Boolean,
 ) {
-    enum class Identity(val wireName: String) { PRESERVED("preserved"), ANONYMOUS("anonymous") }
+    /**
+     * [REPLACED] is a different resolved identity taking over: another fan, or the same fan in
+     * another mode.
+     */
+    enum class Identity(val wireName: String) {
+        PRESERVED("preserved"), ANONYMOUS("anonymous"), REPLACED("replaced")
+    }
     enum class StandingAnswer(val wireName: String) {
         PRESERVED("preserved"), REFRESHED("refreshed"), REVOKED("revoked")
     }
     enum class Persistence(val wireName: String) {
         UNCHANGED("unchanged"), WRITTEN("written"), READ("read"), PURGED("purged")
     }
+    enum class RefreshToken(val wireName: String) {
+        KEPT("kept"), STORED("stored"), ROTATED("rotated"), PURGED("purged")
+    }
 }
 
 /**
- * Maps each host-token lifecycle event to its effects. Pure and total, so every case is decidable the
- * same way on both platforms: the shared reference the two renewal coordinators in [Fastory] are
- * written against, and what the cross-platform fixture pins so a case cannot drift between them.
+ * Maps each lifecycle event to its effects. Pure and total, so every case is decidable the same way
+ * on both platforms: the shared reference the renewal coordinators in [Fastory] are written against,
+ * and what the cross-platform fixture pins so a case cannot drift between them.
  */
 internal object FastoryHostTokenLifecycle {
 
@@ -375,6 +378,17 @@ internal object FastoryHostTokenLifecycle {
 
         /** A replacing `configure` discards the previous configuration's identity. Host-driven. */
         object ConfigReplaced : Trigger()
+
+        object FanIdLaunchRenewed : Trigger()
+        data class FanIdLaunchRejected(val code: String?) : Trigger()
+        object FanIdLaunchExpired : Trigger()
+        object FanIdLaunchTransient : Trigger()
+        object FanIdLaunchWithoutToken : Trigger()
+        object FanIdLaunchProtectedDataUnavailable : Trigger()
+        object FanIdLogout : Trigger()
+        object FanChanged : Trigger()
+        object SameFanReidentified : Trigger()
+        object FanIdToHostToken : Trigger()
     }
 
     fun effects(trigger: Trigger): FastoryLifecycleEffects = when (trigger) {
@@ -383,6 +397,8 @@ internal object FastoryHostTokenLifecycle {
             FastoryLifecycleEffects.StandingAnswer.REFRESHED,
             revocation = null,
             FastoryLifecycleEffects.Persistence.UNCHANGED,
+            FastoryLifecycleEffects.RefreshToken.KEPT,
+            serverRevocation = false,
         )
         // The provider handed back a fresh assertion and the re-exchange resolved the same fan: the
         // new session's token replaces the standing answer, and persistence is re-stamped.
@@ -391,32 +407,90 @@ internal object FastoryHostTokenLifecycle {
             FastoryLifecycleEffects.StandingAnswer.REFRESHED,
             revocation = null,
             FastoryLifecycleEffects.Persistence.WRITTEN,
+            FastoryLifecycleEffects.RefreshToken.KEPT,
+            serverRevocation = false,
         )
-        is Trigger.ExchangeRefused -> FastoryLifecycleEffects(
-            FastoryLifecycleEffects.Identity.ANONYMOUS,
-            FastoryLifecycleEffects.StandingAnswer.REVOKED,
-            FastoryIdentityRevocation(FastoryRevocationReason.REJECTED, trigger.code),
-            FastoryLifecycleEffects.Persistence.PURGED,
-        )
-        is Trigger.SessionExpiredNoProvider -> FastoryLifecycleEffects(
-            FastoryLifecycleEffects.Identity.ANONYMOUS,
-            FastoryLifecycleEffects.StandingAnswer.REVOKED,
-            FastoryIdentityRevocation(FastoryRevocationReason.EXPIRED, null),
-            FastoryLifecycleEffects.Persistence.PURGED,
-        )
+        is Trigger.ExchangeRefused ->
+            revoked(FastoryIdentityRevocation(FastoryRevocationReason.REJECTED, trigger.code))
+        is Trigger.SessionExpiredNoProvider ->
+            revoked(FastoryIdentityRevocation(FastoryRevocationReason.EXPIRED, null))
         is Trigger.BootRehydration -> FastoryLifecycleEffects(
             FastoryLifecycleEffects.Identity.PRESERVED,
             FastoryLifecycleEffects.StandingAnswer.PRESERVED,
             revocation = null,
             FastoryLifecycleEffects.Persistence.READ,
+            FastoryLifecycleEffects.RefreshToken.KEPT,
+            serverRevocation = false,
         )
         // Host-driven: the fan is dropped and persistence purged, but no event — the host initiated
         // it. The standing answer is revoked so no game keeps the old token.
-        is Trigger.Logout, is Trigger.ConfigReplaced -> FastoryLifecycleEffects(
+        is Trigger.Logout, is Trigger.ConfigReplaced -> signedOut(serverRevocation = false)
+        is Trigger.FanIdLaunchRenewed -> FastoryLifecycleEffects(
+            FastoryLifecycleEffects.Identity.PRESERVED,
+            FastoryLifecycleEffects.StandingAnswer.REFRESHED,
+            revocation = null,
+            FastoryLifecycleEffects.Persistence.WRITTEN,
+            FastoryLifecycleEffects.RefreshToken.ROTATED,
+            serverRevocation = false,
+        )
+        is Trigger.FanIdLaunchRejected ->
+            revoked(FastoryIdentityRevocation(FastoryRevocationReason.REJECTED, trigger.code))
+        is Trigger.FanIdLaunchExpired ->
+            revoked(FastoryIdentityRevocation(FastoryRevocationReason.EXPIRED, null))
+        is Trigger.FanIdLaunchTransient, is Trigger.FanIdLaunchProtectedDataUnavailable ->
+            FastoryLifecycleEffects(
+                FastoryLifecycleEffects.Identity.PRESERVED,
+                FastoryLifecycleEffects.StandingAnswer.PRESERVED,
+                revocation = null,
+                FastoryLifecycleEffects.Persistence.UNCHANGED,
+                FastoryLifecycleEffects.RefreshToken.KEPT,
+                serverRevocation = false,
+            )
+        is Trigger.FanIdLaunchWithoutToken -> signedOut(serverRevocation = false)
+        is Trigger.FanIdLogout -> signedOut(serverRevocation = true)
+        is Trigger.FanChanged -> FastoryLifecycleEffects(
+            FastoryLifecycleEffects.Identity.REPLACED,
+            FastoryLifecycleEffects.StandingAnswer.REVOKED,
+            revocation = null,
+            FastoryLifecycleEffects.Persistence.WRITTEN,
+            FastoryLifecycleEffects.RefreshToken.STORED,
+            serverRevocation = true,
+        )
+        is Trigger.SameFanReidentified -> FastoryLifecycleEffects(
+            FastoryLifecycleEffects.Identity.PRESERVED,
+            FastoryLifecycleEffects.StandingAnswer.REFRESHED,
+            revocation = null,
+            FastoryLifecycleEffects.Persistence.WRITTEN,
+            FastoryLifecycleEffects.RefreshToken.STORED,
+            serverRevocation = true,
+        )
+        is Trigger.FanIdToHostToken -> FastoryLifecycleEffects(
+            FastoryLifecycleEffects.Identity.REPLACED,
+            FastoryLifecycleEffects.StandingAnswer.REFRESHED,
+            revocation = null,
+            FastoryLifecycleEffects.Persistence.WRITTEN,
+            FastoryLifecycleEffects.RefreshToken.PURGED,
+            serverRevocation = true,
+        )
+    }
+
+    private fun revoked(revocation: FastoryIdentityRevocation): FastoryLifecycleEffects =
+        FastoryLifecycleEffects(
+            FastoryLifecycleEffects.Identity.ANONYMOUS,
+            FastoryLifecycleEffects.StandingAnswer.REVOKED,
+            revocation,
+            FastoryLifecycleEffects.Persistence.PURGED,
+            FastoryLifecycleEffects.RefreshToken.PURGED,
+            serverRevocation = false,
+        )
+
+    private fun signedOut(serverRevocation: Boolean): FastoryLifecycleEffects =
+        FastoryLifecycleEffects(
             FastoryLifecycleEffects.Identity.ANONYMOUS,
             FastoryLifecycleEffects.StandingAnswer.REVOKED,
             revocation = null,
             FastoryLifecycleEffects.Persistence.PURGED,
+            FastoryLifecycleEffects.RefreshToken.PURGED,
+            serverRevocation,
         )
-    }
 }

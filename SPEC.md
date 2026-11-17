@@ -44,7 +44,7 @@ Two of those three restrictions are permanent and normative, not historical: the
 
 ## 2. Public API Surface
 
-The SDK exposes **eight operations** — `configure`, `openGames`, `close` (since 0.1), `identify`, `logout` and `setBridgeReply` (since 0.4.0), `openMembership` (since 0.5.0), and `setHostTokenProvider` (since 0.5.0) — and **one event stream** carrying the eleven events of § 5.3. Signatures below are normative; implementations MUST match them exactly.
+The SDK exposes **eight operations** — `configure`, `openGames`, `close` (since 0.1), `identify`, `logout` and `setBridgeReply` (since 0.4.0), `openMembership` (since 0.5.0), and `setHostTokenProvider` (since 0.5.0) — and **one event stream** carrying the eleven events of § 5.3. Signatures below are normative; implementations MUST match them exactly. **The blocks below are the whole public surface, in both directions** (since 0.5.1): every name they declare MUST be public, and a native core MUST NOT make public, to Swift or Kotlin callers, a name they do not declare — a Kotlin class kept `internal` still reads as public in bytecode to a Java caller, and is no more API for it. A public name nobody declared is one an integrator can build against while nobody decided to publish it: § 10 does not lock it, yet withdrawing it still breaks that integrator's build. Each change is checked against these blocks.
 
 **Two of the senses the word *surface* carries here can be read for one another, so this is which is which.** One is a web view the SDK presents — the hub, or a game: that is `FastorySurface` in the API (§ 2.2–2.4, § 5.3) and *web surface* in § 13. The other is a set of exported names — *the public surface* of this section, *the two native API surfaces*, *the Dart surface*. Which one a sentence means follows from what it is about: a surface that loads, fails or is presented is the first; a surface a host compiles against is the second. Where it means an area of exposure instead — *a leak surface*, *an assertion surface* — it is neither of the two; that is the ordinary English word.
 
@@ -60,17 +60,19 @@ The SDK exposes **eight operations** — `configure`, `openGames`, `close` (sinc
 | `theme` | enum `light` \| `dark` | no | Appearance hint forwarded to the web surfaces (§ 3.2, § 3.3) |
 | `developmentBaseUrl` | string (https URL) | only when `environment == development` | Custom base URL for development |
 | `prewarm` | set of `FastorySurface` | no (default: `hub` alone) | *Since 0.5.0.* The surfaces prepared before their first opening (§ 11). An empty set prepares nothing ahead of time |
-| `handlesLoginRequests` | bool | no (default: `false`) | *Since 0.5.0.* The host listens for `fastory:login-requested` (§ 13.3) and signs the fan in itself. Declared, it is forwarded to the web surfaces as `hostLogin=1` (§ 3.2, § 3.3, § 3.5), and their sign-in entries ask the host; left `false`, they show none (§ 2.6) |
+| `handlesLoginRequests` | bool | no (default: `false`) | *The sign-in request since 0.5.0.* The host listens for `fastory:login-requested` and `fastory:logout-requested` (§ 13.3): it signs the fan in itself, and signs them out itself once they confirm (§ 13.7). Declared, it is forwarded to the web surfaces as `hostLogin=1` (§ 3.2, § 3.3, § 3.5), and their sign-in and sign-out entries ask the host; left `false`, they show neither (§ 2.6) |
 
 `configure` MUST be called before `openGames()`. Calling `openGames()` unconfigured MUST fail with error code `not_configured` (§ 5.4). `configure` MAY be called again; the new configuration applies to the next `openGames()` call. It may be called from any thread (§ 2.7).
 
 **`openGames()` is idempotent** (since 0.4.0): called while a hub is already presented, it MUST do nothing at all — not an error, and never a second hub. A double tap on a tab-bar entry is the ordinary way to reach this, so the guarantee cannot rest on the host not asking twice. Three consequences follow from a second hub and each is normative on its own: the host receives exactly **one `hubOpened` and one `hubClosed` per hub the SDK presents** (§ 5.3), `close()` MUST return the fan to the host application rather than to another hub, and no page may leave the warm slot (§ 11) without being released — a stacked hub stashes over the other one's page on the way out, and a platform without automatic reference counting leaks it.
 
-**Where presentation is asynchronous, the reservation MUST be taken at the request, not at the arrival.** An implementation whose hub is an `Activity` — or any container the platform builds on a later turn — cannot answer "is a hub up?" from the container itself during the launch window, and that window is precisely where the second tap lands. It MUST therefore mark the hub as taken when `openGames()` is called, release that mark when the container is **dismissed** — and no later than its destruction, including when it never reached the screen — and re-take it when the platform recreates the same container, or `openGames()` becomes a permanent no-op instead of an idempotent one. A call arriving while the container is still animating out MAY be absorbed; one arriving after it MUST open a hub. A platform may destroy a dismissed container seconds later, and a mark held until then makes an `openGames()` in that gap a silent no-op. A `close()` arriving inside that window MUST still be honoured: a hub the host has asked to be rid of MUST NOT appear a frame later.
+**Where presentation is asynchronous, the reservation MUST be taken at the request, not at the arrival.** An implementation whose hub is an `Activity` — or any container the platform builds on a later turn — cannot answer "is a hub up?" from the container itself during the launch window, and that window is precisely where the second tap lands. It MUST therefore mark the hub as taken when `openGames()` is called, release that mark when the container is **dismissed** — and no later than its destruction, including when it never reached the screen — and re-take it when the platform recreates the same container, or `openGames()` becomes a permanent no-op instead of an idempotent one. A call arriving while the container is still leaving — right after `close()`, from its closing event, or while the fan dismisses it — MUST open a new hub once that container has left, after its closing event and never in its place (since 0.5.1); one arriving after it MUST open a hub at once. Only one such opening is kept: the first wins, as it does while a hub is up, and a `close()` called before it is presented drops it, while a `close()` called before the opening was asked for does not. A platform may destroy a dismissed container seconds later, and a mark held until then makes an `openGames()` in that gap a silent no-op. A `close()` arriving inside that window MUST still be honoured: a hub the host has asked to be rid of MUST NOT appear a frame later.
 
 **And the reservation MUST survive a launch that is refused without saying so.** Releasing it when the container is destroyed is not sufficient, because a start the platform refuses outright never builds one to destroy: since Android 10 a start from the background is refused with a log line and **no exception**, and `openGames(context)` takes a plain `Context` on purpose, so a native host may legitimately call it from there. An implementation MUST therefore also give the reservation back on a **timeout** — the current one is **10 s**, keyed to the launch it was armed for so it can never free a hub that did arrive — and that behaviour is observable: nothing opens, and roughly ten seconds later `openGames()` works normally again. Without it, one refused start makes the SDK mute for the life of the process, which is strictly worse than the stacking the reservation prevents and, unlike it, unrecoverable.
 
-iOS presents synchronously and has always behaved this way; Android did not until 0.4.0.
+iOS has always held the reservation from the request; Android did not until 0.4.0.
+
+**An opening asked for while the presenter itself is leaving MUST open once it has settled** (since 0.5.1). The controller a host hands in is usually the one on top of its stack, and at the moments that matter most that controller is on its way out: the surface `close()` has just taken down, or the system browser sheet of a `fanId` sign-in (§ 2.6) still leaving as `identify` returns. A platform presenting on it is refused — on iOS with a log line and nothing else — and the fan's tap is lost. An implementation MUST present on a controller that stays: the one handed in, unless it, a container it sits in, or a controller presenting it is leaving — a game sheet over the hub being closed goes with the hub, and the screen of a navigation container the host is closing goes with that container — in which case the controller presenting the highest of those. It presents once that controller is no longer in a transition, and MUST NOT wait for that indefinitely: past a deadline — the current one is **2 s** — it presents anyway. Until 0.5.1, iOS absorbed an opening asked for while a surface was leaving and lost one asked for over a leaving sheet, where Android already opened a hub asked for right after `close()`.
 
 **The count is per presentation, and a platform rebuilding its own container is not one** (since 0.4.5). Android destroys and recreates an `Activity` for a configuration change outside its declared `configChanges` — a locale switch, a density change, *Don't keep activities* — and until 0.4.5 the implementation surfaced that as a `hubClosed` immediately followed by a `hubOpened`, for one hub the fan never saw leave: honest about the container, wrong about the presentation. A rebuilt hub MUST continue the presentation and emit neither event; a game sheet rebuilt with it MUST continue the game and emit neither `gameClosed` nor `gameOpened` — its page reloads with the screen, and a reload that fails reports `surfaceLoadFailed` (§ 9.1) — with one exception no implementation can avoid: a game that opened after the platform saved the hub's state has no record to resume from, so its closing is reported at the rebuild and the restored sheet announces a new opening. An `openGames()` arriving before the platform has rebuilt the hub asks for that hub again; a `close()` arriving then ends the presentation at once — `gameClosed` when a game was open, then `hubClosed` — and the container the platform rebuilds afterwards finishes without emitting anything. The presentation ends with the one `hubClosed` — preceded by one `gameClosed` when a game was open — that § 5.3 requires: on a dismissal, or when the platform has dropped the saved container and the next `openGames()` starts a new presentation, which ends the lost one first. An implementation tells a rebuild from a dismissal at the point the container ends, not at the point an event is emitted: a container ending without finishing its presentation is being rebuilt.
 
@@ -97,15 +99,15 @@ The set governs **preparation ahead of the first opening only**. A surface the f
 
 The two native platforms MUST agree here. They did not before 0.4.0, and the divergence was recorded nowhere as a decision.
 
-Implementations MUST reject, at `configure` time and before any network call: neither identifier supplied, both supplied, a blank `fanzoneSlug`, and a `publishableKey` that is malformed or minted for another environment (§ 2.5). A rejected configuration MUST NOT be stored, and MUST NOT be accepted now to fail later at the network layer.
+Implementations MUST reject, at `configure` time and before any network call: neither identifier supplied, both supplied, a blank `fanzoneSlug`, a blank `hubTabSlug`, and a `publishableKey` that is malformed or minted for another environment (§ 2.5). A rejected configuration MUST NOT be stored, and MUST NOT be accepted now to fail later at the network layer.
 
 **A rejection MUST leave the configuration already in force untouched.** Not storing the rejected one is only half of it: the previous configuration keeps applying, so a `configure` that is refused is a call that changed nothing, not a call that de-configured the SDK. A host whose *first* `configure` is refused is unconfigured and `openGames()` reports `not_configured` (§ 5.4); a host that re-configures and is refused still holds the configuration it had, and `openGames()` opens **that** one. Documentation MUST NOT state the first case as though it were the general one — it is the case a host meets on day one and never again.
 
-**A typed, catchable error MUST be reachable for every rejection, and on which entry point it sits is a platform decision — which is not the same as it being reachable from `configure` itself.** The two shipped channels put it in different places: Swift's `configure(_:)` is non-throwing by design (§ 2.2 — the signature is locked and both initializers are non-throwing too), so it validates and, on a **debug** build, `assertionFailure`s and terminates the process; on a release build it returns, having changed nothing. Dart's `configure` throws `ArgumentError` on the caller's thread, before the platform channel, so the native side is not reached at all. Both satisfy the requirement above, and both are correct: the catchable error a Swift host reaches is `FastoryConfig.validate()`, which is public, throws `FastoryConfigError` (a `LocalizedError`, so its `localizedDescription` names the rule), applies this same rule set and calls nothing. What is normative:
+**A typed, catchable error MUST be reachable for every rejection, and on which entry point it sits is a platform decision — which is not the same as it being reachable from `configure` itself.** The three shipped channels put it in different places. Swift's `configure(_:)` is non-throwing by design (§ 2.2 — the signature is locked and both initializers are non-throwing too), so it validates and, on a **debug** build, `assertionFailure`s and terminates the process; on a release build it returns, having changed nothing. Dart's `configure` throws `ArgumentError` on the caller's thread, before the platform channel, so the native side is not reached at all. Kotlin's `FastoryConfig` checks its fields in its constructor and throws `IllegalArgumentException` there, on a debug and a release build alike, so a rejected configuration is never built and `configure` is never reached. All three satisfy the requirement above, and all three are correct: the catchable error a Swift host reaches is `FastoryConfig.validate()`, which is public, throws `FastoryConfigError` (a `LocalizedError`, so its `localizedDescription` names the rule), applies this same rule set and calls nothing. What is normative:
 
 - Every rejection listed above MUST be reachable as a **typed, catchable error** on some public entry point of the platform's own API — `validate()` where `configure` is non-throwing, `configure` itself where the language makes that idiomatic.
 - A platform MAY additionally trap on a debug build, as an assertion about programmer error. It MUST NOT trap on a release build.
-- **Whatever a platform does, its shipped documentation MUST say so, distinguishing debug from release**, and MUST NOT attribute to one channel what another does. An integrator moving between the two channels — the migration path § 2.5's deprecation window describes — meets exactly this divergence on the single most likely configuration mistake, a key and an environment that disagree.
+- **Whatever a platform does, its shipped documentation MUST say so, distinguishing debug from release**, and MUST NOT attribute to one channel what another does. An integrator moving between channels — the migration path § 2.5's deprecation window describes — meets exactly this divergence on the single most likely configuration mistake, a key and an environment that disagree.
 
 ### 2.2 Swift (iOS)
 
@@ -148,6 +150,20 @@ public struct FastoryConfig {
     public func validate() throws
 }
 
+// What `validate()` throws (§ 2.1), one case per rule. `description` and `errorDescription` carry the
+// same English sentence naming the rule, so `localizedDescription` and string interpolation read it.
+public enum FastoryConfigError: Error, Equatable, CustomStringConvertible, LocalizedError {
+    case blankFanzoneSlug
+    case blankHubTabSlug
+    case missingIdentifier
+    case conflictingIdentifier
+    case malformedPublishableKey
+    case publishableKeyEnvironmentMismatch
+
+    public var description: String
+    public var errorDescription: String?
+}
+
 public protocol FastoryEventsDelegate: AnyObject {
     func fastoryHubOpened(fanzoneSlug: String)
     func fastoryHubClosed()
@@ -168,6 +184,9 @@ public protocol FastoryEventsDelegate: AnyObject {
 
     // since 0.4.0 — defaulted to a no-op in a protocol extension (§ 9.1)
     func fastorySurfaceLoadFailed(_ failure: FastoryLoadFailure)
+
+    // since 0.5.0 — defaulted to a no-op in a protocol extension (§ 2.6.3)
+    func fastoryIdentityRevoked(_ revocation: FastoryIdentityRevocation)
 }
 
 // since 0.4.0 — a surface that did not load (§ 9.1); `membership` added in 0.5.0 (§ 3.5)
@@ -182,6 +201,10 @@ public struct FastoryLoadFailure: Equatable {
     public let code: String?
     /// The HTTP status the surface's main document answered; non-nil only when one did.
     public let statusCode: Int?
+
+    // So a host can build one to test its delegate.
+    public init(surface: FastorySurface, reason: FastoryLoadFailureReason,
+                code: String? = nil, statusCode: Int? = nil)
 }
 
 // since 0.4.0 — the requested mode (§ 2.6)
@@ -199,6 +222,8 @@ public struct FastoryResolvedIdentity: Equatable {
     public let mode: FastoryIdentityMode
     /// Non-nil only for an identified fan; always `nil` for `.anonymous` (§ 2.6.2).
     public let fanId: String?
+
+    public init(mode: FastoryIdentityMode, fanId: String? = nil)
 }
 
 public enum FastoryIdentifyError: Error, Equatable {
@@ -207,9 +232,28 @@ public enum FastoryIdentifyError: Error, Equatable {
     case invalidIdentityMode(String)
     case invalidHostToken
     case loginCancelled
-    case rejected(code: String)
+    /// The API's own refusal code (§ 2.5), when the refusal named one.
+    case rejected(code: String?)
     case network
+
+    /// The § 5.4 code of the case — `identify_rejected` for `.rejected`, whatever the API said.
+    public var code: String
 }
+
+// since 0.5.0 — why the SDK dropped a delegated identity on its own (§ 2.6.3)
+public enum FastoryRevocationReason: String { case rejected, expired }
+
+public struct FastoryIdentityRevocation: Equatable {
+    public let reason: FastoryRevocationReason
+    /// The API's refusal code; non-nil only for `.rejected` when the refusal named one.
+    public let code: String?
+
+    public init(reason: FastoryRevocationReason, code: String? = nil)
+}
+
+// since 0.5.0 — asked for a fresh host JWT when a delegated session must be renewed (§ 2.6.3). Call
+// the completion with the new JWT, or with `nil` when the host cannot supply one.
+public typealias FastoryHostTokenProvider = (@escaping (String?) -> Void) -> Void
 
 // since 0.4.0 — what a web surface may ask the native side to answer (§ 13.8.3). An enum, not a
 // free string: the request registry is a security boundary, so a host cannot name a type outside it.
@@ -239,15 +283,19 @@ public enum Fastory {
 
     // since 0.4.0 (§ 13.8). What the next web request for `type` is answered with; `nil` clears it.
     public static func setBridgeReply(for type: FastoryBridgeRequestType, payload: [String: Any]?)
+
+    // since 0.5.0 (§ 2.6.3). The provider the SDK asks when a delegated session must be renewed;
+    // `nil` unregisters it.
+    public static func setHostTokenProvider(_ provider: FastoryHostTokenProvider?)
 }
 ```
 
-- `openGames(from:)` MUST present the hub full screen (`.fullScreen` modal presentation) over `presenter`. Calling it unconfigured is a no-op (an assertion fires in debug builds); it does not throw. Calling it while a hub is already presented is a no-op too, and silent — § 2.1.
-- `openMembership(from:sequenceId:)` (since 0.5.0) MUST present the membership panel the same way, over `presenter`. Calling it unconfigured, or on a configuration that carries a fanzone slug rather than a publishable key, is a no-op with an assertion in debug builds — the two cases assert distinct messages, since a host told only "not configured" re-configures with the same slug. Calling it while either surface is presented is a silent no-op, § 2.1. `sequenceId` is optional and defaulted: naming none is the ordinary form and opens the panel's default screen. What it names, and what a blank or unknown identifier does, is § 3.5.
+- `openGames(from:)` MUST present the hub full screen (`.fullScreen` modal presentation) over `presenter`. Calling it unconfigured is a no-op (an assertion fires in debug builds); it does not throw. Calling it while a hub is already presented is a no-op too, and silent — § 2.1. Calling it while a surface is leaving, or with a `presenter` that is itself on its way out, opens the hub once that is over — § 2.1.
+- `openMembership(from:sequenceId:)` (since 0.5.0) MUST present the membership panel the same way, over `presenter`. Calling it unconfigured, or on a configuration that carries a fanzone slug rather than a publishable key, is a no-op with an assertion in debug builds — the two cases assert distinct messages, since a host told only "not configured" re-configures with the same slug. Calling it while either surface is presented is a silent no-op, § 2.1; while one is leaving, it opens the panel once that one has left. `sequenceId` is optional and defaulted: naming none is the ordinary form and opens the panel's default screen. What it names, and what a blank or unknown identifier does, is § 3.5.
 - `close()` MUST dismiss the game sheet (if any) and the presented surface, in that order, emitting `gameClosed` then that surface's closing event.
 - `eventsDelegate` is `weak`: the host app MUST retain its delegate for the lifetime of the session, or events stop being delivered.
 - `identify(_:completion:)` and `logout(completion:)` are non-throwing and non-blocking (§ 2.6.1); every outcome arrives through the completion, on the main thread. The `completion` is optional so a host that only watches `fastoryIdentityResolved` can ignore it — but the errors of § 2.6 are reported **only** there, never as an event.
-- Every callback added after v0.1 — `fastoryBridgeMessage`, `fastoryIdentityResolved` and `fastorySurfaceLoadFailed` in 0.4.0, `fastoryMembershipOpened` and `fastoryMembershipClosed` in 0.5.0 — MUST have a default no-op implementation in a protocol extension, so a host written against the v0.1 delegate keeps compiling. That is what makes this surface additive while Dart's is source-breaking (§ 10): the list must stay complete, or the next release adds one more and breaks a conformer that never asked for it.
+- Every callback added after v0.1 — `fastoryBridgeMessage`, `fastoryIdentityResolved` and `fastorySurfaceLoadFailed` in 0.4.0, `fastoryMembershipOpened`, `fastoryMembershipClosed` and `fastoryIdentityRevoked` in 0.5.0 — MUST have a default no-op implementation in a protocol extension, so a host written against the v0.1 delegate keeps compiling. That is what makes this surface additive while Dart's is source-breaking (§ 10): the list must stay complete, or the next release adds one more and breaks a conformer that never asked for it.
 
 ### 2.3 Kotlin (Android)
 
@@ -289,6 +337,8 @@ interface FastoryEventsListener {
     fun onIdentityResolved(identity: FastoryResolvedIdentity) {}
     // since 0.4.0 (§ 9.1)
     fun onSurfaceLoadFailed(failure: FastoryLoadFailure) {}
+    // since 0.5.0 (§ 2.6.3)
+    fun onIdentityRevoked(revocation: FastoryIdentityRevocation) {}
 }
 
 // since 0.4.0 — a surface that did not load (§ 9.1); `MEMBERSHIP` added in 0.5.0 (§ 3.5)
@@ -318,8 +368,27 @@ enum class FastoryIdentityMode { ANONYMOUS, FAN_ID, HOST_TOKEN }
 /** [fanId] is non-null only for an identified fan; always null for [FastoryIdentityMode.ANONYMOUS]. */
 data class FastoryResolvedIdentity(val mode: FastoryIdentityMode, val fanId: String? = null)
 
-/** Every identify failure of § 5.4, carried as its machine-readable [code]. */
-class FastoryIdentifyException(val code: String, message: String? = null) : Exception(message ?: code)
+/**
+ * Every identify failure of § 5.4, carried as its machine-readable [code]. [detailsCode] is the API's
+ * own refusal code for `identify_rejected` (`details.code` on the channel), null otherwise.
+ */
+class FastoryIdentifyException(
+    val code: String,
+    message: String? = null,
+    val detailsCode: String? = null,
+) : Exception(message ?: code)
+
+// since 0.5.0 — why the SDK dropped a delegated identity on its own (§ 2.6.3)
+enum class FastoryRevocationReason { REJECTED, EXPIRED }
+
+/** [code] is the API's refusal code; non-null only for [FastoryRevocationReason.REJECTED] when it named one. */
+data class FastoryIdentityRevocation(val reason: FastoryRevocationReason, val code: String? = null)
+
+// since 0.5.0 — asked for a fresh host JWT when a delegated session must be renewed (§ 2.6.3). Call
+// the completion with the new JWT, or with null when the host cannot supply one.
+fun interface FastoryHostTokenProvider {
+    fun provideHostToken(completion: (String?) -> Unit)
+}
 
 // since 0.4.0 — what a web surface may ask the native side to answer (§ 13.8.3). An enum, not a
 // free string: the request registry is a security boundary, so a host cannot name a type outside it.
@@ -349,6 +418,10 @@ object Fastory {
 
     // since 0.4.0 (§ 13.8). What the next web request for [type] is answered with; null clears it.
     fun setBridgeReply(type: FastoryBridgeRequestType, payload: Map<String, Any?>?)
+
+    // since 0.5.0 (§ 2.6.3). The provider the SDK asks when a delegated session must be renewed;
+    // null unregisters it.
+    fun setHostTokenProvider(provider: FastoryHostTokenProvider?)
 }
 ```
 
@@ -426,7 +499,11 @@ class FastoryExternalLink extends FastoryEvent {
 // since 0.4.0 (§ 13); `fastory:login-requested` added in 0.5.0 (§ 13.3)
 class FastoryBridgeMessage extends FastoryEvent {
   const FastoryBridgeMessage(this.type, this.payload);
-  static const Set<String> knownTypes = <String>{'fastory:ready', 'fastory:login-requested'};
+  static const Set<String> knownTypes = <String>{
+    'fastory:ready',
+    'fastory:login-requested',
+    'fastory:logout-requested',
+  };
   final String type;
   final Map<String, Object?> payload;
 }
@@ -437,6 +514,16 @@ class FastoryIdentityResolved extends FastoryEvent {
   final FastoryIdentityMode mode;
   /// Non-null only for an identified fan; always null for [FastoryIdentityMode.anonymous].
   final String? fanId;
+}
+
+// since 0.5.0 — the SDK dropped a delegated identity on its own (§ 2.6.3)
+enum FastoryRevocationReason { rejected, expired }
+
+class FastoryIdentityRevoked extends FastoryEvent {
+  const FastoryIdentityRevoked(this.reason, this.code);
+  final FastoryRevocationReason reason;
+  /// The API's refusal code; non-null only for [FastoryRevocationReason.rejected] when it named one.
+  final String? code;
 }
 
 // since 0.4.0 — a surface that did not load (§ 9.1); `membership` added in 0.5.0 (§ 3.5)
@@ -486,6 +573,10 @@ enum FastoryBridgeRequestType {
   final String wireValue;
 }
 
+// since 0.5.0 — asked for a fresh host JWT when a delegated session must be renewed (§ 2.6.3);
+// completes with the new JWT, or with null when the host cannot supply one.
+typedef FastoryHostTokenProvider = Future<String?> Function();
+
 class Fastory {
   static Future<void> configure(FastoryConfig config);
   static Future<void> openGames();
@@ -504,13 +595,17 @@ class Fastory {
     Map<String, Object?>? payload,
   );
 
+  // since 0.5.0 (§ 2.6.3). The provider the SDK asks when a delegated session must be renewed;
+  // null unregisters it.
+  static Future<void> setHostTokenProvider(FastoryHostTokenProvider? provider);
+
   static Stream<FastoryEvent> get events;
 }
 ```
 
 - All methods delegate to the platform channel (§ 5) and complete when the native side has acknowledged the call.
 - `events` is a broadcast stream backed by the `EventChannel`; subscribing MUST NOT be required for the SDK to function.
-- `identify` rejects with a `PlatformException` carrying one of the § 5.4 codes; it never completes with a partially resolved identity. `logout` always succeeds.
+- `identify` rejects with a `PlatformException` carrying one of the § 5.4 codes; it never completes with a partially resolved identity. `logout` always succeeds, and completes once everything local is erased: it never waits for the server revocation it attempts for a `fanId` fan (§ 2.6.1).
 - Adding a subtype to the `sealed` `FastoryEvent` hierarchy is **source-breaking on Dart**: an exhaustive `switch` with no `default:` stops compiling until the host adds a case. 0.4.0 adds **three** — `FastoryBridgeMessage`, `FastoryIdentityResolved` and `FastorySurfaceLoadFailed` — and a host meets all of them at once, since none of the three shipped separately. Deliberate, under SemVer § 4 for a `0.y.z` line, and called out in `CHANGELOG.md`. The two native API surfaces are unaffected: every new callback is defaulted to a no-op.
 
 ### 2.5 Publishable key (since 0.3.0)
@@ -559,30 +654,42 @@ Two properties of that table are easy to get backwards:
   system browser, which is also the only path that reaches the device's password manager. **No login
   form may ever render in a WebView**, on any platform, in any mode.
 
-**A sign-in entry on a page the SDK presents asks the host, or is not shown** (since 0.5.0). The
-hub, the membership panel and the games carry sign-in entries of their own — a *Log in* button, a
-contest reserved to signed-in fans, a game's end offering to save the score. Inside an SDK WebView
-none of them may open a login form, a drawer, a popup or any other window: signing the fan in belongs
-to the host, through `identify`. What a page does instead follows from `handlesLoginRequests`
-(§ 2.1), which it reads from the `hostLogin` parameter of the address it was loaded with (§ 3.2,
-§ 3.3, § 3.5):
+**A sign-in or sign-out entry on a page the SDK presents asks the host, or is not shown** (the
+sign-in entry since 0.5.0). The hub, the membership panel and the games carry sign-in entries of their own — a *Log in*
+button, a contest reserved to signed-in fans, a game's end offering to save the score — and, for a
+signed-in fan, sign-out entries — a *Log out* button, a sign-out link in a message. Inside an SDK
+WebView none of the sign-in entries may open a login form, a drawer, a popup or any other window, and
+none of the sign-out entries may end the fan's session in the page: the fan's session belongs to the
+host, through `identify` and `logout`. A page that ended it on its own would show no fan while the
+SDK still holds one, and since the presented hub or panel reloads only when the identified fan
+changes (§ 2.6.1), the same fan signed in again would find it still signed out. What a page does instead
+follows from `handlesLoginRequests` (§ 2.1), which it reads from the `hostLogin` parameter of the
+address it was loaded with (§ 3.2, § 3.3, § 3.5):
 
-- **Declared.** The page keeps its sign-in entries. A fan's tap on one posts
+- **Declared.** The page keeps its sign-in and sign-out entries. A fan's tap on a sign-in entry posts
   `fastory:login-requested` (§ 13.3) and does nothing else. The host then signs the fan in its own
   way — its own login followed by `identify(hostToken)`, or `identify(fanId)` and the system browser
-  — and the identity that call resolves reaches the hub and the games (§ 2.6.1, § 13.9). The page
-  MUST NOT post the message without a fan's gesture: loading a page, reaching a locked one or
-  completing a game never asks the host to show its login.
-- **Not declared.** The page shows no sign-in entry. An entry whose only effect is to sign in is not
-  rendered, and content reserved to a signed-in fan says that the fan signs in from the app, with no
-  control attached. A host that declares nothing therefore never hands a fan a control that does
-  nothing.
+  — and the identity that call resolves reaches the hub, the membership panel and the games
+  (§ 2.6.1, § 13.9). A fan's tap
+  on a sign-out entry posts `fastory:logout-requested` (§ 13.3) and does nothing else either: the fan
+  stays signed in, in the page and in the SDK, until the host answers. The host asks the fan to
+  confirm, in its own interface, and calls `logout()` only when they do; the presented hub or panel
+  then reloads signed out and the games are signalled (§ 2.6.1, § 13.9). **The host MUST NOT call
+  `logout()` on the message alone** (§ 13.7). The page MUST NOT post either message without a fan's
+  gesture: loading a page, reaching a locked one or completing a game never asks the host to show its
+  login, and a sign-out the page performs without a fan's tap is not a request and posts nothing.
+- **Not declared.** The page shows no sign-in entry and no sign-out entry. An entry whose only effect
+  is to sign in or to sign out is not rendered, and content reserved to a signed-in fan says that the
+  fan signs in from the app, with no control attached. A host that declares nothing therefore never
+  hands a fan a control that does nothing — and a fan it signed in with `identify` is signed out by
+  its own `logout()`, never from a page.
 
-The SDK's whole part is to forward the declaration on the URLs it builds and to deliver the message
-(§ 13.4): it opens nothing on it and changes no navigation (§ 13). **A host that declares the
-capability MUST listen for the message** — declared and unheard, every sign-in entry becomes a
-control that does nothing, and no event tells the host so. The page reads the parameter only where it
-runs inside an SDK WebView: carried onto a page opened in a browser, it changes nothing there.
+The SDK's whole part is to forward the declaration on the URLs it builds and to deliver the two
+messages (§ 13.4): it opens nothing on them, signs nobody out on them and changes no navigation
+(§ 13). **A host that declares the capability MUST listen for both messages** — declared and unheard,
+every sign-in and sign-out entry becomes a control that does nothing, and no event tells the host so.
+The page reads the parameter only where it runs inside an SDK WebView: carried onto a page opened in
+a browser, it changes nothing there.
 
 A reserved mode MUST fail fast with `identify_mode_unavailable` (§ 5.4) until the version that
 implements it — never a silent no-op, never a partially resolved state. Since 0.5.0 no mode is
@@ -612,6 +719,10 @@ Three properties of the `fanId` login, all normative:
   browser is not asked to type again — the login round-trips through the existing web session and
   returns at once.
 
+`identify` can return while the browser sheet is still leaving the screen, cancelled or signed in
+alike. An `openGames()` or `openMembership()` asked for from its completion opens once the sheet has
+gone (§ 2.1, since 0.5.1): a host does not wait for anything before reopening a surface.
+
 #### 2.6.1 State transitions
 
 The whole of `identify` follows from one rule:
@@ -625,21 +736,47 @@ The whole of `identify` follows from one rule:
   the web to mint a fresh visitor on the next load, so every call would hand back a *different* fan.
 - **Resolving a different identity replaces the session.** Erase first (§ 7.4), then resolve. Nothing
   of the previous fan survives — including the warm hub and the preloaded games.
-- **A refusal leaves the SDK anonymous.** Not half-identified, and not still the previous fan: the call
-  surfaces a typed error (§ 5.4), emits no `identityResolved`, and the next surface load mints a plain
-  anonymous visitor. A failed `identify` is therefore **not** a no-op — implementations MUST NOT keep
-  the previous identity on failure, which is exactly the shape that leaves a live session the host
-  believes is gone.
+- **A pre-flight refusal leaves the current identity untouched.** A call refused before anything is
+  attempted fails with one of exactly four codes (§ 5.4): `not_configured`, `invalid_identity_mode`
+  (a `mode` argument the channel does not know, § 5.2), `invalid_host_token` and
+  `identify_mode_unavailable`. It erases nothing, starts no exchange and no login, emits no event,
+  and leaves the standing bridge answer as it was (§ 13.8.6): the identity in force before the call,
+  a signed-in fan or an anonymous visitor, is still in force after it. Implementations MUST decide
+  these four before touching any state, so that asking for a mode the configuration cannot serve
+  never signs a fan out. The Dart side also raises `invalid_identity_mode` when the native side
+  *answers* with a mode it does not know. That raise is not a refusal: it comes after the call
+  resolved, so the identity is whatever the native side resolved, and it reports a defect in the
+  plugin, never something the host did.
+- **A resolution failure leaves the SDK anonymous.** The three remaining codes — `login_cancelled`,
+  `identify_rejected`, `identify_network_error` — come after the call was committed to a resolution.
+  Not half-identified, and not still the previous fan: the call surfaces a typed error (§ 5.4), emits
+  no `identityResolved`, revokes the standing bridge answer (§ 13.8.6), and the next surface load
+  mints a plain anonymous visitor. A failed
+  resolution is therefore **not** a no-op — implementations MUST NOT keep the previous identity on a
+  resolution failure, which is exactly the shape that leaves a live session the host believes is
+  gone.
 - **`logout()` erases and returns to not-identified.** It is idempotent, it MUST NOT touch the host
   application's own session (§ 12), and it needs no network call to be complete. It also revokes the
   standing bridge answer (§ 13.8.6), unconditionally — including when no identity was ever resolved,
-  since a host may set the answer by hand without ever calling `identify`.
-- **A hub on screen follows the identified fan** (since 0.5.0). A transition that changes *which* fan
-  is identified — none to one, one to another, one to none — MUST reload the presented hub through the
-  session handoff, so the page shows the fan the SDK now holds, or no fan. A transition that leaves the
-  identified fan as it was MUST NOT reload it: the same fan identified again, the § 2.6.3 renewal, and
-  a move between not identified and anonymous, neither of which identifies anyone. The membership
-  panel is not reloaded. § 7 holds the rule in full.
+  since a host may set the answer by hand without ever calling `identify`. For a `fanId` fan it
+  erases everything local first, at once — the stored refresh token included (§ 7.5), so no later
+  launch or renewal can find it — and only then asks the server to revoke that token's family
+  (§ 2.6.3), best effort: `logout()` neither waits for that request nor fails when it does not go
+  through, and a family a device offline at that moment could not revoke expires on its own.
+- **A new `fanId` login ends the token family the SDK held before it.** Whether `identify(fanId)`
+  resolves a different fan or the same one again, the SDK stores the refresh token the new login
+  returned and asks the server to revoke the family of the one it replaces, best effort, as
+  `logout()` does. An `identify(hostToken)` that follows a `fanId` login erases the stored token and
+  revokes its family the same way, since a `hostToken` fan keeps none (§ 2.6.3). It is the SDK that
+  revokes, and only its own token: exchanging a login code revokes nothing on the server, because a
+  fan may be signed in on several devices, and a login on one MUST NOT sign the others out.
+- **The surface on screen follows the identified fan** (the hub since 0.5.0). A transition that changes
+  *which* fan is identified — none to one, one to another, one to none — MUST reload the presented
+  hub or membership panel, so the page shows the fan the SDK now holds, or no fan: the hub through the
+  session handoff, the panel on the address it was opened at, whose page asks for the session again
+  (§ 3.5). A transition that leaves the identified fan as it was MUST NOT reload either: the same fan
+  identified again, the § 2.6.3 renewal, and a move between not identified and anonymous, neither of
+  which identifies anyone. § 7 holds the rule in full.
 - `identify` MUST NOT block the caller, and MUST NOT throw across the bridge (§ 5.4). It MAY be called
   before or after `openGames()`. Calling it before `configure()` fails with `not_configured` — the same
   code `openGames()` already uses, not a new one.
@@ -672,40 +809,107 @@ the visitor, or a fanzone profile id (a delegated fan has no fanzone profile unt
 
 #### 2.6.3 Delegated session lifecycle (since 0.5.0)
 
-A `hostToken` identity is backed by an embed session with a short lifetime. The SDK keeps the fan
-identified across that lifetime without a visible break, and drops the identity cleanly when it cannot.
+An identified fan — `hostToken` or `fanId` — is backed by an embed session with a short lifetime. The
+SDK keeps the fan identified across that lifetime, and from one launch of the app to the next, without
+a visible break, and drops the identity cleanly when it cannot. The two modes differ in what renews a
+session that can no longer extend itself: a `hostToken` fan's host can assert them again, while a
+`fanId` fan signed in once, in the system browser, and the SDK keeps what that login returned — a
+**refresh token**.
 
 **Renewal.** Before the embed session expires, the SDK MUST renew it, ahead of time and off the host's
 critical path — the fan never meets a dead session mid-game or mid-purchase. It renews in two steps:
 first a server-side refresh of the session while it is still valid, involving no one; and when that is
-refused, a fresh assertion obtained from the host through `setHostTokenProvider` (§ 5.2) and
-re-exchanged. The SDK reads the `exp` of **its own embed session** to time this; it MUST NOT inspect
-the host's token (§ 12). Transmitting a renewed token MUST be non-blocking. A renewal that lands
-announces itself to the live game pages through the session-change signal (§ 13.9), so a page
+refused, or the session has already expired, the mode's own credential — for `hostToken`, a fresh
+assertion obtained from the host through `setHostTokenProvider` (§ 5.2) and re-exchanged; for `fanId`,
+the stored refresh token. The SDK reads the `exp` of **its own embed session** to time this; it MUST
+NOT inspect the host's token (§ 12). Transmitting a renewed token MUST be non-blocking. A renewal that
+lands announces itself to the live game pages through the session-change signal (§ 13.9), so a page
 mid-game re-reads its session instead of running the old one to expiry.
 
 **The provider.** `setHostTokenProvider` registers the closure the SDK calls back — `requestHostToken`
-(§ 5.2) — when it needs a fresh assertion. A provider that returns `null`, or none registered at all,
-means the session simply lapses.
+(§ 5.2) — when it needs a fresh assertion for a `hostToken` fan. A provider that returns `null`, or
+none registered at all, means the session simply lapses. **The SDK MUST NOT call it for a `fanId`
+fan**, nor re-exchange a host assertion on that fan's behalf: the host did not sign that fan in, so an
+assertion it returned would name the host's own user, not the fan who signed in to Fastory.
 
-**Revocation.** When a session expires with no way to renew it, or a background re-exchange is refused,
-the SDK MUST drop the identity to anonymous — erasing per § 7.4, revoking the standing bridge answer
-(§ 13.8.6) — and emit `identityRevoked` (§ 5.3) carrying a `reason` the host can act on: `expired` when
-nothing could renew it, `rejected` (with the API's `code` when it named one) when a re-exchange was
-refused. A refused session MUST NOT leave a blank panel: the host is told, and may re-`identify` or let
-the fan continue anonymously. The live game pages are told the same way as for a renewal (§ 13.9):
-the signal fires, the page re-asks, and `unavailable` (§ 13.8.2) is the answer that tells it the fan
-is gone.
+**The refresh token (`fanId`).** The exchange of the login's code (§ 2.6) returns, beside the embed
+session, a refresh token: an opaque credential bound to the publishable key, the application
+identifier, the workspace and the fan. The SDK stores it (§ 7.5) and presents it, with the publishable
+key and the application identifier, to obtain a new embed session with no browser. Its rules are
+normative:
 
-**Persistence.** The verified identity — its `mode` and `fanId`, never the host token or the embed
-session — MUST survive between launches, scoped to the workspace and environment it was resolved under.
-The SDK rehydrates it **as early as it can reach a stored identity** — no later than the panel opening,
-so the panel is never shown before the last known fan — rather than re-verifying from scratch;
-rehydration MUST NOT emit `identityResolved` (it restores, it does not resolve), and the session behind
-it is re-established in the background. What rehydration guarantees is the **identity**, not the
-surfaces' live session, which the background re-exchange restores. (The exact moment is a platform
-detail: where the SDK holds an application context at startup it rehydrates then; where it first
-receives one when the host opens the panel, it rehydrates there — both before anything renders.)
+- **It rotates.** Every renewal returns a successor that replaces the stored token; the token
+  presented is spent.
+- **It lives 90 days without use, and one year at most.** Each renewal pushes the 90 days back;
+  nothing pushes back the year, counted from the login the token descends from. A fan who opens the
+  app at least once every 90 days stays signed in for a year, then signs in again in the system
+  browser.
+- **A spent token is accepted once more, within 120 seconds, and only while its successor has never
+  been used** — so a renewal whose answer was lost on the way does not sign the fan out. Outside that
+  window, presenting a spent token is treated as theft: the presentation is refused with
+  `refresh_token_reused`, and the server ends the token's whole chain — every token and every embed
+  session issued from it — so the other holder's next renewal is refused too.
+- **It renews silently at launch.** Once a `fanId` fan is rehydrated (*Persistence* below), the SDK
+  presents the stored token at once — the previous launch's embed session is not kept (§ 7.5) — and
+  presents it again whenever the embed session has expired or its refresh was refused. Neither emits
+  `identityResolved` nor reloads a surface (§ 2.6.1, § 7): the fan was already identified. While the
+  launch renewal is in flight, a page's request for the fan's token waits for it, and so does the
+  hub's opening, 3 seconds at most (§ 13.8.2), so that both start signed in.
+- **One renewal at a time, and never for a fan who has gone.** The SDK MUST NOT present the token
+  twice at once: rotation admits a single successor, so a renewal needed while one is in flight waits
+  for it. And every `logout()`, `identify` and replacing `configure` advances a generation counter the
+  SDK holds, whichever mode is identified; an answer that returns under an older generation MUST be
+  ignored — applied, it would sign back in a fan the host has just signed out.
+- **One table classifies every answer that is not a success**, identically on every platform. A
+  transport failure, a `429` and any `5xx` reached no verdict; any other `4xx` is a refusal, whose
+  reason is read from the API's `code` before the status:
+
+  | Answer | Outcome |
+  |---|---|
+  | None — offline, timed out — a `429`, or any `5xx` | **Transient.** The identity and the stored token stay, no event is emitted, and the SDK tries again later, on the next launch at the latest |
+  | `refresh_token_expired`, whatever the `4xx` | **Refused**, as `expired`, with no `code`: the token outlived one of its two lifetimes |
+  | Any other `4xx` — `refresh_token_invalid` (a token unknown, revoked or bound to another caller), `refresh_token_reused`, a refused key such as `sdk_key_revoked`, or no `code` at all | **Refused**, as `rejected`, carrying the API's `code` when the answer named one |
+
+  A refusal ends the session as *Revocation* below describes. A transient failure never signs a fan
+  out.
+- **The SDK revokes the family it holds whenever it lets its token go** — at `logout()`, at another
+  fan's login, at a new login of the same fan, and when the same fan is identified with `hostToken`
+  (§ 2.6.1) — best effort, without waiting. The server ends a family on its own when it detects a reuse, and refuses the next
+  renewal when the publishable key was revoked or deleted, the application identifier removed from it,
+  or the workspace deleted.
+- **The binding does not authenticate the app.** The publishable key and the application identifier
+  both ship inside the app, so whoever holds a copy of the app holds them too. What protects a copied
+  token is its rotation: a token used by two holders is used twice, and the second use ends the chain
+  for both.
+
+**Revocation.** When a session expires with no way to renew it, or a background renewal is refused —
+a re-exchange of a host assertion, or a `fanId` fan's refresh token — the SDK MUST drop the identity
+to anonymous — erasing per § 7.4, the stored refresh token included, and revoking the standing bridge
+answer (§ 13.8.6) — and emit `identityRevoked` (§ 5.3) carrying a `reason` the host can act on:
+`expired` when nothing could renew it — no provider, or a refresh token past its lifetime — and
+`rejected` (with the API's `code` when it named one) when a renewal was refused. A `fanId` fan's
+revocation carries one of the same two reasons; there is no other. For a `fanId` fan it often arrives
+shortly after launch, since the launch renewal is where the SDK learns that the token aged out, that
+its key was revoked or that a reuse ended its chain. A refused session MUST NOT leave a blank panel:
+the host is told, and may re-`identify` or let the fan continue anonymously. The live game pages are
+told the same way as for a renewal (§ 13.9): the signal fires, the page re-asks, and `unavailable`
+(§ 13.8.2) is the answer that tells it the fan is gone.
+
+**Persistence.** The verified identity — its `mode` and `fanId` — MUST survive between launches,
+scoped to the workspace and environment it was resolved under. Beside it, the SDK stores **a refresh
+token for a `fanId` fan, and no token at all for a `hostToken` fan**: neither the host's token nor the
+embed session is ever stored, in either mode (§ 7.5). The SDK rehydrates the identity **as early as it
+can reach a stored identity** — no later than the panel opening, so the panel is never shown before
+the last known fan — rather than re-verifying from scratch; rehydration MUST NOT emit
+`identityResolved` (it restores, it does not resolve), and the session behind it is re-established in
+the background: by the launch renewal for `fanId`, by a re-exchange through the provider for
+`hostToken`. What rehydration guarantees is the **identity**, not the surfaces' live session, which
+that background step restores. (The exact moment is a platform detail: where the SDK holds an
+application context at startup it rehydrates then; where it first receives one when the host opens the
+panel, it rehydrates there — both before anything renders.) A `fanId` identity with no readable
+refresh token beside it — after a reinstall or a restore (§ 7.5) — is purged and the fan is anonymous,
+with no event, since nothing was refused; so is a stored token with no `fanId` identity beside it.
+Neither is concluded while the device's protected data is unavailable (§ 2.7).
 
 ### 2.7 Threading (since 0.4.0)
 
@@ -751,6 +955,14 @@ crashed the host app at launch. This section closes that.
   read from the main one, so implementations MUST make those reads safe — a lock or the platform's
   equivalent. State the SDK only ever touches on the main thread needs nothing, and confining it there
   is the preferred answer: it is a stronger guarantee than a lock and it cannot be forgotten halfway.
+- **The stored refresh token (§ 7.5) MUST NOT be read or written on the caller's thread.** The
+  platforms' secure stores can block, so the SDK reaches them from a queue of its own, and nothing a
+  method must make observable when it returns (above) waits on them.
+- **While the device's protected data is unavailable, nothing is paired or purged.** Until the device
+  is first unlocked after a restart, the stored identity and the refresh token cannot be read, and an
+  empty read then means *not yet*, never *signed out*: the SDK MUST NOT pair the identity with the
+  token, purge either, renew or sign the fan out until the data becomes available, and reads both
+  again then, under the generation counter of § 2.6.3.
 
 The warm-up (§ 11) — of whichever surfaces `prewarm` names (§ 2.1), the hub alone by default — is
 scheduled rather than immediate, and that is normative too: **an implementation MUST NOT build or
@@ -828,9 +1040,21 @@ When the interception policy resolves `OPEN_GAME_SHEET` (§ 4), the SDK MUST loa
 | `theme` | `light` \| `dark` | Optional; omitted when not configured |
 | `hostLogin` | `1` | *Since 0.5.0.* Present only when the configuration declares `handlesLoginRequests` (§ 2.1), never sent as `0`. The game keeps its sign-in entries and routes them to the host (§ 2.6); absent, it shows none |
 
-Existing query parameters on the intercepted URL MUST be preserved, and a parameter above that the URL already carries MUST NOT be added a second time. This matters for `locale` and `theme` in particular: the fanzone builds its own game links, and the host's preferences MUST NOT overwrite a value the page already put on the link. It holds for `hostLogin` too: a link the page built from its own address may already carry it, and it is then left as it is.
+Existing query parameters on the intercepted URL MUST be preserved, and a parameter above that the URL already carries MUST NOT be added a second time — `utm_source` excepted, below. This matters for `locale` and `theme` in particular: the fanzone builds its own game links, and the host's preferences MUST NOT overwrite a value the page already put on the link. It holds for `hostLogin` too: a link the page built from its own address may already carry it, and it is then left as it is.
+
+**`utm_source` is always `sdk`.** The loaded URL MUST carry exactly one `utm_source`, valued `sdk`:
+a `utm_source` the intercepted URL already carries takes that value where it stands, a repeat of it
+is dropped, and one is added, in the order of the table, when the URL carries none. A game the SDK
+opens is SDK traffic whatever link led to it, and the fanzone's own tiles build their game links with
+`utm_source=fanzone`; preserved, that value would hide the most common path into a game from the
+statistics. Every other parameter keeps the rule above. The rule applies to every game URL the SDK
+builds for WebView B, preloaded games included (§ 11.2). Parameter names are compared once
+percent-decoded, for this rule and the one above: an encoded `utm%5Fsource` is a `utm_source`, and a
+link carrying `%65mbed` already carries `embed`.
 
 Example: intercepted `https://fanzone.me/s/summer-quiz` → loaded as `https://fanzone.me/s/summer-quiz?embed=1&utm_source=sdk&consent=0`
+
+Example: intercepted `https://story.tl/s/summer-quiz?utm_source=fanzone&ref=tile` → loaded as `https://story.tl/s/summer-quiz?utm_source=sdk&ref=tile&embed=1&consent=0`
 
 ### 3.4 Game slug extraction
 
@@ -856,6 +1080,8 @@ Example: `https://fanzone.me/embed/bot/0vPWx-cZ?locale=fr&consent=1&sequence=2f8
 The page renders the workspace's bot alone, filling its frame, with no close control: the host owns dismissal. The platform serves it to any embedding host, and **`openMembership` (§ 2, § 5.2) opens it since 0.5.0**.
 
 The SDK composes this URL itself. The host names one part of it at the call, the sequence, and one through its configuration, `hostLogin`; the rest is the SDK's: `workspaceId` is the one the publishable-key exchange resolved, `consent` is always `0` — the banner is suppressed without asserting analytics consent, as on the hub and game URLs — `locale` is forwarded only when the configuration carries one, and `hostLogin` only when it declares `handlesLoginRequests`. `theme` is **not** forwarded: the page does not read it.
+
+**The panel of an identified fan is signed in as that fan.** The URL carries no session, and the SDK adds none to it: the page asks for the fan's session over the reply channel (§ 13.8), as a game does, and exchanges the answer for a session on its own origin when it loads. A panel opened while a fan is identified therefore shows that fan signed in; with nobody identified the request is answered `unavailable` (§ 13.8.2) and the panel is anonymous. A panel already on screen when the identified fan changes is reloaded on the address it was opened at, its sequence included, and its page asks again — the same rule as the hub's (§ 2.6.1, § 7). **A prepared page is reusable only for the session it read** (§ 11). The page asks once, when it loads, so what it read is decided when it starts loading: the session in force then — or, for a page loaded while the fan's token is deferred for a `fanId` fan's launch renewal (§ 13.8.2), the answer that deferral ends with. That stays with the page wherever it goes — into the warm slot by `prewarm`, or back into it from a closing presentation — and a panel page that read no session, or another fan's, MUST NOT be presented once a session stands for the current fan; the opening loads instead. It is never decided when the page is put in the slot: a panel on screen while the session of a fan restored at launch lands is not reloaded, since the fan did not change, so its page is still the one that read none. A first `identify`, and a session that lands for a fan restored at launch after the page read none, both make that difference; a session renewed for the same fan does not, nor does a deferral that ends signed in, and the prepared page stays.
 
 **The parameter is `sequence` and the argument is `sequenceId`** (§ 2.2–2.4, § 5.2). The two names are deliberate — the wire carries the page's vocabulary, the API reads as what a host holds, a string identifying a sequence — and this is the one place that says so. Three rules bind every implementation:
 
@@ -984,13 +1210,13 @@ Errors (`PlatformException.code`):
 | `not_configured` | `configure` was never called |
 | `publishable_key_required` | The configuration in force names a fanzone slug. A slug names a fanzone; this surface is addressed by the workspace a publishable key resolves (§ 2.5), so there is nothing to open. The two refusals are distinct on purpose: a host told only "not configured" calls `configure` again with the same slug |
 
-A call arriving while either full-screen surface is presented or launching is a silent no-op returning `null`, exactly as for `openGames` — no code is minted for it (§ 5.3).
+A call arriving while either full-screen surface is presented or launching is a silent no-op returning `null`, exactly as for `openGames` — no code is minted for it (§ 5.3). One arriving while a surface is leaving opens the panel once that surface has left (§ 2.1).
 
 **A sequence mints no code either, and that is why the table above gains no row.** A blank identifier and one the workspace does not carry both open the default screen and return `null` (§ 3.5), so there is nothing for a host to catch and nothing to branch on: a host that needs to know an identifier is good checks it where it comes from, not here.
 
 #### `close`
 
-Argument: `null`. Dismisses the sheet then the hub (no-op if nothing is open). Returns `null`.
+Argument: `null`. Dismisses the sheet then the hub (no-op if nothing is open), and drops an opening asked for before it that is still waiting — for a surface to leave or for the presenter to settle — never one asked for after it (§ 2.1). Returns `null`.
 
 #### `identify` (since 0.4.0)
 
@@ -1039,8 +1265,9 @@ Argument: a `Map<String, Object?>` naming a request type and the answer it stand
 
 #### `setHostTokenProvider` (since 0.5.0)
 
-Registers — or clears — the closure the SDK calls to obtain a fresh host assertion when a delegated
-session needs renewing (§ 2.6.3).
+Registers — or clears — the closure the SDK calls to obtain a fresh host assertion when a `hostToken`
+fan's session needs renewing (§ 2.6.3). It is never called for a `fanId` fan, whose session renews
+with its refresh token.
 
 ```json
 { "hasProvider": true }
@@ -1070,7 +1297,7 @@ Each event is a `Map<String, Object?>` with a `type` discriminator:
 | `type` | Payload | Emitted when |
 |---|---|---|
 | `hubOpened` | `{"type": "hubOpened", "slug": "your-fanzone"}` | Hub view is presented on a page that loaded. `slug` is the fanzone actually opened: the configured `fanzoneSlug` on the deprecated path, and the `workspace.slug` the exchange returned on the publishable-key path (§ 2.5) — which the host never typed anywhere |
-| `hubClosed` | `{"type": "hubClosed"}` | Hub view is dismissed. Emitted once per presentation, when the container is asked to leave; nothing further is emitted for that presentation, whatever its page does while it leaves the screen |
+| `hubClosed` | `{"type": "hubClosed"}` | Hub view is dismissed. Emitted once per presentation, when the container leaves — on Android as it is asked to leave, on iOS once its dismissal has taken it off the screen; nothing further is emitted for that presentation, whatever its page does while it leaves the screen. An opening asked for during that departure follows this event (§ 2.1) |
 | `membershipOpened` | `{"type": "membershipOpened"}` | Membership panel is presented on a page that loaded. It carries no slug: the panel is addressed by the workspace the key resolved, not by a fanzone — *since 0.5.0* |
 | `membershipClosed` | `{"type": "membershipClosed"}` | Membership panel is dismissed, under the same rule as `hubClosed` — *since 0.5.0* |
 | `gameOpened` | `{"type": "gameOpened", "slug": "summer-quiz"}` | Game sheet is presented (or replaced) |
@@ -1079,7 +1306,7 @@ Each event is a `Map<String, Object?>` with a `type` discriminator:
 | `bridgeMessage` | `{"type": "bridgeMessage", "bridgeType": "fastory:ready", "payload": {}}` | A web surface posted a valid bridge envelope (§ 13) — *since 0.4.0* |
 | `identityResolved` | `{"type": "identityResolved", "mode": "anonymous", "fanId": null}` | `identify` resolved an identity (§ 2.6) — *since 0.4.0* |
 | `surfaceLoadFailed` | `{"type": "surfaceLoadFailed", "surface": "hub", "reason": "rejected", "code": "sdk_key_revoked", "statusCode": null}` | A surface did not load (§ 9.1). `surface` is `"hub"`, `"game"` or, since 0.5.0, `"membership"` — *since 0.4.0* |
-| `identityRevoked` | `{"type": "identityRevoked", "reason": "expired", "code": null}` | The SDK dropped a delegated identity **on its own** (§ 2.6.3): a session that expired with no way to renew, or a background re-exchange the API refused. `reason` is `expired` (no `code`) or `rejected` (with the API's `code` when it named one). The fan is now anonymous — *since 0.5.0* |
+| `identityRevoked` | `{"type": "identityRevoked", "reason": "expired", "code": null}` | The SDK dropped an identified fan — `hostToken` or `fanId` — **on its own** (§ 2.6.3): a session that expired with no way to renew, or a background renewal the API refused, a `fanId` fan's launch renewal included. `reason` is `expired` (no `code`) or `rejected` (with the API's `code` when it named one). The fan is now anonymous — *since 0.5.0* |
 
 Ordering guarantees:
 
@@ -1089,7 +1316,8 @@ Ordering guarantees:
 - **Only one of the two full-screen surfaces may be presented at a time** (since 0.5.0). `openGames`
   and `openMembership` share one reservation, so a call for either while the other is up or
   launching is the same silent no-op § 2.1 already defines, and the two pairs above can never
-  interleave. `close()` dismisses whichever is presented.
+  interleave. A call for either while the other is leaving opens after the other's closing event
+  (§ 2.1, since 0.5.1). `close()` dismisses whichever is presented.
 - **An opening event announces a surface that loaded, not a container that reached the screen**
   (§ 9.1). `hubOpened` MUST NOT be emitted for a hub whose main document has not committed, and
   `gameOpened` MUST NOT be emitted for a game whose main document has not committed. A surface that
@@ -1133,9 +1361,12 @@ Ordering guarantees:
   session: it may be emitted with nothing open, and it MUST NOT be re-emitted when a hub or game opens
   afterwards under the same identity. A refused `identify` emits nothing.
 - `identityRevoked` (since 0.5.0) MUST be emitted **only** for a revocation the SDK performs on its own
-  (§ 2.6.3): a session that expired unrenewably, or a background re-exchange the API refused. A
+  (§ 2.6.3): a session that expired unrenewably, or a background renewal the API refused — a
+  re-exchange of a host assertion, or a `fanId` fan's refresh token, at launch as later. A
   host-driven drop MUST NOT emit it — `logout()` and a replacing `configure()` are actions the host
   already knows about, and an explicit `identify` that fails reports through its own return, not here.
+  Nor is it emitted for a `fanId` identity found at launch without its refresh token, which nothing
+  refused (§ 2.6.3).
 
 ### 5.4 Error semantics
 
@@ -1148,16 +1379,16 @@ never on the message:
 |---|---|
 | `not_configured` | `configure` was never called. Deliberately the same code `openGames` uses, not a new one |
 | `identify_mode_unavailable` | An identified mode — `fanId` or `hostToken` — asked of an SDK configured by fanzone slug rather than publishable key (§ 2.6): the slug path carries no key to prove the caller with and no workspace to exchange against |
-| `invalid_identity_mode` | The `mode` argument is not one of the three names |
+| `invalid_identity_mode` | The `mode` argument is not one of the three names. The Dart side also raises it when the native side answers with a mode it does not know; § 2.6.1 says what each case leaves |
 | `invalid_host_token` | The `hostToken` JWT is absent or blank. A malformed or expired one is not caught here — the SDK does not validate the token (§ 12); it comes back as `identify_rejected` with the API's code |
 | `login_cancelled` | The fan dismissed the system-browser login (`fanId`) |
 | `identify_rejected` | The API refused the identity. The `details` carry its machine-readable `code` when the refusal named one — e.g. a `hostToken` the API could not verify — and no `code` when it did not, as in § 2.5 |
 | `identify_network_error` | The identity could not be reached. Distinct from `identify_rejected`: nothing was refused |
 
-Every one of them leaves the SDK **anonymous**, per § 2.6.1 — a code returned here is never a code
-returned *instead of* cleaning up. The three that are **pre-flight** (`not_configured`,
-`identify_mode_unavailable`, `invalid_host_token`) are the exception the other way: decided before the
-exchange, they leave the **current** identity exactly as it was.
+§ 2.6.1 sorts these codes into two families, and its lists are the normative ones. The four
+**pre-flight** codes are decided before anything is attempted and leave the **current** identity
+exactly as it was. The three **resolution failures** leave the SDK **anonymous** — a code returned
+there is never a code returned *instead of* cleaning up.
 
 Bridge failures (`setBridgeReply`, since 0.4.0):
 
@@ -1187,11 +1418,14 @@ On back press (system back gesture or hardware button), in order:
 3. Else → close the full-screen view (emit that surface's closing event).
 
 The three steps are the same for the hub and for the membership panel (§ 3.5), and step 2 is what
-makes the panel's back behaviour hierarchical: its page pushes a history entry per tab and per
-sub-screen it opens, so back walks a fan out of a sub-screen, then back through the tabs, and closes
-the panel only once there is nothing left to leave. The SDK does not drive that — it only dismisses
-what it presented — so a page that pushes nothing closes on the first press, which is the correct
-behaviour for a page with nowhere to go back to.
+makes the panel's back behaviour hierarchical. Its page pushes a history entry per sub-screen it
+opens, and **at most one tab entry**, held while the fan is on another screen than the one the panel
+opened on, whatever moved the fan there. Back therefore closes the open sub-screen first, then
+returns to the opening screen, then closes the panel: switching tabs costs at most one press however
+many times the fan switches. A sub-screen left open on a tab the fan switches away from is closed at
+that moment and its entry removed, so no press is ever spent on a screen the fan cannot see. The SDK
+does not drive that — it only dismisses what it presented — so a page that pushes nothing closes on
+the first press, which is the correct behaviour for a page with nowhere to go back to.
 
 Step 2 walks the navigation made since the SDK last loaded the page, and nothing from before that
 load. A page taken from the warm slot (§ 11) may still carry the history of the presentation that
@@ -1240,21 +1474,27 @@ per origin (§ 7.4) — not to merge the two.
 > how many visitors the web minted — which is why sharing the store would buy nothing even where it
 > worked.
 
-**With a fan identified, each surface takes the session its own way, and the hub on screen follows
-it** (since 0.5.0). A game asks the SDK for it over the bridge (§ 13.8) and learns that it changed
-through the session-change signal (§ 13.9). The hub reads a cookie and cannot ask: it adopts an
+**With a fan identified, each surface takes the session its own way, and the hub or the panel on
+screen follows it** (the hub and the games since 0.5.0). A game asks the SDK for it over the bridge (§ 13.8) and learns that
+it changed through the session-change signal (§ 13.9). The membership panel's page asks over the
+bridge too, when it loads, and exchanges the answer for a session on its own origin (§ 3.5). The hub
+reads a cookie and cannot ask: it adopts an
 identified fan's session **when it loads**, through a single-use **session handoff** the SDK mints at
 that moment — the Fanzone origin exchanges it for the page's own session cookie, then lands on the
 hub's § 3.2 address. A handoff that cannot be minted falls back to that address, unadopted: an
-anonymous hub is better than a hub that does not open.
+anonymous hub is better than a hub that does not open. A hub opened while a `fanId` fan's launch
+renewal is in flight waits for it, 3 seconds at most, before the handoff is minted, so it opens signed
+in rather than anonymous (§ 2.6.3, § 13.8.2).
 
-A hub already on screen when the identified fan changes would otherwise keep showing the previous fan,
-or nobody, for as long as it stays open — over cookies § 7.4 may have erased under it. Implementations
-MUST therefore reload the presented hub when an identity transition changes the identified fan, and
-only then. The identified fan is the `fanId` of the identity in force — there is none when the SDK is
-not identified, and none when it is anonymous (§ 2.6.2) — compared before and after the transition:
+A hub or a panel already on screen when the identified fan changes would otherwise keep showing the
+previous fan, or nobody, for as long as it stays open — over cookies § 7.4 may have erased under it,
+or with the session its page adopted when it loaded. Implementations MUST therefore reload the
+presented surface, hub or membership panel alike, when an identity transition changes the identified
+fan, and only then. The identified fan is the `fanId` of the identity in force — there is none when
+the SDK is not identified, and none when it is anonymous (§ 2.6.2) — compared before and after the
+transition:
 
-| Transition | Presented hub |
+| Transition | Presented hub or panel |
 |---|---|
 | No fan → a fan: an `identify` resolving `hostToken` or `fanId` | MUST reload, signed in as that fan |
 | Fan A → fan B | MUST reload, signed in as B |
@@ -1263,20 +1503,21 @@ not identified, and none when it is anonymous (§ 2.6.2) — compared before and
 | The § 2.6.3 renewal — same fan, fresh session | MUST NOT reload |
 | Not identified ↔ anonymous | MUST NOT reload — nobody is identified on either side |
 
-- **The reload starts once the erasure the transition carries (§ 7.4) has completed**, and goes
-  through a handoff minted for the session in force then — or to the plain § 3.2 address when there
-  is none. Reloading earlier would load the previous fan's cookies, or have the erasure remove the
-  new fan's.
+- **The reload starts once the erasure the transition carries (§ 7.4) has completed.** The hub
+  reloads through a handoff minted for the session in force then — or on the plain § 3.2 address
+  when there is none. The panel reloads on the § 3.5 address it was opened at, its sequence included,
+  and its page asks for the session in force then. Reloading earlier would load the previous fan's cookies, or
+  have the erasure remove the new fan's.
 - **It is not a new presentation.** It emits no opening or closing event (§ 5.3), and a reload that
   fails is a failure after the surface opened (§ 9.1). It is a new document, though: the fan's place
-  in the page — its scroll position, a tab its address does not carry — is not kept, and the hub
+  in the page — its scroll position, a tab its address does not carry — is not kept, and the surface
   being reloaded is covered until the new document has painted, as § 9 requires of an opening that
-  loads a page, so the previous fan's hub is not shown meanwhile.
-- **Nothing presented, nothing reloaded.** The next opening loads with the session in force, the
-  warm page having been discarded by the transition (§ 7.4).
-- **The hub is the only surface reloaded.** A game learns the change from the signal (§ 13.9) and
-  keeps the fan's progress, which a reload would throw away; the membership panel is not reloaded,
-  and a panel on screen keeps the session it opened with until it is closed.
+  loads a page, so the previous fan's hub or panel is not shown meanwhile.
+- **Nothing presented, nothing reloaded.** The next opening loads with the session in force: the
+  warm page was discarded by a transition that erases (§ 7.4), and a prepared panel that did not
+  read the current fan's session is not reused (§ 3.5).
+- **The game sheet is never reloaded.** A game learns the change from the signal (§ 13.9) and keeps
+  the fan's progress, which a reload would throw away.
 
 ### 7.1 iOS
 
@@ -1337,12 +1578,56 @@ holds — it is a credential the *native* side holds and hands to the game on re
 per-origin erasure reaches it. Erasing the stores while keeping it signs the fan out of every surface
 that reads a cookie and keeps identifying them to the one that asks the SDK instead.
 
+**And it MUST erase the stored refresh token** (§ 7.5). It is held by the native side too, outside any
+store a page can reach, so per-origin erasure does not touch it either — and kept, it would sign the
+previous fan back in at the next launch.
+
 > **iOS 17's per-identifier store is deliberately not used.** `WKWebsiteDataStore(forIdentifier:)`
 > would give atomic isolation, but the SDK floors at iOS 15, so the enumerated path above has to exist
 > regardless — and it is the only path Android can have at all. Adopting the store would add a second,
 > asymmetric strategy that is untestable below iOS 17, changes nothing about *what* must be erased, and
 > resets the session of every existing integration once (the store changes identity). Adopting it later
 > changes neither this section's public behavior nor the declared list.
+
+### 7.5 The stored refresh token
+
+A `fanId` fan is the one case in which the SDK stores a credential on the device: the refresh token of
+§ 2.6.3, with a stamp derived from the configuration it was issued under — the environment and the
+publishable key's value, and on iOS the app's bundle identifier. A `hostToken` fan has no token
+stored, and the embed session is never stored in either mode. The identity itself — its `mode` and
+`fanId`, which are no credential — is kept beside it in the app's ordinary preferences
+(`UserDefaults`, `SharedPreferences`), as § 2.6.3 (*Persistence*) requires, stamped with the
+environment and the key's value alone: those preferences are the app's own, and that is the stamp
+earlier versions wrote, so an update still finds the identity they kept. For a `fanId` fan the two
+are erased together.
+
+| | iOS | Android |
+|---|---|---|
+| Where | The Keychain: a generic password under a service of the SDK's own, in the app's **default access group** | A file in the app's no-backup files directory, encrypted with an AES-GCM key held in the Android Keystore |
+| Who reads it | The apps of that access group, on this device, once the device has been unlocked after a restart (`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`). Never synchronised to iCloud Keychain | This app, on this device. The key never leaves the Keystore |
+| Backup and restore | Never restored to another device | Excluded from backups, so never restored |
+| Erasure | Always by the SDK's own service and account — never a sweep of a class of items, which would reach the host's own | Its own files, in a directory of its own, and its own key only |
+
+- **The access group is the host's to know about.** The SDK sets none, so the item lands in the app's
+  default group: an app whose default Keychain group is shared with other apps of the same team shares
+  this item with them. The item is scoped to the app's bundle identifier, which its account carries,
+  so the SDK in another app of the group never erases or revokes it.
+- **How long it stays.** 90 days without use, one year at most (§ 2.6.3), and replaced at every
+  renewal.
+- **What erases it.** `logout()` (§ 2.6.1); a new `fanId` login, which replaces it, and an
+  `identify(hostToken)` after one; any transition that erases per § 7.4; a refusal or an expiry
+  (§ 2.6.3); a replacing `configure`, whose stamp it no longer matches. At launch the SDK also erases
+  any token of this app stamped for another configuration than the one in force, and asks the server of the
+  environment that stamp names to revoke it, best effort, so an app update that changes its
+  environment or its key leaves no live token behind.
+- **What signs the fan out on the device.** A reinstall: the identity beside the token is gone, so a
+  token left over is purged (§ 2.6.3). A restore or a move to another device, which carries neither the
+  token nor its key. On Android, a Keystore key the platform invalidated. And a regenerated
+  publishable key: the app that ships the new value finds no token stamped for it. In each case the
+  fan is anonymous, with no event, and signs in again in the system browser.
+- **A failed read is not an absent token.** A locked Keychain or a passing Keystore error is retried,
+  never read as *no token*: only an item that is not there, or data that no longer decrypts under its
+  key, counts as absent.
 
 ---
 
@@ -1393,8 +1678,8 @@ The two platforms hold the safe area differently, and each rule below is normati
   stays over the cover until it goes, and a Retry's wait is announced over only then. A wait started
   for one cover MUST NOT lower another, nor touch a page once its cover is down. A load callback of
   the outgoing document — one that arrives before the latest resolution has answered, or the end of
-  an outgoing load its own interrupted — MUST NOT lower the cover. The hub's reload after an
-  identity change (§ 7) is not a new presentation, but it loads a document into a page that shows
+  an outgoing load its own interrupted — MUST NOT lower the cover. The reload of a hub or a panel
+  after an identity change (§ 7) is not a new presentation, but it loads a document into a page that shows
   one, so it follows this rule too; the address of an earlier resolution does not count as known. A cover rather than a hidden page: a WebView taken off screen may hold back its
   own drawing, and with it the signal that the new document is ready. It is purely visual: the
   opening events (§ 9.1) are decided as before.
@@ -1509,8 +1794,146 @@ Implementations MUST report:
 - The SDK follows **Semantic Versioning 2.0.0** (`MAJOR.MINOR.PATCH`). The public API surface defined in § 2 and the platform channel contract in § 5 are the compatibility boundary: breaking either requires a MAJOR bump.
 - Releases are tagged `sdk-vX.Y.Z` (e.g. `sdk-v0.1.0`).
 - Distribution repository: **`KrashStudio/fastory-sdk-mobile`** (GitHub, **public, release-only**) — it receives the clean release package per version, with no development history. Each release carries **two tags on the same commit**: `sdk-vX.Y.Z`, canonical for the Flutter channel and the GitHub Release, and the bare `X.Y.Z`, which exists only because SwiftPM resolves nothing else. A host pinning `ref: sdk-vX.Y.Z` on the Flutter channel and a host whose SwiftPM requirement resolves `X.Y.Z` are on the same code.
-- **Two channels ship from that repository, both live.** The **Flutter plugin** (`flutter/fastory_sdk`) since v0.1, and the **native Swift package** (root `Package.swift` + `Sources/FastorySDK`) since **v0.2.0** — `Package.swift` is at the root because SwiftPM cannot resolve a package held in a subdirectory. A native Kotlin artifact on Maven Central and a React Native wrapper follow in later versions; only those two are still unshipped.
-- This spec version: **0.5.0**. The public names in § 2 and the channel contract in § 5 are locked (they ship in third-party integrations); any later normative change requires a new spec version and a coordinated SDK release.
+- **Three channels, one version.** Two ship from that repository: the **Flutter plugin** (`flutter/fastory_sdk`) since v0.1, and the **native Swift package** (root `Package.swift` + `Sources/FastorySDK`) since **v0.2.0** — `Package.swift` is at the root because SwiftPM cannot resolve a package held in a subdirectory. The third, the **native Android library** `io.fastory:fastory-sdk` on Maven Central, since **v0.5.1**, is the Kotlin core itself, published by the same release at the version of the two tags; a version Central holds is never replaced, so a defect is fixed forward, as for a tag. A React Native wrapper follows in a later version; it is the only channel still unshipped.
+- This spec version: **0.5.1**. The public names in § 2 and the channel contract in § 5 are locked (they ship in third-party integrations); any later normative change requires a new spec version and a coordinated SDK release. **The lock covers what § 2 declares, and nothing else**: a name a core made public without § 2 declaring it was never part of the contract, so withdrawing it is a source break to announce, not a change to the surface this section locks.
+- **Changes in 0.5.1.** A page's request to sign the fan out joins its request to sign them in,
+  the membership panel shows the identified fan and follows them as the hub does, a `fanId` fan
+  stays signed in from one launch to the next, and a message holding a raw nul character is ignored
+  on iOS as on Android — which is why the version above moves. An attribution change rides along,
+  stated last: a game opened from the hub is attributed to the SDK whatever link opened it.
+
+  **A prepared panel no longer opens anonymous for a signed-in fan** (§ 3.5, § 7). The panel's page
+  asks for the fan's session once, when it loads, and a page held in the warm slot was reused on its
+  address alone: one prepared by `prewarm`, or handed back by a panel closed before the fan signed in
+  — or on screen while the session of a fan restored at launch landed — opened anonymous after a
+  first `identify`, which erases nothing and so discards no warm page, or after that session landed.
+  A prepared panel page now carries the session it read — the one in force when it started loading,
+  or for a page loaded while the fan's token was deferred for a launch renewal (§ 13.8.2), the answer
+  that deferral ended with — and is reused only while that is the session in force; otherwise the
+  opening loads. A same-fan renewal keeps it, and so does a deferral that ends signed in.
+
+  **§ 2.6.1 settles what a refused `identify` leaves behind** (§ 2.6.1, § 5.4, § 13.8.6). It said
+  that any failed `identify` leaves the SDK anonymous, while § 5.4 and § 13.8.6 exempted the pre-flight
+  refusals and attributed that exemption to § 2.6.1 — and the three passages listed different codes,
+  one of them a "malformed token" no pre-flight check detects. § 2.6.1 now states both families, and
+  § 5.4 and § 13.8.6 refer to it: the four pre-flight codes, `not_configured`,
+  `invalid_identity_mode`, `invalid_host_token` and `identify_mode_unavailable`, leave the current
+  identity untouched; `login_cancelled`, `identify_rejected` and `identify_network_error` leave the SDK
+  anonymous. It also says that the Dart side's `invalid_identity_mode`, raised on a mode the native
+  side answers with, belongs to neither family: it comes after the call resolved. This is what both
+  platforms have done since the identified modes shipped, so no implementation changes behaviour; a
+  host that read § 2.6.1 alone learns that a mode its configuration cannot serve, or a blank token,
+  does not sign its fan out. A malformed or expired `hostToken` remains a resolution failure,
+  `identify_rejected`. § 13.8.6 also lists the resolution failure among the points that drop the
+  standing answer, which both platforms already did, and names `fanId` beside `hostToken` among the
+  identities that set it, which both platforms also already did.
+
+  **A page asks the host to sign the fan out** (§ 2.6, § 13.3). No page the SDK presents ends the
+  fan's session at a tap on its sign-out entry: a sign-out entry on the hub, the membership panel or a
+  game either asks the host or is not shown, under the declaration that already governs its sign-in
+  entries. One declaration covers both requests: a host that owns the fan's sign-in owns their
+  sign-out. Declared, `handlesLoginRequests` (§ 2.1–2.4) keeps the pages' sign-out entries, and a
+  fan's tap posts `fastory:logout-requested`, the third type of the § 13.3 registry. The host answers
+  by asking the fan to confirm and calling `logout()` only then — never on the message alone, since an
+  Android sub-frame can post it without a tap (§ 13.7). Not declared, the pages show no sign-out
+  entry, so no host ships a control that does nothing. Two obligations arrive with it for an
+  implementation. Deliver it and do nothing else with it: it is receive-only, has no reply, and opens,
+  closes, navigates or signs out nothing (§ 13). Accept it from an Android sub-frame like any registry
+  type — bounded, since its payload asserts nothing (§ 13.7). Additive on every channel: one new
+  registry string.
+
+  **The panel shows the identified fan, and follows them as the hub does** (§ 3.5, § 7): its page
+  asks for the fan's session over the reply channel when it loads, as a game does, and adopts it on
+  its own origin, so `hostToken` binds the session to the games and the membership panel through the
+  standing bridge answer; a panel on screen when the identified fan changes reloads on the address it
+  was opened at, under the same rule and the same exceptions as the hub — no opening or closing
+  event, covered until the new page has painted (§ 2.6.1, § 9, § 12.1). § 7 no longer says the panel
+  is not reloaded and keeps the session it opened with.
+
+  **A `fanId` fan stays signed in from one launch to the next** (§ 2.6.3, § 7.5). The exchange of the
+  login's code also returns a refresh token, which the SDK stores in the platform's secure storage and
+  presents at launch, and whenever the embed session has expired, for a new session with no browser;
+  each use rotates it. No public name moves and no channel shape changes, but four behaviours do, and
+  a host should know them. A relaunched app finds the hub, the membership panel and the games signed
+  in as the `fanId` fan, where they were anonymous until the next `identify`. `logout()` also asks the
+  server to revoke the fan's token, best effort and without waiting, and so do a change of fan and a
+  new login (§ 2.6.1). `identityRevoked` can arrive shortly after launch, when the launch renewal is
+  refused or the token has aged out — with the same two reasons, `rejected` and `expired`. And the SDK
+  now stores an identifier on the device for a `fanId` fan: the refresh token, kept 90 days without
+  use and one year at most, in the Keychain or under an Android Keystore key, never restored to
+  another device and erased by `logout()`; a host that declares what its app stores on the device
+  declares it too. A fan who signed in with `fanId` under 0.5.0 has an identity stored but no refresh
+  token, so the first launch on this version signs them out once, with no event (§ 2.6.3).
+  Three obligations arrive with it for an implementation: a `fastory:user-token` request received
+  during the launch renewal is answered when it returns, 3 seconds at most, and the hub's opening
+  waits for it (§ 13.5, § 13.8); the secure storage is never reached on the caller's thread, and
+  nothing is paired or purged while the device's protected data is unavailable (§ 2.7); and the
+  provider of `setHostTokenProvider` is never called for a `fanId` fan (§ 2.6.3). A page asking for
+  the fan's token bounds its wait above those 3 seconds (§ 13.8.1).
+
+  **An opening asked for while a surface leaves MUST open** (§ 2.1, § 2.6) — one normative change,
+  which turns a permission into an obligation. An `openGames()` or `openMembership()` asked for
+  while a surface is leaving — right after `close()`, or from its closing event — or while the
+  controller it is asked from is itself leaving, such as the browser sheet of a `fanId` sign-in,
+  MUST now open once that is over, after the closing event (§ 2.1, § 2.6). 0.5.0 allowed such a call
+  to be absorbed, and iOS absorbed it, or lost it to a presentation the platform refused: the same
+  host code opened a surface on Android and nothing on iOS. Nothing a host calls changes; a host
+  that relied on the absorption now sees the surface open. § 5.3 also says when each platform emits
+  its closing event, which it did not.
+
+  **§ 13.1 states how a message is read, and one reading changes on iOS.** The readings the two
+  platforms have shared since 0.4.5 — the strict grammar, the first occurrence of a repeated name
+  under canonical equivalence, the numbers too large to be finite, the numbers a written form cannot
+  represent, the depth limit and the leading byte order mark — were stated nowhere in § 13.1 beyond
+  its requirement of valid JSON, and the 0.4.5 entry below recorded only the repeated name and the
+  two kinds of number. § 13.1 now states them as rules, with examples, and names the four rules
+  that content built with `JSON.stringify` can still meet; no implementation has anything new to
+  do for them. The 0.4.5 entry below was too broad on one point: in an array, a *positive* number
+  too large to be finite makes the message ignored, as it has on both platforms since 0.4.5, and
+  only a negative one held to the range of a double is read there (§ 13.1). One reading is new: a
+  message holding a raw nul character is ignored. iOS read a text whose characters alternate with
+  nul characters as UTF-16 or UTF-32, so it reached the host as a valid envelope and a request
+  written that way was answered; it is now ignored, and answered `malformed` on the reply channel,
+  as on Android. Content built with `JSON.stringify` never writes a raw nul character.
+
+  **The summary of 0.5.0 below was corrected without changing what this document requires.** It said
+  a `hostToken` session lived for the token's lifetime and was renewed only when the host registered a
+  token provider, whereas § 2.6.3 has the SDK refresh it while it is still valid, asking no one, and
+  re-exchange an assertion from the provider when that refresh is refused or the session has already
+  expired. And it called that mode source-compatible in all three languages, whereas Swift's
+  `FastoryIdentifyError.rejected` carries an optional code since that version (§ 2.2), which a Swift
+  host using it as a `String` has to unwrap.
+
+  **The § 2 blocks become the whole public surface, in both directions** (§ 2): every declared name
+  is public, and nothing else is. Two consequences. The 0.5.0 identity-renewal surface, public and
+  shipped but missing from the blocks, is now declared on all three: `setHostTokenProvider`,
+  `FastoryHostTokenProvider`, the identity-revoked callback or event, `FastoryRevocationReason` and
+  `FastoryIdentityRevocation`, with Swift's `FastoryConfigError` and its six cases,
+  `FastoryIdentifyError.code`, the Kotlin `detailsCode`, and the initialisers of the Swift value
+  types. And the names the native cores made public without declaring them are withdrawn: on Swift
+  `URLPolicy`, `NavigationDecision`, the key-exchange error type, `FastoryEnvironment.baseURL`, the
+  publishable-key prefixes, the slug-only `validate` and `FastoryIdentity.mode`; on Kotlin the URL
+  policy and its decision enum, the bridge object, the hub `Activity`, the game sheet,
+  `FastoryConfig.baseUrl` and its URL builders and key prefixes, and the wire names of
+  `FastorySurface` and `FastoryLoadFailureReason`. § 2.6.3's renewal and § 2.1's rule set are
+  unchanged; § 2.1 now also lists a blank `hubTabSlug`, which every platform already refused, and
+  § 2.2 now says `FastoryIdentifyError.rejected` carries an optional code, as it always did.
+
+  **A game is attributed to the SDK whatever link opened it** (§ 3.3). § 3.3 added `utm_source=sdk`
+  to a game URL only when the intercepted link carried no `utm_source`, under the rule that keeps a
+  parameter the page already put on its link. The fanzone's tiles build their game links with
+  `utm_source=fanzone`, so a game opened from a tile in the hub — the most common way in — was counted
+  as fanzone traffic. `utm_source` is now the one exception to that rule: the loaded URL carries
+  exactly one, valued `sdk`, in place of the one the link carried. An implementation matches the
+  parameter by its decoded name, replaces the value where it stands and drops any repeat. No public
+  name moves; a host reading its game traffic sees the tiles' games move from `fanzone` to `sdk`.
+
+  **The Kotlin core gets a channel of its own** (§ 10): the native Android library
+  `io.fastory:fastory-sdk`, on Maven Central, at the version of the two tags. No public name and no
+  channel shape changes — the library is the core § 2.3 declares, with exactly the public names that
+  block lists — but a native Android host can now depend on it without the Flutter plugin. § 2.1 now
+  counts three shipped channels and says where the Kotlin one refuses a configuration: in
+  `FastoryConfig`'s constructor, as it always did.
 - **Changes in 0.5.0.** One version carries the membership panel, the whole delegated-identity surface and a page's request to sign the fan in — six capabilities in one number, as 0.4.0 bundled five: `hostToken`, its renewal lifecycle, the session-change signal, `fanId`, the panel, and the sign-in request. A layout change and two fixes ride along, stated last in that order: on iOS the hub's page runs to the bottom edge (§ 8); and on Android, a page that failed no longer returns to the warm slot when its presentation ends (§ 9.1, § 11), and a container rebuilt over its error view loads its surface again (§ 2.1).
 
   **`fanId` resolves** (§ 2.6): the fan signs in to Fastory in the **system
@@ -1549,15 +1972,19 @@ Implementations MUST report:
   SDK never inspects the host's token (§ 12); it reads only the `exp` of its own embed session.
   **The `hostToken` identity mode resolves** (§ 2.6). No public name moves and no
   channel shape changes — the mode and its errors were frozen in 0.4.0 — so this is additive in
-  behaviour and source-compatible in all three languages. What an implementation now does: forward the
+  behaviour and source-compatible in Dart and Kotlin. On Swift, `FastoryIdentifyError.rejected` now
+  carries `code: String?` (§ 2.2) — the API's code when the refusal named one — so a host that used
+  that code as a `String` unwraps it; Kotlin carries the same code in a defaulted `detailsCode`, and
+  Dart in the error's `details`. What an implementation now does: forward the
   host's JWT to the delegated identity exchange (never validating it — § 12), bind the resulting
   session to the games through the standing bridge answer (§ 13.8.6, now populated automatically) and
   to the hub through a session handoff, apply the § 2.6.1 difference rule so the same fan is
   idempotent and a different one erases the previous, and land a refusal or a network failure on
   anonymous. Two edges a host meets: `hostToken` requires configuration by publishable key and fails
-  `identify_mode_unavailable` on the deprecated slug path (§ 5.4); and the base mode's session lives
-  for the token's lifetime, renewed by the SDK only when a host registers a token provider — the
-  session lifecycle above.
+  `identify_mode_unavailable` on the deprecated slug path (§ 5.4); and the session it resolves is
+  renewed by the SDK — refreshed while it is still valid, and re-exchanged through a token provider
+  the host registers when that refresh is refused or the session has expired — the session lifecycle
+  above.
 
   **The SDK opens the membership panel** (§ 3.5). `openMembership` joins the public surface as a seventh operation (§ 2, § 5.2), `membershipOpened` and `membershipClosed` join the event stream as a ninth and tenth (§ 5.3), `surfaceLoadFailed` gains the `membership` surface (§ 9.1), and the channel gains one error code, `publishable_key_required` (§ 5.2). Three rules follow the surface rather than the method: only one full-screen surface is presented at a time and the two openings share one reservation (§ 2.1, § 5.3); § 4's four rules are unchanged and apply to the panel's WebView as they do to the hub's, so a game followed from the panel nests inside it; and § 6's back sequence now names the presented surface rather than the hub, and walks only the navigation made since the SDK last loaded the page, since a page kept warm can now be loaded with another address — which is also why § 9 now forbids showing what an earlier presentation left on that page while the new one loads, and why § 12.1 gains a third bounded exception, the read-only paint query that tells when the new page has painted. § 2.1's rule for a container the platform rebuilds, § 8's layout and § 9's error view, all written for the hub, bind the panel the same way, save the bottom edge on iOS (§ 8). The native listeners gain their two callbacks with a no-op default, so a conformer keeps compiling; **the Dart surface is source-breaking in three places**, as in 0.4.0 — two new `FastoryEvent` subtypes and a third `FastorySurface` case break an exhaustive `switch` with no `default:`. **That third place is not Dart-only**: `FastorySurface` is a plain public enum on iOS and Android as well, so a Swift `switch` or a Kotlin `when` used as an expression that already covers `hub` and `game` exhaustively stops compiling on the native channel too, the moment it is built against this version.
 
@@ -1851,8 +2278,8 @@ Exactly three exceptions exist, each bounded rather than general:
   The statement is a byte-for-byte constant: it interpolates no data, so nothing the SDK holds can
   travel by it — no token, no identifier, no state. It MUST NOT read anything back, mutate the DOM
   beyond dispatching that event, register a listener, or access storage.
-- **The read-only paint query (§ 9, since 0.5.0).** While a presentation — or the hub's reload after
-  an identity change (§ 7) — covers what was on its page, the SDK MAY evaluate in that page exactly the constant expression
+- **The read-only paint query (§ 9, since 0.5.0).** While a presentation — or the reload of a hub or
+  a panel after an identity change (§ 7) — covers what was on its page, the SDK MAY evaluate in that page exactly the constant expression
   `performance.getEntriesByName('first-contentful-paint').length > 0` — byte-for-byte, the same on
   both platforms — and read back its one boolean. It is repeated on a native timer, at most every
   50 ms and for at most two seconds per cover, and never once the cover is down. It MUST NOT mutate
@@ -1921,13 +2348,74 @@ Decoding rules, all normative:
 - Unknown types are **ignored, not rejected** — the allow-list is what lets the web side ship a new
   message type against an already-published SDK: an older SDK drops it, and nothing breaks.
 - A message that is not valid JSON, is a top-level array, or is not a string at all MUST be ignored.
+  Valid JSON can be ignored too, in the cases *Reading the JSON text* lists below.
 - The decoder MUST NOT throw. Nothing about a malformed message may surface as an uncaught native
   exception, a crash, or an error on the host's event stream (§ 5.4 applies symmetrically).
 - The envelope version is bumped only by a coordinated web + SDK release. Because unknown versions
   are ignored on both sides, a bump is a hard cut for that message, not a negotiation.
 
-The rules above are what is normative, and they bind both platforms identically: neither may decode
-an envelope the other rejects. A **request** carries
+**Reading the JSON text.** Both platforms read a message by one grammar, each of its readings on the
+stricter side of the two platforms' parsers, so a text that RFC 8259 accepts is not always a
+message. Each rule below is normative, and each applies to every value of the text — the envelope,
+the payload, and anything nested in them — save where a rule says otherwise.
+
+- **The text is read as the page sent it.** A message is the string the page posted, never the same
+  bytes decoded in another encoding. JSON carries a nul character (U+0000) only escaped, so a message
+  holding a raw one MUST be ignored, wherever it stands: `{"v":1,…}` written with one or three nul
+  characters after or before each character is not a UTF-16 or UTF-32 spelling of the envelope, it
+  is not JSON. An escaped one inside a string, `"\u0000"`, is read.
+- **One byte order mark (U+FEFF), as the very first character, is skipped.** Anything else before
+  or after the one value makes the message ignored, whitespace aside — a byte order mark after
+  whitespace included.
+- **The grammar is RFC 8259, with no extension.** No comment, no leading zero (`01`), no `+` before a number (an exponent may carry one), no hexadecimal number, no unquoted string, no `=` for `:`. It is narrowed in one place:
+  an escaped surrogate MUST be half of a pair, so `"\ud83c\udf89"` is read and `"\ud800"` alone
+  makes the message ignored.
+- **512 open containers at most.** A value inside 512 open objects and arrays, the envelope counted,
+  is read; a value inside one more makes the message ignored. An empty container holds no value, so
+  an empty `[]` or `{}` opened as the 513th is read.
+- **A name repeated within one object is read at its first occurrence.** The later members bearing
+  it are dropped, value and all. Every rule of this block applies to the whole text, dropped members
+  included, except the clause on a negative number held by an object member, which applies once the
+  repeats are dropped: `{"v":2,"v":1,…}` is version 2 and ignored, `{"v":1,"v":2,…}`
+  is version 1 and accepted, and `{"type":"fastory:ready","type":"x",…}` is a `fastory:ready`.
+  Names are compared once their escapes are decoded and under Unicode **canonical** equivalence:
+  `"\u0076"` repeats `"v"`, `é` written precomposed (U+00E9) repeats `é` written decomposed
+  (U+0065 U+0301), and the Kelvin sign (U+212A) repeats the letter `K`. Compatibility equivalence
+  does not count: `ﬁ` (U+FB01) and `fi` are two names, and both are read.
+- **A number too large to be finite.** A positive one, such as `1e309`, MUST make the message ignored
+  wherever it stands. A negative one, such as `-1e309`, MUST make the message ignored when it is the
+  value of an object member, at any depth and inside an array or not (`{"k":[{"j":-1e309}]}`), and,
+  when the next rule holds it to the range of a double, is read as negative infinity when it is an
+  element of an array (`{"k":[-1e309]}`). A dropped repeat escapes that clause on a member, as the
+  previous rule says: `{"k":1,"k":-1e309}` is read, `{"k":-1e309,"k":1}` is ignored, and
+  `{"k":1,"k":1e309}` is ignored, as `1e309` is anywhere.
+- **A number must be representable as it is written.** A number with an exponent longer than four
+  characters after the `e`, sign included, MUST make the message ignored even when it spells a small
+  power: `1e-001` is read, `1e-0001` is ignored. Otherwise the written form decides which range the
+  number must fit. An integer written without fraction or exponent that fits in 64 bits, signed or
+  unsigned, is read. Any other number of at most 17 digits — every digit of the fraction counted,
+  an integer part written `0` and the exponent's digits not counted — is held to the range of a
+  double, where the previous rule applies; one too small for a double is read as zero, so `5e-324`
+  and `1e-400` are both read. The rest is held to the range of a decimal, and MUST make the message
+  ignored when it does not fit one: its digits enter a mantissa while it stays below 2^128, each integer digit
+  left out raises the power of ten by one, each fraction digit taken lowers it by one, and that
+  power MUST stay within −128 to 127 both before and after the exponent is added. In practice, an
+  integer written in full is read up to about 3.4 × 10^165 — a 1 followed by 165 zeros is read, by
+  166 is ignored, and so are 166 nines; `0.` followed by 127 zeros then a digit is read, by 128 is
+  ignored; and `10000000000000000e-140` (17 digits) is read where `100000000000000000e-140`
+  (18 digits) is ignored.
+
+**What content built with `JSON.stringify` can meet** (informative). It never writes a raw nul character, a comment,
+a non-finite number (it writes `null`), nor a name repeated letter for letter, and every number it
+writes keeps within the bounds above. Four rules of this section can still reach it: a
+string holding a lone surrogate, which `JSON.stringify` escapes as `"\ud800"` and the bridge ignores;
+nesting deeper than 512 containers; two names that are distinct JavaScript strings but canonically
+equivalent, of which the second is dropped; and the bound of 65 536 UTF-16 code units on the whole
+message. Content that normalises the names it builds to one Unicode form and never splits a
+surrogate pair meets only the two that bound its size, the depth and the length.
+
+The rules above, save the informative paragraph on `JSON.stringify`, are what is normative, and they
+bind both platforms identically: neither may decode an envelope the other rejects. A **request** carries
 the same envelope plus one field
 and is decoded by the same rules, with one deliberate difference in what a violation means — it is
 answered rather than ignored (§ 13.8.2).
@@ -1968,13 +2456,13 @@ there.
 
 ### 13.3 Message type registry
 
-The registry is defined by this spec, not by the host application. As of 0.5.0 it holds exactly two
-types:
+The registry is defined by this spec, not by the host application. It holds exactly three types:
 
 | `type` | Direction | Payload | Meaning |
 |---|---|---|---|
 | `fastory:ready` | web → native | — (reserved for future keys) | The Fastory web surface has rendered and speaks this envelope version |
 | `fastory:login-requested` | web → native | — (reserved) | A fan asked to sign in; the host signs them in, then calls identify |
+| `fastory:logout-requested` | web → native | — (reserved) | A fan asked to sign out; the host asks them to confirm, then calls logout |
 
 `fastory:ready` is a liveness signal, not a lifecycle event: the SDK's own § 5.3 events remain the
 source of truth for what is open. A host MAY use it to confirm the embedded surface is alive; it
@@ -1983,12 +2471,23 @@ MUST NOT depend on receiving it, since the web side may be deployed at a version
 `fastory:login-requested` (since 0.5.0) is posted by a hub, a membership panel or a game when a fan
 taps one of its sign-in entries, and only when the host declared `handlesLoginRequests` (§ 2.1,
 § 2.6). **It has no reply**: the host's answer is to sign the fan in its own way and call `identify`
-(§ 2.6), and what the pages see of it is that identity — the presented hub reloads (§ 7), the games
-are signalled (§ 13.9). It is not a request type either: sent to the reply channel, it is outside
+(§ 2.6), and what the pages see of it is that identity — the presented hub or panel reloads (§ 7),
+the games are signalled (§ 13.9). It is not a request type either: sent to the reply channel, it is outside
 the request registry and answered `unsupported` (§ 13.8.2), exactly as `fastory:ready` is. **The SDK
 only delivers it** (§ 13.4): under the *Additive* rule of § 13 it opens no screen, starts no sign-in
 and influences no navigation, so a host that ignores it changes nothing on screen — which is why
 declaring the capability obliges the host to listen (§ 2.6).
+
+`fastory:logout-requested` is its counterpart: posted by a hub, a membership panel or a
+game when a fan taps one of its sign-out entries, and only under the same declaration,
+`handlesLoginRequests` (§ 2.1, § 2.6). The page ends no session on it, so until the host answers the
+fan stays signed in, in the page and in the SDK alike. **It has no reply**: the host's answer is to
+ask the fan to confirm, in its own interface, and then to call `logout()` (§ 2.6.1), and what the
+pages see of it is the identity that call drops — the presented hub or panel reloads signed out
+(§ 7), the games are signalled (§ 13.9). **The host MUST NOT call `logout()` on receipt** (§ 13.7). Sent to the
+reply channel it is answered `unsupported` (§ 13.8.2), like the other two. **The SDK only delivers
+it** (§ 13.4): it signs nobody out, opens no screen and influences no navigation, so a host that
+ignores it changes nothing on screen and the fan stays signed in.
 
 Adding a type is a spec change plus a MINOR SDK release. Removing one is a breaking change.
 
@@ -2026,6 +2525,12 @@ decode.
 than a second budget of its own: 16 ms is one frame whichever way the message is travelling, and two
 constants would drift. It is also what makes the standing answer of § 13.8.2 the only workable shape:
 an answer the native side had to go and fetch could not meet it.
+
+**A deferred reply keeps the budget** (§ 13.8.2). While a `fanId` fan's launch renewal is in flight,
+the SDK answers a `fastory:user-token` request later rather than at once, and what it does on the
+request path is to record that a reply is owed and return — within the same 16 ms. The reply leaves
+when the renewal returns, 3 seconds later at most, and nothing waits for it in between: no thread
+blocks, and the SDK starts no network call and no disk access on the request's behalf.
 
 The figure is a **coarse bound, not a measurement**: the real cost is microseconds, so it exists to
 catch an order-of-magnitude regression — something blocking put on the path — and nothing finer. It
@@ -2082,6 +2587,14 @@ forge an additional log line under the SDK's own tag.
   showing its own sign-in when nobody asked — a nuisance, not an escalation. A host MUST NOT decide
   anything sensitive on this message: it may offer the fan a sign-in, never grant one, and never treat
   it as proof of who tapped.
+- **And `fastory:logout-requested`** (§ 13.3), admitted on the same ground — its payload
+  asserts nothing — but with an obligation on the host, because what a host does on it is not
+  harmless. Any Android sub-frame can post it without a fan's tap, and a host that called `logout()`
+  on receipt would let an iframe inside a game sign the fan out behind their back, again each time
+  they signed back in. **A host MUST NOT call `logout()` on receiving it**: it asks the fan, in its own
+  interface, and calls `logout()` only on the fan's confirmation. So answered, the worst a sub-frame
+  achieves is a confirmation nobody asked for, which the fan dismisses — a nuisance, as for the
+  sign-in request. The message is a request, never proof that the fan tapped.
 - **The reply channel does not inherit that asymmetry, and MUST NOT** (§ 13.8.4). Its outcome is data
   the SDK hands the page rather than a claim the page makes, so the same gap would be an exfiltration
   surface instead of an assertion surface: an iframe inside a game could read the fan's token. Both
@@ -2130,7 +2643,7 @@ async function askFastory(type, requestId, payload = {}) {
   }
   if (window.fastoryRequest?.postMessage) {
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('fastory: no reply')), 1000);
+      const timer = setTimeout(() => reject(new Error('fastory: no reply')), 3500);
       window.fastoryRequest.addEventListener('message', function onMessage(event) {
         const reply = JSON.parse(event.data);
         if (reply.requestId !== requestId) return;
@@ -2145,9 +2658,12 @@ async function askFastory(type, requestId, payload = {}) {
 }
 ```
 
-Web callers MUST bound their wait, as the snippet does. The SDK answers on the request path itself and
-never defers, so an unanswered request means no channel — an old SDK, an old WebView, or no SDK at all —
-and a caller that waits forever on that is waiting for something that is not coming.
+Web callers MUST bound their wait, as the snippet does. The SDK answers on the request path itself,
+and defers in one case only, by **3 seconds** at most: a `fastory:user-token` request received during
+a `fanId` fan's launch renewal (§ 13.8.2). A caller asking for the fan's token therefore waits longer
+than that — 3.5 seconds in the snippet. A request still unanswered then means no channel — an old
+SDK, an old WebView, or no SDK at all — and a caller that waits forever on that is waiting for
+something that is not coming.
 
 #### 13.8.2 The request and its reply
 
@@ -2174,7 +2690,9 @@ Every accepted request produces exactly one reply, a JSON object serialised to a
 - `ok` is the discriminator. A successful reply carries `payload` and no `error`; a failure carries
   `error` and no `payload`.
 - `requestId` MUST be echoed whenever the request carried a usable one — **including on failure**. A
-  failure the page cannot attribute to a request is, from its side, a lost reply.
+  failure the page cannot attribute to a request is, from its side, a lost reply. A text that
+  *Reading the JSON text* (§ 13.1) refuses is the exception: no envelope was read, so it is answered
+  `malformed` with no `requestId`, even when the text spells one.
 - `type` MUST be echoed only when it is a registry type. A request naming an unknown type gets its
   `requestId` back but not its `type`: reflecting arbitrary web-supplied text into the document buys
   nothing and is a habit worth not forming.
@@ -2183,7 +2701,7 @@ Failures, and there are exactly three:
 
 | `error.code` | When |
 |---|---|
-| `malformed` | The envelope broke § 13.1 or the `requestId` rule above: not a string, over the size bound, not JSON, a top-level array, a wrongly typed `v`, no usable `requestId`, a non-object `payload` |
+| `malformed` | The envelope broke § 13.1 or the `requestId` rule above: not a string, over the size bound, not JSON, valid JSON that *Reading the JSON text* refuses, a top-level array, a wrongly typed `v`, no usable `requestId`, a non-object `payload` |
 | `unsupported` | Well-formed, but the `type` is outside the request registry — typically a web surface asking an SDK older than the type it wants |
 | `unavailable` | A registry type the native side has no standing answer for. Not an error state: it is what "nobody is identified yet" looks like from the page |
 
@@ -2195,7 +2713,22 @@ Normative, and the reason the list is this short:
   native side. A reply the platform fails to deliver MUST be traced (§ 13.6) — that is the one case
   the SDK cannot turn into an answer, so it has to be visible in the log instead.
 - **The answer MUST be produced on the request path**, with no timer, no queue and no I/O — § 13.5's
-  budget applies to the round trip. This is what makes the bound structural rather than timed.
+  budget applies to the round trip — save the one deferred reply below, which waits for a renewal
+  already in flight and never for work started on its behalf. This is what makes the bound structural
+  rather than timed.
+- **One reply is deferred, and only one: the fan's token while a `fanId` fan's launch renewal is in
+  flight** (§ 2.6.3). From the moment the SDK rehydrates that fan until the renewal returns, the slot
+  holds no session — the previous launch's was not kept — so an answer given at once would be
+  `unavailable`, and a signed-in fan's game or panel would start anonymous. A `fastory:user-token`
+  request received in that window is recorded without blocking the request path, and answered
+  exactly once — when the renewal returns, when the identity is revoked, or after **3 seconds**,
+  whichever comes first — with the answer in force at that moment: the renewed token when the renewal
+  succeeded, `unavailable` otherwise. Every other request, and every request outside that window, is
+  answered at once. The hub, which takes its session through a handoff rather than over this channel
+  (§ 7), waits for the same renewal under the same bound.
+- **The refresh token never reaches a page.** No reply of this channel carries it — a
+  `fastory:user-token` reply carries the embed session — and neither does any address the SDK builds,
+  any script it evaluates or any line it logs (§ 13.6). It travels between the SDK and the API only.
 - **The answer is a standing value, set by the host** through `setBridgeReply` (§ 5.2, § 2.2–2.4), not
   resolved on demand. The game asks while it is booting, so an answer that had to be fetched would
   stall its first paint; and the native side is the one holding the credential, so it has nothing to
@@ -2275,9 +2808,10 @@ per-origin storage (§ 7.4) and drop the warm hub while the next request was sti
 same fan's token. The invalidation points below are therefore part of the channel's contract, not a
 later hardening of it.
 
-Since 0.5.0 the value is also **populated automatically**: a `hostToken` that resolves sets the
-standing answer for `fastory:user-token` to the session it minted, so the games read the fan's token
-with no `setBridgeReply` call from the host. `setBridgeReply` remains the way a host sets or clears it
+Since 0.5.0 the value is also **populated automatically**: an identified fan that resolves —
+`hostToken` or `fanId` — sets the standing answer for `fastory:user-token` to the session it minted,
+and each renewal of that session sets it again, so the games read the fan's token with no
+`setBridgeReply` call from the host. `setBridgeReply` remains the way a host sets or clears it
 by hand. Both feed the same slot, and every invalidation point below applies to it however it was set.
 
 Implementations MUST drop every standing answer at each of these points:
@@ -2286,16 +2820,18 @@ Implementations MUST drop every standing answer at each of these points:
 |---|---|
 | `logout()` | It is the one call whose entire purpose is that nothing of the fan is left. Unconditional: it MUST revoke **even when no `identify` ever resolved** — the answer may have been set by hand (`setBridgeReply`) with no identity behind it, and gating the revoke on there being one would leave that credential standing |
 | An `identify` that resolves an identity **different** from one previously resolved | The § 2.6.1 difference rule, applied to this channel: a new fan MUST NOT inherit the previous one's answer. "Previously resolved" is load-bearing — see the first-identify row below |
+| An `identify` that fails after it was committed to a resolution (§ 2.6.1) | The SDK lands on no identity, so an answer kept for the previous fan would hand a game the session of a fan the host believes is gone |
 | A `configure` that **replaces** an existing configuration with a different one | The value was minted for the environment and the workspace in force when it was set. Served under the next one, a production token reaches a staging page, and one club's fan reaches another club's game |
 
 And MUST NOT drop it at any of these:
 
 - **An `identify` that resolves the identity already in force.** Same fan, so the answer still
   describes them; revoking would make the idempotency of § 2.6.1 observable as a lost credential.
-- **A pre-flight rejection** (`not_configured`, `identify_mode_unavailable`, a malformed token).
-  § 2.6.1 already requires such a call to leave the current identity untouched; this channel is part
-  of what "untouched" means, so a mode refused before anything was attempted MUST NOT sign a fan out
-  here either.
+- **A pre-flight refusal** (§ 2.6.1). § 2.6.1 requires such a call to leave the current identity
+  untouched; this channel is part of what "untouched" means, so a call refused before anything was
+  attempted MUST NOT sign a fan out here either. A malformed or expired `hostToken` is not one: the
+  SDK does not validate the token (§ 12), so the API refuses it and the call is a resolution failure,
+  `identify_rejected`.
 - **The first `identify`,** when no identity was resolved before it. There is no previous fan for the
   answer to have belonged to, so a value the host set by hand before identifying survives into the
   session it was set for. Note that such a call *does* emit `identityResolved` (§ 2.6.2): the two

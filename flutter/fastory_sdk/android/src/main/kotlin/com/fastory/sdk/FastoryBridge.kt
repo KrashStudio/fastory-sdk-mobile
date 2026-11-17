@@ -41,7 +41,7 @@ internal data class FastoryBridgeCaller(val origin: String?, val isMainFrame: Bo
  * An enum rather than a free string: the request registry is the security boundary, so a host cannot
  * name a type outside it — the compiler refuses before anything reaches the page.
  */
-enum class FastoryBridgeRequestType(internal val value: String) {
+public enum class FastoryBridgeRequestType(internal val value: String) {
     /**
      * The stories-origin fan token a game asks its host page for. In an SDK WebView the game *is*
      * the top-level document, so there is no host page and the native side answers in its place.
@@ -66,10 +66,16 @@ internal object BridgeEnvelope {
      * the others.
      *
      * `fastory:login-requested` is posted when a fan taps a sign-in entry on a page whose host
-     * declared [FastoryConfig.handlesLoginRequests]. It is only delivered: the SDK opens nothing and
-     * navigates nowhere on it, since signing the fan in belongs to the host, through `identify`.
+     * declared [FastoryConfig.handlesLoginRequests], and `fastory:logout-requested` when the fan taps
+     * a sign-out entry on such a page. Both are only delivered: the SDK opens nothing, navigates
+     * nowhere and signs nobody out on them, since the fan's session belongs to the host, through
+     * `identify` and `logout`.
      */
-    val KNOWN_TYPES: Set<String> = setOf("fastory:ready", "fastory:login-requested")
+    val KNOWN_TYPES: Set<String> = setOf(
+        "fastory:ready",
+        "fastory:login-requested",
+        "fastory:logout-requested",
+    )
 
     /**
      * The types the native side can be *asked* to answer (SPEC §13.8.3), held on the three
@@ -678,7 +684,7 @@ private object StrictJsonSyntax {
  * Receiving end of the bridge, shared by every SDK WebView. A singleton on purpose: a WebView holds
  * its interfaces for life and the hub WebView outlives its Activity, so anything holding one leaks.
  */
-object FastoryBridge {
+internal object FastoryBridge {
 
     /** The page reaches it at `window.fastory` (SPEC §13.2). */
     const val NAME = "fastory"
@@ -701,7 +707,7 @@ object FastoryBridge {
      * nothing it could not already do by invoking its own listener.
      */
     @JavascriptInterface
-    fun postMessage(raw: String?) {
+    public fun postMessage(raw: String?) {
         val message = BridgeEnvelope.parse(raw) ?: return
         onMainThread { Fastory.notifyBridgeMessage(message.type, message.payload) }
     }
@@ -748,6 +754,25 @@ internal object FastoryBridgeResponder : WebViewCompat.WebMessageListener {
 
     /** Guarded because the setter is host code on any thread while the reads happen on the UI one. */
     private val standingReplies = ConcurrentHashMap<String, JSONObject>()
+
+    /**
+     * A request for the fan's token that arrived while its answer was deferred, with the channel to
+     * answer it on. Holding [reply] is what keeps the page's reply proxy alive until then.
+     */
+    private class HeldRequest(
+        val request: FastoryBridgeRequest,
+        val raw: String?,
+        val reply: (String?) -> Unit,
+    )
+
+    /** Guards the deferral and the requests it holds, which are touched from any thread. */
+    private val deferralLock = Any()
+    private var defersUserToken = false
+    private val heldRequests = mutableListOf<HeldRequest>()
+
+    private val mainHandler: Handler? by lazy {
+        Looper.getMainLooper()?.let { Handler(it) }
+    }
 
     /**
      * `addWebMessageListener` is the only Android entry point that reports **which frame** posted and
@@ -820,9 +845,54 @@ internal object FastoryBridgeResponder : WebViewCompat.WebMessageListener {
      * is a fan credential, so it dies with the identity that justified it — `logout()`, an
      * `identify` that resolves a different fan, and a `configure` that replaces the configuration it
      * was set under. Without them `logout()` keeps answering with the previous fan's token.
+     *
+     * A revocation also ends a deferral: the requests held for a renewal are answered `unavailable`,
+     * since the fan they waited for is gone.
      */
     internal fun revokeAll() {
         standingReplies.clear()
+        val held = synchronized(deferralLock) {
+            defersUserToken = false
+            heldRequests.toList().also { heldRequests.clear() }
+        }
+        release(held, answeringFrom = emptyMap())
+    }
+
+    // endregion
+
+    // region The deferred answer (SPEC § 13.8.2)
+
+    /**
+     * From now on, a request for the fan's token is held rather than answered, until
+     * [endDeferringUserToken] or [revokeAll]. Callable from any thread.
+     */
+    internal fun beginDeferringUserToken() {
+        synchronized(deferralLock) { defersUserToken = true }
+    }
+
+    /** Answers every held request with the answer in force now, and answers the next ones at once. */
+    internal fun endDeferringUserToken() {
+        val held = synchronized(deferralLock) {
+            defersUserToken = false
+            heldRequests.toList().also { heldRequests.clear() }
+        }
+        release(held, answeringFrom = HashMap(standingReplies))
+    }
+
+    /**
+     * The answers are decided on the calling thread, from the standing answers of that moment, and
+     * handed over on the main thread, where the reply proxy expects to be called.
+     */
+    private fun release(held: List<HeldRequest>, answeringFrom: Map<String, JSONObject>) {
+        if (held.isEmpty()) return
+        val replies = held.map { it.reply to replyTo(it.request, it.raw, answeringFrom) }
+        val deliver = { replies.forEach { (reply, text) -> reply(text) } }
+        val handler = mainHandler
+        if (handler == null || Looper.myLooper() == handler.looper) {
+            deliver()
+        } else {
+            handler.post { deliver() }
+        }
     }
 
     // endregion
@@ -844,41 +914,94 @@ internal object FastoryBridgeResponder : WebViewCompat.WebMessageListener {
         allowedOrigins: List<String>,
         requestTypes: Set<String> = BridgeEnvelope.REQUEST_TYPES,
         standing: Map<String, JSONObject> = standingReplies,
-    ): String? {
+    ): String? = when (val decision = decide(raw, caller, allowedOrigins, requestTypes)) {
+        Decision.Silent -> null
+        is Decision.Answered -> decision.reply
+        is Decision.Request -> replyTo(decision.request, raw, standing)
+    }
+
+    /**
+     * [answer], save the one deferred reply (SPEC § 13.8.2): while the fan's token is deferred, a
+     * request for it is recorded with [reply] and answered later, exactly once. Every other outcome
+     * reaches [reply] before this returns.
+     */
+    internal fun answerDeferring(
+        raw: String?,
+        caller: FastoryBridgeCaller,
+        allowedOrigins: List<String>,
+        requestTypes: Set<String> = BridgeEnvelope.REQUEST_TYPES,
+        reply: (String?) -> Unit,
+    ) {
+        when (val decision = decide(raw, caller, allowedOrigins, requestTypes)) {
+            Decision.Silent -> reply(null)
+            is Decision.Answered -> reply(decision.reply)
+            is Decision.Request -> {
+                val held = synchronized(deferralLock) {
+                    val defers = defersUserToken &&
+                        decision.request.type == FastoryBridgeRequestType.USER_TOKEN.value
+                    if (defers) heldRequests += HeldRequest(decision.request, raw, reply)
+                    defers
+                }
+                if (!held) reply(replyTo(decision.request, raw, standingReplies))
+            }
+        }
+    }
+
+    private sealed class Decision {
+        /** Refused without an envelope (SPEC § 13.8.4). */
+        object Silent : Decision()
+
+        /** Answered from the request alone: a failure to decode it. */
+        class Answered(val reply: String) : Decision()
+
+        /** A well-formed registry request, answered from the standing answers. */
+        class Request(val request: FastoryBridgeRequest) : Decision()
+    }
+
+    private fun decide(
+        raw: String?,
+        caller: FastoryBridgeCaller,
+        allowedOrigins: List<String>,
+        requestTypes: Set<String>,
+    ): Decision {
         // Both gates before anything is parsed: a caller we will not answer costs us no decode.
         if (!caller.isMainFrame) {
             BridgeEnvelope.traceUnrecognisedCaller("posted from a sub-frame", caller.origin)
-            return null
+            return Decision.Silent
         }
         val origin = caller.origin
         if (origin == null || origin !in allowedOrigins) {
             BridgeEnvelope.traceUnrecognisedCaller("origin is not a Fastory surface", caller.origin)
-            return null
+            return Decision.Silent
         }
         return when (val decoding = BridgeEnvelope.decodeRequest(raw, requestTypes)) {
             is BridgeEnvelope.RequestDecoding.Refused -> {
                 BridgeEnvelope.traceRequestFailed(decoding.error, raw)
-                BridgeEnvelope.reply(error = decoding.error, requestId = decoding.requestId)
+                Decision.Answered(BridgeEnvelope.reply(error = decoding.error, requestId = decoding.requestId))
             }
-            is BridgeEnvelope.RequestDecoding.Decoded -> {
-                val request = decoding.request
-                val payload = standing[request.type]
-                if (payload == null) {
-                    BridgeEnvelope.traceRequestFailed(BridgeEnvelope.ReplyError.UNAVAILABLE, raw)
-                    BridgeEnvelope.reply(
-                        error = BridgeEnvelope.ReplyError.UNAVAILABLE,
-                        type = request.type,
-                        requestId = request.requestId,
-                    )
-                } else {
-                    BridgeEnvelope.reply(
-                        payload = payload,
-                        type = request.type,
-                        requestId = request.requestId,
-                    )
-                }
-            }
+            is BridgeEnvelope.RequestDecoding.Decoded -> Decision.Request(decoding.request)
         }
+    }
+
+    private fun replyTo(
+        request: FastoryBridgeRequest,
+        raw: String?,
+        standing: Map<String, JSONObject>,
+    ): String {
+        val payload = standing[request.type]
+        if (payload == null) {
+            BridgeEnvelope.traceRequestFailed(BridgeEnvelope.ReplyError.UNAVAILABLE, raw)
+            return BridgeEnvelope.reply(
+                error = BridgeEnvelope.ReplyError.UNAVAILABLE,
+                type = request.type,
+                requestId = request.requestId,
+            )
+        }
+        return BridgeEnvelope.reply(
+            payload = payload,
+            type = request.type,
+            requestId = request.requestId,
+        )
     }
 
     // endregion
@@ -935,12 +1058,15 @@ internal object FastoryBridgeResponder : WebViewCompat.WebMessageListener {
             null
         }
         val caller = FastoryBridgeCaller(originOf(sourceOrigin.toString()), isMainFrame)
-        val reply = answer(raw, caller, allowedOrigins(Fastory.config)) ?: return
-        // Already on the UI thread: onPostMessage is @UiThread, and so is postMessage. Traced on
-        // failure because §13.6 forbids a silent drop, and a reply lost on the way out is exactly the
-        // case a device pass must be able to tell apart from a caller we refused to answer.
-        runCatching { replyProxy.postMessage(reply) }.onFailure { error ->
-            BridgeEnvelope.traceReplyChannel("reply not delivered: ${error.javaClass.simpleName}")
+        answerDeferring(raw, caller, allowedOrigins(Fastory.config)) { reply ->
+            if (reply == null) return@answerDeferring
+            // On the UI thread, where postMessage must be called: at once from onPostMessage, which
+            // is @UiThread, or later from a deferred release, which hands over there. Traced on
+            // failure because §13.6 forbids a silent drop, and a reply lost on the way out is exactly
+            // the case a device pass must be able to tell apart from a caller we refused to answer.
+            runCatching { replyProxy.postMessage(reply) }.onFailure { error ->
+                BridgeEnvelope.traceReplyChannel("reply not delivered: ${error.javaClass.simpleName}")
+            }
         }
     }
 }

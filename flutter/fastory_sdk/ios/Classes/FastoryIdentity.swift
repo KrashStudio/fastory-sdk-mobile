@@ -11,7 +11,7 @@ public enum FastoryIdentity: Equatable, Sendable {
     case fanId
     case hostToken(jwt: String)
 
-    public var mode: FastoryIdentityMode {
+    var mode: FastoryIdentityMode {
         switch self {
         case .anonymous: return .anonymous
         case .fanId: return .fanId
@@ -45,10 +45,11 @@ public struct FastoryResolvedIdentity: Equatable, Sendable {
 /// event (SPEC § 5.3). A host-driven drop (`logout()`, a replacing `configure()`) is never a
 /// revocation: the host already knows, so it gets no event.
 public enum FastoryRevocationReason: String, Equatable, Sendable {
-    /// A background re-exchange was refused by the API. Carries the API's own code when it named one.
+    /// A background renewal was refused by the API — a host-token re-exchange, or the renewal of a
+    /// `fanId` fan's stored session. Carries the API's own code when it named one.
     case rejected
-    /// The embed session expired and could not be renewed — no host-token provider was registered,
-    /// so there was no fresh assertion to re-exchange. Carries no code: nothing refused it.
+    /// The session lapsed and could not be renewed: no host-token provider was registered, or a
+    /// `fanId` fan's stored session outlived its lifetime. Carries no code.
     case expired
 }
 
@@ -86,19 +87,6 @@ public enum FastoryIdentifyError: Error, Equatable, Sendable {
         case .loginCancelled: return "login_cancelled"
         case .rejected: return "identify_rejected"
         case .network: return "identify_network_error"
-        }
-    }
-
-    /// A pre-flight rejection is decided before anything is attempted, so it leaves the current
-    /// identity untouched. A resolution failure happened after the previous session was already
-    /// erased, so it leaves the SDK anonymous (SPEC § 2.6.1). Conflating the two is how asking for
-    /// a not-yet-released mode would sign a fan out.
-    var isPreflight: Bool {
-        switch self {
-        case .notConfigured, .modeUnavailable, .invalidIdentityMode, .invalidHostToken:
-            return true
-        case .loginCancelled, .rejected, .network:
-            return false
         }
     }
 }
@@ -244,8 +232,7 @@ enum FastoryIdentityRules {
         case .hostToken(let jwt) where jwt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty:
             return rejected(.invalidHostToken)
         case .fanId, .hostToken:
-            // A pre-flight rejection, so asking for a mode this version does not implement must not
-            // sign the current fan out.
+            // A pre-flight refusal (SPEC § 2.6.1), so it never signs the current fan out.
             return rejected(.modeUnavailable(requested.mode))
         case .anonymous:
             let resolved = FastoryResolvedIdentity.anonymous
@@ -299,10 +286,10 @@ enum FastoryIdentityRules {
             error: nil,
             erasesStorage: current != nil,
             emitsIdentityResolved: false,
-            // Unconditional, unlike the erasure: nothing populates the standing answer
-            // automatically yet, so today it is only ever there because the host put it there —
-            // with no identify() call anywhere in that story. Gating this on `current != nil` would
-            // make logout() silently keep serving the fan it announces it signed out.
+            // Unconditional, unlike the erasure: the standing answer can be there because the host
+            // put it there, with no identify() call anywhere in that story, as well as because a
+            // delegated session set it. Gating this on `current != nil` would make logout()
+            // silently keep serving the fan it announces it signed out.
             revokesBridgeReplies: true
         )
     }
@@ -319,14 +306,17 @@ enum FastoryIdentityRules {
     }
 }
 
-// MARK: - The host-token lifecycle (SPEC § 2.6, § 5.3)
+// MARK: - The session lifecycle (SPEC § 2.6, § 5.3)
 
 /// The observable effects of one lifecycle event, decided without any I/O so both platforms map the
 /// same trigger to the same outcome — the renewal analogue of `FastoryIdentityExchangeClassifier`.
 struct FastoryLifecycleEffects: Equatable {
-    enum Identity: String { case preserved, anonymous }
+    /// `replaced` is a different resolved identity taking over: another fan, or the same fan in
+    /// another mode.
+    enum Identity: String { case preserved, anonymous, replaced }
     enum StandingAnswer: String { case preserved, refreshed, revoked }
     enum Persistence: String { case unchanged, written, read, purged }
+    enum RefreshToken: String { case kept, stored, rotated, purged }
 
     let identity: Identity
     let standingAnswer: StandingAnswer
@@ -334,11 +324,15 @@ struct FastoryLifecycleEffects: Equatable {
     /// host-driven `logout`/`configReplaced` never surprises the host with news it already has.
     let revocation: FastoryIdentityRevocation?
     let persistence: Persistence
+    let refreshToken: RefreshToken
+    /// Whether the SDK asks the server to revoke the token family it held, best effort and without
+    /// waiting. A family the server refused is already over, so a refusal never asks again.
+    let serverRevocation: Bool
 }
 
-/// Maps each host-token lifecycle event to its effects. Pure and total, so every case is decidable
-/// the same way on both platforms: the shared reference the two renewal coordinators in `Fastory` are
-/// written against, and what the cross-platform fixture pins so a case cannot drift between them.
+/// Maps each lifecycle event to its effects. Pure and total, so every case is decidable the same way
+/// on both platforms: the shared reference the renewal coordinators in `Fastory` are written against,
+/// and what the cross-platform fixture pins so a case cannot drift between them.
 enum FastoryHostTokenLifecycle {
     enum Trigger: Equatable {
         /// The embed session is still valid but nearing expiry: refresh it, involving no one.
@@ -357,6 +351,16 @@ enum FastoryHostTokenLifecycle {
         case logout
         /// A replacing `configure` discards the previous configuration's identity. Host-driven.
         case configReplaced
+        case fanIdLaunchRenewed
+        case fanIdLaunchRejected(code: String?)
+        case fanIdLaunchExpired
+        case fanIdLaunchTransient
+        case fanIdLaunchWithoutToken
+        case fanIdLaunchProtectedDataUnavailable
+        case fanIdLogout
+        case fanChanged
+        case sameFanReidentified
+        case fanIdToHostToken
     }
 
     static func effects(for trigger: Trigger) -> FastoryLifecycleEffects {
@@ -364,39 +368,85 @@ enum FastoryHostTokenLifecycle {
         case .sessionExpiring:
             return FastoryLifecycleEffects(
                 identity: .preserved, standingAnswer: .refreshed,
-                revocation: nil, persistence: .unchanged
+                revocation: nil, persistence: .unchanged,
+                refreshToken: .kept, serverRevocation: false
             )
         case .refreshRefused:
             // The provider handed back a fresh assertion and the re-exchange resolved the same fan:
             // the new session's token replaces the standing answer, and persistence is re-stamped.
             return FastoryLifecycleEffects(
                 identity: .preserved, standingAnswer: .refreshed,
-                revocation: nil, persistence: .written
+                revocation: nil, persistence: .written,
+                refreshToken: .kept, serverRevocation: false
             )
         case .exchangeRefused(let code):
-            return FastoryLifecycleEffects(
-                identity: .anonymous, standingAnswer: .revoked,
-                revocation: FastoryIdentityRevocation(reason: .rejected, code: code),
-                persistence: .purged
-            )
+            return revoked(FastoryIdentityRevocation(reason: .rejected, code: code))
         case .sessionExpiredNoProvider:
-            return FastoryLifecycleEffects(
-                identity: .anonymous, standingAnswer: .revoked,
-                revocation: FastoryIdentityRevocation(reason: .expired, code: nil),
-                persistence: .purged
-            )
+            return revoked(FastoryIdentityRevocation(reason: .expired, code: nil))
         case .bootRehydration:
             return FastoryLifecycleEffects(
                 identity: .preserved, standingAnswer: .preserved,
-                revocation: nil, persistence: .read
+                revocation: nil, persistence: .read,
+                refreshToken: .kept, serverRevocation: false
             )
         case .logout, .configReplaced:
             // Host-driven: the fan is dropped and persistence purged, but no event — the host
             // initiated it. The standing answer is revoked so no game keeps the old token.
+            return signedOut(serverRevocation: false)
+        case .fanIdLaunchRenewed:
             return FastoryLifecycleEffects(
-                identity: .anonymous, standingAnswer: .revoked,
-                revocation: nil, persistence: .purged
+                identity: .preserved, standingAnswer: .refreshed,
+                revocation: nil, persistence: .written,
+                refreshToken: .rotated, serverRevocation: false
+            )
+        case .fanIdLaunchRejected(let code):
+            return revoked(FastoryIdentityRevocation(reason: .rejected, code: code))
+        case .fanIdLaunchExpired:
+            return revoked(FastoryIdentityRevocation(reason: .expired, code: nil))
+        case .fanIdLaunchTransient, .fanIdLaunchProtectedDataUnavailable:
+            return FastoryLifecycleEffects(
+                identity: .preserved, standingAnswer: .preserved,
+                revocation: nil, persistence: .unchanged,
+                refreshToken: .kept, serverRevocation: false
+            )
+        case .fanIdLaunchWithoutToken:
+            return signedOut(serverRevocation: false)
+        case .fanIdLogout:
+            return signedOut(serverRevocation: true)
+        case .fanChanged:
+            return FastoryLifecycleEffects(
+                identity: .replaced, standingAnswer: .revoked,
+                revocation: nil, persistence: .written,
+                refreshToken: .stored, serverRevocation: true
+            )
+        case .sameFanReidentified:
+            return FastoryLifecycleEffects(
+                identity: .preserved, standingAnswer: .refreshed,
+                revocation: nil, persistence: .written,
+                refreshToken: .stored, serverRevocation: true
+            )
+        case .fanIdToHostToken:
+            return FastoryLifecycleEffects(
+                identity: .replaced, standingAnswer: .refreshed,
+                revocation: nil, persistence: .written,
+                refreshToken: .purged, serverRevocation: true
             )
         }
+    }
+
+    private static func revoked(_ revocation: FastoryIdentityRevocation) -> FastoryLifecycleEffects {
+        FastoryLifecycleEffects(
+            identity: .anonymous, standingAnswer: .revoked,
+            revocation: revocation, persistence: .purged,
+            refreshToken: .purged, serverRevocation: false
+        )
+    }
+
+    private static func signedOut(serverRevocation: Bool) -> FastoryLifecycleEffects {
+        FastoryLifecycleEffects(
+            identity: .anonymous, standingAnswer: .revoked,
+            revocation: nil, persistence: .purged,
+            refreshToken: .purged, serverRevocation: serverRevocation
+        )
     }
 }

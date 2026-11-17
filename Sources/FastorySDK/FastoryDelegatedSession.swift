@@ -8,9 +8,27 @@ import Foundation
 /// is present on the first sight of a delegated fan and stable across replays of the same subject
 /// (SPEC § 2.6.2). The `fanzoneUser` the API also returns is `nil` until the fan has a fanzone
 /// profile, so it cannot be the identifier a host is handed for every resolution.
+///
+/// `refreshToken` is what renews a `fanId` fan's session from one launch to the next (SPEC § 2.6.3):
+/// returned by the login code's exchange and by every renewal. It is `nil` for a `hostToken` session,
+/// and for an API that issues none, in which case the session works exactly as before.
 struct FastoryDelegatedSession: Equatable {
     let token: String
     let fanId: String
+    let refreshToken: String?
+
+    init(token: String, fanId: String, refreshToken: String? = nil) {
+        self.token = token
+        self.fanId = fanId
+        self.refreshToken = refreshToken
+    }
+}
+
+/// The answer to a refresh-token grant: a renewed session carrying its rotated token, or the
+/// classified reason it was not renewed.
+enum FastoryRefreshGrantResult: Equatable {
+    case renewed(FastoryDelegatedSession)
+    case failed(FastoryRefreshGrantOutcome)
 }
 
 /// Maps an identity-exchange outcome to the `identify` error a host branches on (SPEC § 5.4).
@@ -66,6 +84,34 @@ enum FastoryIdentityExchangeClassifier {
     static let networkCode = "identify_network_error"
 }
 
+/// What the answer to a refresh-token grant means for the fan on the device (SPEC § 2.6.3).
+enum FastoryRefreshGrantOutcome: Equatable {
+    /// No verdict was reached: the stored token and the identity stay, and the next launch tries
+    /// again.
+    case transient
+    case refused(reason: FastoryRevocationReason, code: String?)
+}
+
+/// Classifies a refresh-token grant that did not succeed. Pure and table-driven, like the exchange
+/// classifier above, so a 503 cannot sign a fan out on one platform and keep them on the other.
+/// Unlike that classifier, a refusal here is not an `identify` error: it ends a session the host
+/// already holds, so it becomes an `identityRevoked` reason.
+enum FastoryRefreshGrantClassifier {
+    /// `httpStatus` is `nil` when no answer arrived. A refusal's reason is read from the API code, not
+    /// the status, so an expired token is told apart from a rejected one whatever 4xx carries it.
+    static func classify(httpStatus: Int?, apiCode: String?) -> FastoryRefreshGrantOutcome {
+        guard let status = httpStatus, status != 429, status < 500 else {
+            return .transient
+        }
+        if apiCode == expiredCode {
+            return .refused(reason: .expired, code: nil)
+        }
+        return .refused(reason: .rejected, code: apiCode)
+    }
+
+    static let expiredCode = "refresh_token_expired"
+}
+
 /// Exchanges a host attestation for a fan session, and mints the single-use token the hub needs to
 /// adopt that session. No browser and no form: the partner already authenticated the fan, so the JWT
 /// is forwarded for server-side verification (SPEC § 2.6, § 12) and the SDK never validates it.
@@ -115,7 +161,7 @@ final class FastoryDelegatedSessionClient {
         ])
 
         performRequest(request) { data, response, error in
-            let result = Self.session(from: data, response: response, error: error)
+            let result = Self.session(from: data, response: response, error: error, keepsRefreshToken: false)
             DispatchQueue.main.async { completion(result) }
         }
     }
@@ -124,7 +170,8 @@ final class FastoryDelegatedSessionClient {
     /// The caller is proven by the publishable key and the application identifier — the pair the code
     /// was minted for — and the PKCE verifier ties the exchange to the app that started the login.
     /// The session comes back bound to the games' stories origin, exactly like the attestation
-    /// exchange above; a code replayed, expired or presented by another caller is refused.
+    /// exchange above; a code replayed, expired or presented by another caller is refused. It carries
+    /// the refresh token the API issued beside it, or none.
     func exchangeLoginCode(
         code: String,
         codeVerifier: String,
@@ -146,8 +193,57 @@ final class FastoryDelegatedSessionClient {
         ])
 
         performRequest(request) { data, response, error in
-            let result = Self.session(from: data, response: response, error: error)
+            let result = Self.session(from: data, response: response, error: error, keepsRefreshToken: true)
             DispatchQueue.main.async { completion(result) }
+        }
+    }
+
+    /// Presents a `fanId` fan's stored refresh token for a new session, with no browser (SPEC § 2.6.3).
+    /// The token presented is spent: a renewal comes back with its successor, which replaces it.
+    ///
+    /// Anything but a renewal is classified by `FastoryRefreshGrantClassifier`. A success whose body
+    /// cannot be read is classified as no answer at all — something other than the API answered, or
+    /// the answer was lost — so it never signs the fan out.
+    func refreshGrant(
+        refreshToken: String,
+        publishableKey: String,
+        applicationId: String,
+        environment: FastoryEnvironment,
+        completion: @escaping (FastoryRefreshGrantResult) -> Void
+    ) {
+        var request = URLRequest(url: environment.embedTokenURL)
+        request.httpMethod = "POST"
+        request.timeoutInterval = FastoryWorkspaceResolver.exchangeTimeout
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "grant_type": "refresh_token",
+            "refresh_token": refreshToken,
+            "publishableKey": publishableKey,
+            "applicationId": applicationId,
+        ])
+
+        performRequest(request) { data, response, error in
+            let result = Self.grantResult(from: data, response: response, error: error)
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
+
+    /// Asks the API to end the family of a refresh token the SDK is letting go of. Best effort: the
+    /// answer, whatever it is, changes nothing on the device, so `completion` reports only that the
+    /// attempt is over.
+    func revoke(
+        refreshToken: String,
+        environment: FastoryEnvironment,
+        completion: @escaping () -> Void = {}
+    ) {
+        var request = URLRequest(url: environment.embedRevokeURL)
+        request.httpMethod = "POST"
+        request.timeoutInterval = FastoryWorkspaceResolver.exchangeTimeout
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["refresh_token": refreshToken])
+
+        performRequest(request) { _, _, _ in
+            DispatchQueue.main.async { completion() }
         }
     }
 
@@ -263,7 +359,8 @@ final class FastoryDelegatedSessionClient {
     private static func session(
         from data: Data?,
         response: URLResponse?,
-        error: Error?
+        error: Error?,
+        keepsRefreshToken: Bool
     ) -> Result<FastoryDelegatedSession, FastoryIdentifyError> {
         if let error {
             let failureClass = (error as NSError).code == NSURLErrorTimedOut ? "timeout" : "network"
@@ -299,7 +396,47 @@ final class FastoryDelegatedSessionClient {
                 )
             )
         }
-        return .success(FastoryDelegatedSession(token: token, fanId: fanId))
+        return .success(
+            FastoryDelegatedSession(
+                token: token,
+                fanId: fanId,
+                refreshToken: keepsRefreshToken ? refreshToken(from: payload) : nil
+            )
+        )
+    }
+
+    private static func grantResult(
+        from data: Data?,
+        response: URLResponse?,
+        error: Error?
+    ) -> FastoryRefreshGrantResult {
+        let noAnswer = FastoryRefreshGrantResult.failed(
+            FastoryRefreshGrantClassifier.classify(httpStatus: nil, apiCode: nil)
+        )
+        guard error == nil, let http = response as? HTTPURLResponse else {
+            return noAnswer
+        }
+        let payload = data.flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] }
+        guard (200..<300).contains(http.statusCode) else {
+            return .failed(
+                FastoryRefreshGrantClassifier.classify(
+                    httpStatus: http.statusCode,
+                    apiCode: payload?["code"] as? String
+                )
+            )
+        }
+        guard let payload,
+              let token = payload["token"] as? String, !token.isEmpty,
+              let fanId = fanId(from: payload),
+              let refreshToken = refreshToken(from: payload) else {
+            return noAnswer
+        }
+        return .renewed(FastoryDelegatedSession(token: token, fanId: fanId, refreshToken: refreshToken))
+    }
+
+    private static func refreshToken(from payload: [String: Any]) -> String? {
+        guard let token = payload["refreshToken"] as? String, !token.isEmpty else { return nil }
+        return token
     }
 
     /// `oauthUserId` is a number in the response and a string on the identity surface. Accept either
@@ -353,5 +490,10 @@ extension FastoryEnvironment {
     /// Renews an embed session before it expires, returning a token with a fresh TTL.
     var embedRefreshURL: URL {
         apiBaseURL.appendingPathComponent("embed/auth/refresh")
+    }
+
+    /// Ends the family of a refresh token the SDK lets go of.
+    var embedRevokeURL: URL {
+        apiBaseURL.appendingPathComponent("embed/auth/revoke")
     }
 }

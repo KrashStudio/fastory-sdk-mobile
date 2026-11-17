@@ -117,6 +117,11 @@ final class FastoryHubViewController: UIViewController {
     /// own navigation left the page, and which the next opening would never recognise.
     private var requestedURL: URL?
 
+    /// The session the page in hand read: the warm slot's stamp for a page reused as it stands,
+    /// taken afresh at each load this presentation starts. It goes back into the slot with the page,
+    /// so the next opening can tell whether that page saw the fan's session (SPEC § 3.5).
+    private var pageSession: Fastory.PageSession
+
     /// The latest resolution has answered. Not `requestedURL`, which a reload after an identity
     /// change keeps from the previous resolution while the new one is still minting its handoff:
     /// until this one answers, what finishes in the page is the outgoing document.
@@ -128,6 +133,40 @@ final class FastoryHubViewController: UIViewController {
     private var resolutionCount = 0
 
     private var presentationEnded = false
+
+    /// `close()` was aimed at this surface. Set in the same turn as the call, before UIKit has begun
+    /// anything: with a game sheet up the container itself only starts leaving turns later, and an
+    /// opening asked for right after `close()` must already see it as going.
+    private var leaveRequested = false
+
+    /// The surface is on its way out, whoever asked: the host through `close()`, or the fan.
+    var isLeaving: Bool { leaveRequested || presentationEnded }
+
+    /// The surface has left the screen and announced it. Set after the closing event, so an opening
+    /// that waited on this surface is presented after that event and never in its place.
+    private(set) var hasLeft = false
+
+    func markLeaveRequested() {
+        leaveRequested = true
+    }
+
+    /// Read once the presenter was asked to dismiss this surface, then turn by turn. UIKit starts a
+    /// dismissal within the call, or — asked while the surface is still animating in — holds it
+    /// until that animation ends; a dismissal it refuses leaves the surface on screen and says
+    /// nothing. Kept marked as leaving past the close budget, the surface would turn the next opening
+    /// into one queued behind a departure that never comes, then presented over whatever the fan
+    /// sees once they close this surface themselves.
+    func confirmDepartureStarted(turnsLeft: Int = FastoryHubViewController.closeTurnBudget) {
+        guard leaveRequested, !presentationEnded, !isBeingDismissed else { return }
+        guard turnsLeft > 0 else {
+            leaveRequested = false
+            Fastory.surfaceStayed()
+            return
+        }
+        FastoryHubViewController.scheduleCloseTurn { [weak self] in
+            self?.confirmDepartureStarted(turnsLeft: turnsLeft - 1)
+        }
+    }
 
     /// One main-thread turn later, as `close()` waits for the game sheet to be gone. Replaceable so
     /// the turns can be driven explicitly rather than waited for.
@@ -160,6 +199,7 @@ final class FastoryHubViewController: UIViewController {
         // WebView on screen that no callback will ever fire for.
         self.prewarmedPageIsUsable = (warm?.hasCommitted ?? false) || (warm?.webView.isLoading ?? false)
         self.prewarmedPageURL = warm?.url
+        self.pageSession = warm?.session ?? Fastory.pageSession
         self.load = FastorySurfaceLoad(
             surface: surface,
             // Neither surface can announce itself sight unseen: the hub's event carries the
@@ -254,6 +294,11 @@ final class FastoryHubViewController: UIViewController {
             webView.navigationDelegate = nil
             webView.uiDelegate = nil
             webView.removeFromSuperview()
+            // A resolution still in flight — a reload for a fan who identified while the hub was on
+            // screen — would load its handoff into a page already back in the slot, kept under the
+            // address it had before: the next opening that asks for that address would take a page
+            // rendered for the fan.
+            resolutionCount += 1
             // A cover still up was this presentation's: the page goes back readable, but not as one
             // to present as it stands — it may not have drawn its document yet.
             let stillCovered = !outgoingDocumentCover.isHidden
@@ -265,7 +310,8 @@ final class FastoryHubViewController: UIViewController {
                 for: surface,
                 url: requestedURL,
                 config: config,
-                hasCommitted: load.hasCommittedPage && !stillCovered
+                hasCommitted: load.hasCommittedPage && !stillCovered,
+                session: pageSession
             )
             // A surface that never announced itself open owes no closing event: the pair brackets a
             // session, and a close with no open in front of it is the report of a session that did
@@ -277,6 +323,8 @@ final class FastoryHubViewController: UIViewController {
                     Fastory.eventsDelegate?.fastoryHubClosed()
                 }
             }
+            hasLeft = true
+            Fastory.surfaceDidLeave()
         }
     }
 
@@ -430,6 +478,7 @@ final class FastoryHubViewController: UIViewController {
                 self.load.restart()
                 self.loadingIndicator.startAnimating()
                 self.signpost(FastoryPerfSignposts.beginHubLoad)
+                self.pageSession = Fastory.pageSession
                 self.webView.load(URLRequest(url: resolved.url))
                 self.announce(self.load.identify())
             case .failure(let error):
@@ -463,15 +512,18 @@ final class FastoryHubViewController: UIViewController {
         openSurface()
     }
 
-    /// Loads the hub again under the session now in force, after an identity transition changed
-    /// the identified fan (SPEC § 7). Not a new presentation: the load state keeps its opening, so
-    /// no second opening event is announced, and a reload that fails is reported like any failure
-    /// after the surface opened. The panel is never reloaded. A container whose view has not loaded
-    /// yet has nothing to reload: its first resolution has not run, and it will read the new session.
-    /// Nor does a container on its way out, from the moment its dismissal starts: its page goes back
-    /// to the warm slot under the address this presentation asked for, so it must not load another.
+    /// Loads the surface again under the session now in force, after an identity transition changed
+    /// the identified fan (SPEC § 7). Its own resolution runs again: the hub's mints a handoff for
+    /// the new session, the panel's lands on the address it was opened at, sequence included, whose
+    /// page asks the bridge for the session again. Not a new presentation: the load state keeps its
+    /// opening, so no second opening event is announced, and a reload that fails is reported like
+    /// any failure after the surface opened. What the page showed stays covered until the new
+    /// document draws. A container whose view has not loaded yet has nothing to reload: its first
+    /// resolution has not run, and it will read the new session. Nor does a container on its way
+    /// out, from the moment its dismissal starts: its page goes back to the warm slot under the
+    /// address this presentation asked for, so it must not load another.
     func reloadAfterIdentityChange() {
-        guard surface == .hub, isViewLoaded, !presentationEnded else { return }
+        guard isViewLoaded, !presentationEnded else { return }
         openSurface()
     }
 
@@ -729,11 +781,15 @@ extension UIViewController {
     private func fastoryDismissFromPresenter(animated: Bool) {
         guard let presenter = presentingViewController,
               presenter.presentedViewController === self else {
+            // No dismissal was asked, so none will start: the check below is what releases a
+            // `close()` marked on this surface, instead of an opening waiting on it for good.
+            (self as? FastoryHubViewController)?.confirmDepartureStarted()
             return
         }
         presenter.dismiss(animated: animated) {
             FastoryErrorView.postAccessibilityNotification(.screenChanged, nil)
         }
+        (self as? FastoryHubViewController)?.confirmDepartureStarted()
     }
 }
 

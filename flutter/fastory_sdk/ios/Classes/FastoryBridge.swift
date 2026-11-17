@@ -39,9 +39,15 @@ enum BridgeEnvelope {
     /// the others.
     ///
     /// `fastory:login-requested` is posted when a fan taps a sign-in entry on a page whose host
-    /// declared `FastoryConfig.handlesLoginRequests`. It is only delivered: the SDK opens nothing
-    /// and navigates nowhere on it, since signing the fan in belongs to the host, through `identify`.
-    static let knownTypes: Set<String> = ["fastory:ready", "fastory:login-requested"]
+    /// declared `FastoryConfig.handlesLoginRequests`, and `fastory:logout-requested` when the fan
+    /// taps a sign-out entry on such a page. Both are only delivered: the SDK opens nothing,
+    /// navigates nowhere and signs nobody out on them, since the fan's session belongs to the host,
+    /// through `identify` and `logout`.
+    static let knownTypes: Set<String> = [
+        "fastory:ready",
+        "fastory:login-requested",
+        "fastory:logout-requested",
+    ]
 
     /// The types the native side can be *asked* to answer (SPEC §13.8.3), held on the three
     /// platforms alike. Disjoint from `knownTypes` on purpose: a request is never delivered to the
@@ -178,8 +184,14 @@ enum BridgeEnvelope {
     /// precomposed and decomposed, are two keys to `JSONSerialization` and one once the object is
     /// bridged, which keeps either value. The text is read again without the later of the two, so
     /// the first occurrence wins, as it does for a name repeated letter for letter.
+    ///
+    /// Nil too for text holding a nul character, which JSON never carries unescaped.
+    /// `JSONSerialization` guesses the encoding from where the nul bytes stand, so a text whose
+    /// characters alternate with nuls would be read as UTF-16 or UTF-32 rather than as the text the
+    /// page sent, which is how Android reads it.
     private static func jsonObject(from raw: String) -> Any? {
         guard let data = raw.data(using: .utf8),
+              !data.contains(0),
               var root = try? JSONSerialization.jsonObject(with: data) else {
             return nil
         }
@@ -207,11 +219,9 @@ enum BridgeEnvelope {
     }
 
     /// The text without the members whose name repeats an earlier one of the same object, or nil
-    /// when its UTF-8 bytes do not form balanced JSON — `JSONSerialization` may have read them in
-    /// another encoding, which is also why the caller reads the result again and checks it. A
-    /// member is cut from the comma before it to the delimiter after its value; one nested in a
-    /// member already cut is skipped. An escaped name is decoded by `JSONSerialization` itself, any
-    /// other as it is.
+    /// when its UTF-8 bytes do not form balanced JSON. A member is cut from the comma before it to
+    /// the delimiter after its value; one nested in a member already cut is skipped. An escaped name
+    /// is decoded by `JSONSerialization` itself, any other as it is.
     private static func firstNamesOnly(_ data: Data) -> Data? {
         let quote = UInt8(ascii: "\""), backslash = UInt8(ascii: "\\")
         let bytes = [UInt8](data)
@@ -516,6 +526,17 @@ final class FastoryBridgeResponder: NSObject, WKScriptMessageHandlerWithReply {
     private static let lock = NSLock()
     private static var standingReplies: [String: [String: Any]] = [:]
 
+    /// A request for the fan's token that arrived while its answer was deferred, with the channel to
+    /// answer it on. Guarded by `lock`, like the standing answers it is answered from.
+    private struct HeldRequest {
+        let request: FastoryBridgeRequest
+        let text: String
+        let reply: (String?) -> Void
+    }
+
+    private static var defersUserToken = false
+    private static var heldRequests: [HeldRequest] = []
+
     private override init() {
         super.init()
     }
@@ -578,10 +599,51 @@ final class FastoryBridgeResponder: NSObject, WKScriptMessageHandlerWithReply {
     /// value is a fan credential, so it dies with the identity that justified it — `logout()`, an
     /// `identify` that resolves a different fan, and a `configure` that replaces the configuration
     /// it was set under. Without them `logout()` keeps answering with the previous fan's token.
+    ///
+    /// A revocation also ends a deferral: the requests held for a renewal are answered `unavailable`,
+    /// since the fan they waited for is gone.
     static func revokeAll() {
         lock.lock()
         standingReplies = [:]
+        defersUserToken = false
+        let held = heldRequests
+        heldRequests = []
         lock.unlock()
+        release(held, answeringFrom: [:])
+    }
+
+    // MARK: - The deferred answer (SPEC § 13.8.2)
+
+    /// From now on, a request for the fan's token is held rather than answered, until
+    /// `endDeferringUserToken` or `revokeAll`. Callable from any thread.
+    static func beginDeferringUserToken() {
+        lock.lock()
+        defersUserToken = true
+        lock.unlock()
+    }
+
+    /// Answers every held request with the answer in force now, and answers the next ones at once.
+    static func endDeferringUserToken() {
+        lock.lock()
+        defersUserToken = false
+        let held = heldRequests
+        heldRequests = []
+        let standing = standingReplies
+        lock.unlock()
+        release(held, answeringFrom: standing)
+    }
+
+    /// The answers are decided on the calling thread, from the standing answers of that moment, and
+    /// handed over on the main thread, where WebKit expects its reply handler to be called.
+    private static func release(_ held: [HeldRequest], answeringFrom standing: [String: [String: Any]]) {
+        guard !held.isEmpty else { return }
+        let replies = held.map { ($0.reply, reply(to: $0.request, text: $0.text, from: standing)) }
+        let deliver = { replies.forEach { reply, text in reply(text) } }
+        if Thread.isMainThread {
+            deliver()
+        } else {
+            DispatchQueue.main.async(execute: deliver)
+        }
     }
 
     // MARK: - Answering
@@ -600,38 +662,99 @@ final class FastoryBridgeResponder: NSObject, WKScriptMessageHandlerWithReply {
         requestTypes: Set<String> = BridgeEnvelope.requestTypes,
         standing: [String: [String: Any]]? = nil
     ) -> String? {
+        switch decide(raw, from: caller, allowedOrigins: allowedOrigins, requestTypes: requestTypes) {
+        case .silent:
+            return nil
+        case .answered(let reply):
+            return reply
+        case .request(let request, let text):
+            return reply(to: request, text: text, from: standing ?? snapshot())
+        }
+    }
+
+    /// `answer(to:from:allowedOrigins:)`, save the one deferred reply (SPEC § 13.8.2): while the fan's
+    /// token is deferred, a request for it is recorded with `reply` and answered later, exactly once.
+    /// Every other outcome reaches `reply` before this returns.
+    static func answerDeferring(
+        to raw: Any?,
+        from caller: FastoryBridgeCaller,
+        allowedOrigins: [String],
+        requestTypes: Set<String> = BridgeEnvelope.requestTypes,
+        reply: @escaping (String?) -> Void
+    ) {
+        switch decide(raw, from: caller, allowedOrigins: allowedOrigins, requestTypes: requestTypes) {
+        case .silent:
+            reply(nil)
+        case .answered(let answer):
+            reply(answer)
+        case .request(let request, let text):
+            lock.lock()
+            if defersUserToken, request.type == FastoryBridgeRequestType.userToken.rawValue {
+                heldRequests.append(HeldRequest(request: request, text: text, reply: reply))
+                lock.unlock()
+                return
+            }
+            let standing = standingReplies
+            lock.unlock()
+            reply(Self.reply(to: request, text: text, from: standing))
+        }
+    }
+
+    private enum Decision {
+        /// Refused without an envelope (SPEC § 13.8.4).
+        case silent
+        /// Answered from the request alone: a failure to decode it.
+        case answered(String)
+        /// A well-formed registry request, answered from the standing answers.
+        case request(FastoryBridgeRequest, text: String)
+    }
+
+    private static func decide(
+        _ raw: Any?,
+        from caller: FastoryBridgeCaller,
+        allowedOrigins: [String],
+        requestTypes: Set<String>
+    ) -> Decision {
         // Both gates before anything is parsed: a caller we will not answer costs us no decode.
         guard caller.isMainFrame else {
             FastoryBridgeLog.requestUnrecognised("posted from a sub-frame", origin: caller.origin)
-            return nil
+            return .silent
         }
         guard let origin = caller.origin, allowedOrigins.contains(origin) else {
             FastoryBridgeLog.requestUnrecognised("origin is not a Fastory surface", origin: caller.origin)
-            return nil
+            return .silent
         }
         guard let text = raw as? String else {
             FastoryBridgeLog.requestFailed(.malformed)
-            return BridgeEnvelope.reply(error: .malformed, requestId: nil)
+            return .answered(BridgeEnvelope.reply(error: .malformed, requestId: nil))
         }
         switch BridgeEnvelope.decodeRequest(text, requestTypes: requestTypes) {
         case .failure(let rejection):
             FastoryBridgeLog.requestFailed(rejection.error, in: text)
-            return BridgeEnvelope.reply(error: rejection.error, requestId: rejection.requestId)
+            return .answered(BridgeEnvelope.reply(error: rejection.error, requestId: rejection.requestId))
         case .success(let request):
-            guard let payload = (standing ?? snapshot())[request.type] else {
-                FastoryBridgeLog.requestFailed(.unavailable, in: text)
-                return BridgeEnvelope.reply(
-                    error: .unavailable,
-                    type: request.type,
-                    requestId: request.requestId
-                )
-            }
+            return .request(request, text: text)
+        }
+    }
+
+    private static func reply(
+        to request: FastoryBridgeRequest,
+        text: String,
+        from standing: [String: [String: Any]]
+    ) -> String {
+        guard let payload = standing[request.type] else {
+            FastoryBridgeLog.requestFailed(.unavailable, in: text)
             return BridgeEnvelope.reply(
-                payload: payload,
+                error: .unavailable,
                 type: request.type,
                 requestId: request.requestId
             )
         }
+        return BridgeEnvelope.reply(
+            payload: payload,
+            type: request.type,
+            requestId: request.requestId
+        )
     }
 
     // MARK: - Recognised callers
@@ -695,17 +818,19 @@ final class FastoryBridgeResponder: NSObject, WKScriptMessageHandlerWithReply {
             origin: Self.origin(of: message.frameInfo.securityOrigin),
             isMainFrame: message.frameInfo.isMainFrame
         )
-        guard let reply = Self.answer(
+        Self.answerDeferring(
             to: message.body,
             from: caller,
             allowedOrigins: Self.allowedOrigins(for: Fastory.config)
-        ) else {
-            // WebKit requires the handler to settle exactly once or the page's promise never
-            // resolves — so an unrecognised caller gets a rejection, which carries no envelope and
-            // therefore no answer. That is the shape §13.8.4 asks for: refused, not answered.
-            replyHandler(nil, "fastory: request refused")
-            return
+        ) { reply in
+            guard let reply else {
+                // WebKit requires the handler to settle exactly once or the page's promise never
+                // resolves — so an unrecognised caller gets a rejection, which carries no envelope and
+                // therefore no answer. That is the shape §13.8.4 asks for: refused, not answered.
+                replyHandler(nil, "fastory: request refused")
+                return
+            }
+            replyHandler(reply, nil)
         }
-        replyHandler(reply, nil)
     }
 }

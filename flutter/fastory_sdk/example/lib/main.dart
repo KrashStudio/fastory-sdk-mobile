@@ -1,11 +1,14 @@
 import 'dart:async';
 
 import 'package:fastory_sdk/fastory_sdk.dart';
+// material_ui, which replaces this import, requires a newer Flutter than this plugin's minimum
+// (3.10), so the example keeps Flutter's bundled Material library.
+// ignore: deprecated_member_use
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show PlatformException;
 
-// A club app shaped like a real one: four tabs, one action, and a console whose sections follow
-// the SDK surface in a fixed order.
+// A club app shaped like a real one: six entries in the tab bar, two of which open an SDK surface,
+// and a console whose sections follow the SDK surface in a fixed order.
 const Color kClubNavy = Color(0xFF0D2147);
 const Color kClubGreen = Color(0xFF29C770);
 const Color kClubBar = Color(0xFF091834);
@@ -15,7 +18,7 @@ const Color kClubRed = Color(0xFFE5484D);
 const String kClubPlatform = 'Flutter';
 
 // The SDK version this package ships, kept in step with the plugin's pubspec.yaml.
-const String kDeclaredSdkVersion = '0.5.0';
+const String kDeclaredSdkVersion = '0.5.1';
 
 // Pointing the demo at a real fanzone needs a real publishable key, and a key must
 // never reach a commit. Run with `--dart-define-from-file=fastory.local.json` (that
@@ -44,7 +47,7 @@ const String kSampleHostTokenJwt =
     'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkZW1vLWZhbiJ9.not-a-real-signature';
 
 // The hub covers the whole screen, so close() is unobservable unless it is armed beforehand.
-const Duration kAutoCloseDelay = Duration(seconds: 5);
+const Duration kAutoCloseDelay = Duration(seconds: 3);
 
 // Activity log glyphs.
 const String kGlyphCall = '→';
@@ -53,9 +56,6 @@ const String kGlyphEvent = '←';
 const String kGlyphFailure = '✕';
 
 const String kGlyphFontFamily = 'DemoGlyphs';
-
-/// What the 'standing answer' line reads once the SDK has dropped the value (SPEC § 13.8.6).
-const String kRevokedBridgeReply = 'revoked by the SDK — set it again';
 
 /// One `identify` mode as the console offers it. All three resolve: `fanId` opens the Fastory
 /// login in the system browser, so tapping it hands the screen to a browser sheet and comes back
@@ -78,6 +78,58 @@ const List<IdentityModeOption> kIdentityModes = <IdentityModeOption>[
     label: 'hostToken',
   ),
 ];
+
+extension DemoLabel on FastoryResolvedIdentity {
+  String get demoLabel => fanId == null ? mode.name : '${mode.name} · $fanId';
+
+  bool get isIdentifiedFan => mode != FastoryIdentityMode.anonymous;
+}
+
+/// What the SDK answers a game asking for the fan right now (SPEC § 13.8.2), wherever it came from.
+///
+/// The SDK has no reader for it, deliberately (SPEC § 13.8.6), so the console derives it from the
+/// calls it makes and the events it receives, at the points where the SDK sets or drops it.
+sealed class DemoStandingAnswer {
+  const DemoStandingAnswer();
+
+  String get label;
+}
+
+class DemoStandingAnswerNone extends DemoStandingAnswer {
+  const DemoStandingAnswerNone();
+
+  @override
+  String get label => 'none — answered `unavailable`';
+}
+
+/// Set by hand through `setBridgeReply`.
+class DemoStandingAnswerToken extends DemoStandingAnswer {
+  const DemoStandingAnswerToken(this.token);
+
+  final String token;
+
+  @override
+  String get label => 'token=$token';
+}
+
+/// Set by the SDK to the session a resolved `fanId` or `hostToken` minted. The SDK never hands that
+/// token to the host, so the console names it rather than shows it.
+class DemoStandingAnswerFanSession extends DemoStandingAnswer {
+  const DemoStandingAnswerFanSession();
+
+  @override
+  String get label => 'fan session — set by the SDK';
+}
+
+/// The `identify` failures decided before anything is attempted. They leave the identity and the
+/// standing answer untouched; every other failure lands the SDK on no identity and drops the answer
+/// (SPEC § 2.6.1, § 13.8.6).
+const Set<String> kPreflightIdentifyCodes = <String>{
+  'not_configured',
+  'identify_mode_unavailable',
+  'invalid_identity_mode',
+  'invalid_host_token',
+};
 
 /// One line of the activity log. The log is the only place where the ordering of calls, results and
 /// events is visible.
@@ -131,14 +183,18 @@ const Set<FastorySurface> kPrewarm = <FastorySurface>{
   FastorySurface.membership,
 };
 
-/// The example answers `fastory:login-requested` with a dialog, so it declares that it does. The
-/// SDK's default is `false`, under which the pages show no sign-in entry at all.
+/// The example answers `fastory:login-requested` with a dialog and `fastory:logout-requested` with a
+/// confirmation, so it declares that it does. The SDK's default is `false`, under which the pages
+/// show no sign-in or sign-out entry at all.
 const bool kHandlesLoginRequests = true;
 
 /// Posted by a page when a fan taps one of its sign-in entries — only to a host that declared
 /// `handlesLoginRequests`, which this example does. Spelled out because the SDK publishes no
 /// constant for a bridge type.
 const String kLoginRequestedType = 'fastory:login-requested';
+
+/// Posted by a page when a fan taps one of its sign-out entries, under the same declaration.
+const String kLogoutRequestedType = 'fastory:logout-requested';
 
 const Duration kSurfaceClosedTimeout = Duration(seconds: 2);
 
@@ -186,9 +242,13 @@ FastoryConfig demoConfig({FastoryTheme? theme}) => kPublishableKey.isEmpty
         handlesLoginRequests: kHandlesLoginRequests,
       );
 
-String get kIdentifierInUse => kPublishableKey.isEmpty
-    ? 'fanzone slug $kPlaceholderFanzoneSlug (deprecated)'
-    : 'publishable key';
+String get kIdentifierInUse {
+  if (kPublishableKey.isEmpty) return 'fanzoneSlug $kPlaceholderFanzoneSlug';
+  final String shown = kPublishableKey.length > 11
+      ? kPublishableKey.substring(0, 11)
+      : kPublishableKey;
+  return 'publishableKey $shown…';
+}
 
 void main() {
   runApp(const ExampleApp());
@@ -342,18 +402,11 @@ class SdkConsoleState extends State<SdkConsole> {
   bool _autoClose = false;
   FastoryTheme? _theme;
   FastoryResolvedIdentity? _identity;
-  String _bridgeReply = 'unset';
-
-  /// Whether a standing answer is currently in force, as far as this host knows.
-  ///
-  /// Not derived from [_bridgeReply]: that string is a display line, and `'cleared'` reads as a
-  /// value while meaning the absence of one. Reporting a revocation off it announced one after the
-  /// host had already cleared the answer itself — nothing to revoke, and the console said otherwise.
-  bool _bridgeReplyIsSet = false;
+  DemoStandingAnswer _standingAnswer = const DemoStandingAnswerNone();
   bool _hostTokenProviderSet = false;
   String? _lastMessage;
   SdkFailure? _lastFailure;
-  bool _loginDialogShowing = false;
+  bool _requestDialogShowing = false;
   PresentedSurface? _presented;
   String? _requestedSequenceId;
   final List<ActivityEntry> _activity = <ActivityEntry>[];
@@ -424,21 +477,49 @@ class SdkConsoleState extends State<SdkConsole> {
           break;
       }
     });
-    if (event case FastoryBridgeMessage(type: kLoginRequestedType)) {
-      unawaited(_answerLoginRequest());
+    if (event is FastoryIdentityRevoked) {
+      _noteStandingAnswerRevoked('identityRevoked', glyph: kGlyphEvent);
+    }
+    switch (event) {
+      case FastoryBridgeMessage(type: kLoginRequestedType):
+        unawaited(_answerLoginRequest());
+      case FastoryBridgeMessage(type: kLogoutRequestedType):
+        unawaited(_answerLogoutRequest());
+      default:
+        break;
     }
   }
 
   /// Declaring the capability and not answering would leave every sign-in entry on the page a
-  /// control that does nothing. A Flutter dialog draws under the surfaces the SDK presents natively,
-  /// so the surface is closed first, then reopened where the fan was once the dialog is answered —
-  /// signed in after a mode, as it was after Cancel.
-  Future<void> _answerLoginRequest() async {
-    // A second request while the dialog is up has nothing new to ask.
-    if (_loginDialogShowing || !mounted) return;
-    _loginDialogShowing = true;
+  /// control that does nothing.
+  Future<void> _answerLoginRequest() => _answerOffTheSurface<IdentityModeOption>(
+        dialogName: 'sign-in dialog',
+        dialog: const _LoginRequestDialog(),
+        onAnswer: _identify,
+      );
+
+  /// Asks before signing anyone out: on Android any frame of a page can post this type without a
+  /// fan's tap (SPEC § 13.7), so a host calling `logout()` on receipt would let a page sign the fan
+  /// out behind their back. Only confirming calls it.
+  Future<void> _answerLogoutRequest() => _answerOffTheSurface<bool>(
+        dialogName: 'sign-out dialog',
+        dialog: const _LogoutRequestDialog(),
+        onAnswer: (bool _) => _logout(),
+      );
+
+  /// A Flutter dialog draws under the surfaces the SDK presents natively, so the surface is closed
+  /// first, then reopened where the fan was once the dialog is answered — whatever the answer, so
+  /// Cancel brings the fan back as they were.
+  Future<void> _answerOffTheSurface<T>({
+    required String dialogName,
+    required Widget dialog,
+    required Future<void> Function(T answer) onAnswer,
+  }) async {
+    // A second request while a dialog is up has nothing new to ask.
+    if (_requestDialogShowing || !mounted) return;
+    _requestDialogShowing = true;
     final PresentedSurface? origin = _presented;
-    final IdentityModeOption? choice;
+    final T? answer;
     try {
       final Future<void> leftScreen = origin == null
           ? Future<void>.value()
@@ -449,18 +530,18 @@ class SdkConsoleState extends State<SdkConsole> {
                     event is FastoryMembershipClosed,
               )
               .then<void>((_) {}, onError: (Object _) {});
-      await _call('close', 'before the sign-in dialog', Fastory.close);
+      await _call('close', 'before the $dialogName', Fastory.close);
       await leftScreen.timeout(kSurfaceClosedTimeout, onTimeout: () {});
       if (!mounted) return;
-      choice = await showDialog<IdentityModeOption>(
+      answer = await showDialog<T>(
         context: context,
-        builder: (BuildContext context) => const _LoginRequestDialog(),
+        builder: (BuildContext context) => dialog,
       );
     } finally {
-      _loginDialogShowing = false;
+      _requestDialogShowing = false;
     }
     if (!mounted) return;
-    if (choice != null) await _identify(choice);
+    if (answer != null) await onAnswer(answer);
     if (origin != null) await _reopen(origin);
   }
 
@@ -533,7 +614,8 @@ class SdkConsoleState extends State<SdkConsole> {
   static String _stamp() {
     final DateTime now = DateTime.now();
     String two(int value) => value.toString().padLeft(2, '0');
-    return '${two(now.hour)}:${two(now.minute)}:${two(now.second)}';
+    return '${two(now.hour)}:${two(now.minute)}:${two(now.second)}'
+        '.${now.millisecond.toString().padLeft(3, '0')}';
   }
 
   /// Every SDK call goes through here: a refused call answers a code the console has to show, and
@@ -604,6 +686,7 @@ class SdkConsoleState extends State<SdkConsole> {
         'configure',
         'configuration replaced — warm hub discarded, the next openGames() is a cold open',
       );
+      setState(() => _identity = null);
       _noteStandingAnswerRevoked('configure');
     }
   }
@@ -617,13 +700,10 @@ class SdkConsoleState extends State<SdkConsole> {
       Fastory.openGames,
     );
     if (!ok || !_autoClose) return;
+    _log(kGlyphCall, 'close', 'scheduled in ${kAutoCloseDelay.inSeconds} s');
     _autoCloseTimer?.cancel();
     _autoCloseTimer = Timer(kAutoCloseDelay, () {
-      unawaited(_call(
-        'close',
-        'armed: ${kAutoCloseDelay.inSeconds}s after opening',
-        Fastory.close,
-      ));
+      unawaited(_call('close', 'from the console', Fastory.close));
     });
   }
 
@@ -642,16 +722,35 @@ class SdkConsoleState extends State<SdkConsole> {
   }
 
   Future<void> _identify(IdentityModeOption mode) async {
+    final FastoryResolvedIdentity? before = _identity;
     FastoryResolvedIdentity? resolved;
+    String? refusedCode;
     final bool ok = await _call(
       'identify',
       'mode: ${mode.label}',
       () async {
-        resolved = await Fastory.identify(mode.identity);
+        try {
+          resolved = await Fastory.identify(mode.identity);
+        } on PlatformException catch (error) {
+          refusedCode = error.code;
+          rethrow;
+        }
       },
-      result: () => 'resolved: ${resolved ?? '—'}',
+      result: () => 'resolved ${resolved?.demoLabel ?? '—'}',
     );
-    if (ok && mounted) setState(() => _identity = resolved);
+    final FastoryResolvedIdentity? landed = resolved;
+    if (ok && landed != null) {
+      if (mounted) setState(() => _identity = landed);
+      _noteStandingAnswerAfterResolving(landed, before);
+      return;
+    }
+    // A resolution failure lands the SDK on no identity and drops the standing answer; a pre-flight
+    // refusal leaves both as they were (SPEC § 2.6.1, § 13.8.6).
+    final String? code = refusedCode;
+    if (code != null && !kPreflightIdentifyCodes.contains(code)) {
+      if (mounted) setState(() => _identity = null);
+      _noteStandingAnswerRevoked('identify');
+    }
   }
 
   Future<void> _logout() async {
@@ -674,24 +773,51 @@ class SdkConsoleState extends State<SdkConsole> {
     if (ok && mounted) setState(() => _hostTokenProviderSet = enabled);
   }
 
-  /// The SDK revoked the standing answer, so the console stops claiming it has one.
+  /// A resolved `fanId` or `hostToken` sets the answer to the session it minted — over a hand-set
+  /// value, and for the same fan again too. A resolved `anonymous` drops it when it replaces an
+  /// identified fan, and leaves it alone otherwise: from no identity there is no previous fan for it
+  /// to have belonged to (SPEC § 13.8.6). Driven by the call's result rather than by
+  /// `FastoryIdentityResolved`, which a same-fan `identify` does not emit.
+  void _noteStandingAnswerAfterResolving(
+    FastoryResolvedIdentity resolved,
+    FastoryResolvedIdentity? before,
+  ) {
+    if (!resolved.isIdentifiedFan) {
+      if (before?.isIdentifiedFan ?? false) _noteStandingAnswerRevoked('identify');
+      return;
+    }
+    if (_standingAnswer is! DemoStandingAnswerFanSession) {
+      _log(
+        kGlyphResult,
+        'identify',
+        "standing bridge answer set by the SDK — the fan's session (SPEC § 13.8.6)",
+      );
+      if (mounted) {
+        setState(() => _standingAnswer = const DemoStandingAnswerFanSession());
+      }
+    } else if (before != resolved) {
+      _log(
+        kGlyphResult,
+        'identify',
+        "standing bridge answer replaced by the SDK — the new fan's session (SPEC § 13.8.6)",
+      );
+    }
+  }
+
+  /// The SDK dropped the standing answer, so the console stops claiming it has one.
   ///
-  /// A well-behaved host does exactly this — the value is gone whether or not it notices, and the
-  /// only alternative is a screen that lies. Mirrored rather than read back: there is no accessor
-  /// for the standing answer and there is deliberately none, since the three revocation points are
-  /// all calls the host itself just made (SPEC § 13.8.6).
-  void _noteStandingAnswerRevoked(String call) {
-    if (!_bridgeReplyIsSet) return;
+  /// Mirrored rather than read back: there is no accessor for the standing answer and there is
+  /// deliberately none (SPEC § 13.8.6). Logged under whatever caused it — the call that made the SDK
+  /// drop it, or `identityRevoked`, the one drop no call of the host's preceded.
+  void _noteStandingAnswerRevoked(String cause, {String glyph = kGlyphResult}) {
+    if (_standingAnswer is DemoStandingAnswerNone) return;
     _log(
-      kGlyphResult,
-      call,
+      glyph,
+      cause,
       'standing bridge answer revoked (SPEC § 13.8.6) — the next request is answered `unavailable`',
     );
     if (mounted) {
-      setState(() {
-        _bridgeReply = kRevokedBridgeReply;
-        _bridgeReplyIsSet = false;
-      });
+      setState(() => _standingAnswer = const DemoStandingAnswerNone());
     }
   }
 
@@ -703,20 +829,27 @@ class SdkConsoleState extends State<SdkConsole> {
       _fail('setBridgeReply', 'empty_token');
       return;
     }
-    await _setBridgeReply(<String, Object?>{'token': token});
+    await _setBridgeReply(token);
   }
 
-  Future<void> _setBridgeReply(Map<String, Object?>? payload) async {
+  Future<void> _setBridgeReply(String? token) async {
+    final String type = FastoryBridgeRequestType.userToken.wireValue;
     final bool ok = await _call(
       'setBridgeReply',
-      '${FastoryBridgeRequestType.userToken.wireValue} · ${payload ?? 'cleared'}',
-      () => Fastory.setBridgeReply(FastoryBridgeRequestType.userToken, payload),
+      token == null
+          ? '$type cleared — next request answered `unavailable`'
+          : '$type → { token=$token }',
+      () => Fastory.setBridgeReply(
+        FastoryBridgeRequestType.userToken,
+        token == null ? null : <String, Object?>{'token': token},
+      ),
     );
     if (ok && mounted) {
-      setState(() {
-        _bridgeReply = payload == null ? 'cleared' : '$payload';
-        _bridgeReplyIsSet = payload != null;
-      });
+      setState(
+        () => _standingAnswer = token == null
+            ? const DemoStandingAnswerNone()
+            : DemoStandingAnswerToken(token),
+      );
     }
   }
 
@@ -751,9 +884,10 @@ class SdkConsoleState extends State<SdkConsole> {
               'thread to call from. On a native host the same control is live.',
             ),
             const _Hint(
-              'The example declares handlesLoginRequests and answers fastory:login-requested by '
-              "closing the surface, showing a dialog, then reopening it; the SDK's default is "
-              'false, under which the pages show no sign-in entry at all.',
+              'The example declares handlesLoginRequests and answers fastory:login-requested and '
+              'fastory:logout-requested by closing the surface, showing a dialog, then reopening '
+              "it; the SDK's default is false, under which the pages show no sign-in or sign-out "
+              'entry at all.',
             ),
           ],
         ),
@@ -762,9 +896,9 @@ class SdkConsoleState extends State<SdkConsole> {
           children: <Widget>[
             _ActionRow(
               children: <Widget>[
-                _Action(label: 'openGames', onPressed: _busy ? null : openHub),
+                _Action(label: 'openGames()', onPressed: _busy ? null : openHub),
                 _Action(
-                  label: 'close',
+                  label: 'close()',
                   onPressed: _busy
                       ? null
                       : () => unawaited(
@@ -774,7 +908,7 @@ class SdkConsoleState extends State<SdkConsole> {
               ],
             ),
             _Toggle(
-              label: 'close ${kAutoCloseDelay.inSeconds}s after opening',
+              label: 'close() ${kAutoCloseDelay.inSeconds} s after openGames()',
               value: _autoClose,
               onChanged: (bool armed) => setState(() => _autoClose = armed),
             ),
@@ -798,7 +932,7 @@ class SdkConsoleState extends State<SdkConsole> {
             _ActionRow(
               children: <Widget>[
                 _Action(
-                  label: 'openMembership',
+                  label: 'openMembership()',
                   onPressed: _busy ? null : openMembership,
                 ),
                 _Action(
@@ -847,9 +981,10 @@ class SdkConsoleState extends State<SdkConsole> {
               ],
             ),
             const _Hint(
-              'Switching re-runs configure(); the web side does not read the hint yet. Since the '
-              'configuration differs, it also drops the warm hub and revokes the standing bridge '
-              'answer (SPEC § 2.1, § 13.8.6) — the activity log shows both.',
+              'Forwarded as a `theme` query parameter and inert until the web reads it. Picking '
+              'one re-runs configure() in full, so it is a real call and not a stored preference '
+              '— and since the configuration differs, it also drops the warm hub and revokes the '
+              'standing bridge answer (SPEC § 2.1, § 13.8.6). The activity log shows both.',
             ),
           ],
         ),
@@ -859,7 +994,7 @@ class SdkConsoleState extends State<SdkConsole> {
             _ValueLine(
               label: 'resolved',
               value: _identity == null
-                  ? 'nobody — identify() has not resolved'
+                  ? 'none'
                   : '${_identity!.mode.name} · fanId: ${_identity!.fanId ?? '—'}',
             ),
             _ActionRow(
@@ -870,13 +1005,13 @@ class SdkConsoleState extends State<SdkConsole> {
                     onPressed: _busy ? null : () => unawaited(_identify(mode)),
                   ),
                 _Action(
-                  label: 'logout',
+                  label: 'logout()',
                   onPressed: _busy ? null : () => unawaited(_logout()),
                 ),
                 _Action(
                   label: _hostTokenProviderSet
-                      ? 'clear setHostTokenProvider'
-                      : 'setHostTokenProvider',
+                      ? 'clear setHostTokenProvider()'
+                      : 'setHostTokenProvider()',
                   onPressed: _busy
                       ? null
                       : () => unawaited(
@@ -901,7 +1036,10 @@ class SdkConsoleState extends State<SdkConsole> {
         _ConsoleSection(
           title: 'Bridge reply',
           children: <Widget>[
-            _ValueLine(label: 'standing answer', value: _bridgeReply),
+            _ValueLine(
+              label: 'standing answer',
+              value: _standingAnswer.label,
+            ),
             _ConsoleField(
               controller: _replyController,
               label: '${FastoryBridgeRequestType.userToken.wireValue} token',
@@ -909,7 +1047,7 @@ class SdkConsoleState extends State<SdkConsole> {
             _ActionRow(
               children: <Widget>[
                 _Action(
-                  label: 'set',
+                  label: 'setBridgeReply()',
                   onPressed: _busy ? null : () => unawaited(_setUserToken()),
                 ),
                 _Action(
@@ -920,8 +1058,16 @@ class SdkConsoleState extends State<SdkConsole> {
               ],
             ),
             const _Hint(
-              'Set it before opening the hub: the game asks while it boots, so a later answer '
-              'misses that session.',
+              'What the SDK answers a game asking for the fan right now. A resolved fanId or '
+              "hostToken sets it to the fan's session, a token the SDK never hands the host, so it "
+              'is named here rather than shown; logout(), a change of fan, an identify that fails '
+              'past its pre-flight checks, identityRevoked and a replacing configure drop it. A fan '
+              'restored at launch is not visible from Dart: this row cannot show the session the SDK '
+              'sets for them, nor that an anonymous identify signing them out drops a value set '
+              'here. You can also set or clear it here by hand, but while a fan is signed in, the '
+              "SDK's next renewal of their session puts the session back, unannounced. Set it "
+              'before opening the hub: the game asks while it boots, so a later answer misses that '
+              'session.',
             ),
           ],
         ),
@@ -936,7 +1082,9 @@ class SdkConsoleState extends State<SdkConsole> {
               'A sign-in entry tapped on a page posts fastory:login-requested, which lands here. A '
               'Flutter dialog would draw under the hub or the panel, so the example closes the '
               'surface, shows the sign-in dialog, then reopens the hub, or the panel on the same '
-              'sequence — signed in after a mode, as it was after Cancel.',
+              'sequence — signed in after a mode, as it was after Cancel. A sign-out entry posts '
+              'fastory:logout-requested, answered the same way with a confirmation: only Sign out '
+              'calls logout(), so the hub reopens signed out; Cancel leaves the fan signed in.',
             ),
           ],
         ),
@@ -962,6 +1110,7 @@ class SdkConsoleState extends State<SdkConsole> {
                   label: '${entry.at} ${entry.glyph}',
                   value: '${entry.name} — ${entry.detail}',
                   tone: entry.glyph == kGlyphFailure ? kClubRed : null,
+                  labelWidth: 128,
                 ),
             const _Hint(
               '$kGlyphCall call · $kGlyphResult result · $kGlyphEvent event · '
@@ -1154,6 +1303,31 @@ class _LoginRequestDialog extends StatelessWidget {
   }
 }
 
+/// The example's answer to `fastory:logout-requested`: a confirmation, never the sign-out itself.
+/// Pops `true` on Sign out, which calls `logout()` as the Identity section does, or null on Cancel,
+/// which leaves the fan signed in.
+class _LogoutRequestDialog extends StatelessWidget {
+  const _LogoutRequestDialog();
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Sign the fan out'),
+      content: const Text('A page asked the app to sign the fan out. Call logout()?'),
+      actions: <Widget>[
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(true),
+          child: const Text('Sign out'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+      ],
+    );
+  }
+}
+
 class _ConsoleSection extends StatelessWidget {
   const _ConsoleSection({required this.title, required this.children});
 
@@ -1190,11 +1364,17 @@ class _ConsoleSection extends StatelessWidget {
 }
 
 class _ValueLine extends StatelessWidget {
-  const _ValueLine({required this.label, required this.value, this.tone});
+  const _ValueLine({
+    required this.label,
+    required this.value,
+    this.tone,
+    this.labelWidth = 96,
+  });
 
   final String label;
   final String value;
   final Color? tone;
+  final double labelWidth;
 
   @override
   Widget build(BuildContext context) {
@@ -1204,7 +1384,7 @@ class _ValueLine extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
           SizedBox(
-            width: 96,
+            width: labelWidth,
             child: Text(
               label,
               style: TextStyle(

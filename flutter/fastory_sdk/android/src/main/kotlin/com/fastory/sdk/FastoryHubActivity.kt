@@ -41,7 +41,7 @@ import com.fastory.sdk.flutter.R
  * surface decides is the address that is loaded, the warm slot the page is read from and put back
  * into, and which pair of events is announced.
  */
-class FastoryHubActivity : AppCompatActivity() {
+internal class FastoryHubActivity : AppCompatActivity() {
 
     /**
      * The configuration this presentation was built under — stamped on the page it puts back, so a
@@ -93,6 +93,13 @@ class FastoryHubActivity : AppCompatActivity() {
      * own navigation left the page, and which the next opening would never recognise.
      */
     private var requestedUrl: String? = null
+
+    /**
+     * The session the page in hand read: the warm slot's stamp for a page reused as it stands, taken
+     * afresh at each load this presentation starts. It goes back into the slot with the page, so the
+     * next opening can tell whether that page saw the fan's session (SPEC § 3.5).
+     */
+    private var pageSession: Fastory.PageSession = Fastory.currentPageSession()
 
     /**
      * The latest resolution has answered. Not [requestedUrl], which a reload after an identity change
@@ -152,6 +159,12 @@ class FastoryHubActivity : AppCompatActivity() {
     private var launch: Int? = null
 
     private var presentationEnded = false
+
+    /** The page has left this container: kept warm, handed to the next opening, or destroyed. */
+    private var pageReleased = false
+
+    /** The page went out of date once this presentation ended, and is destroyed instead of kept. */
+    private var pageIsStale = false
 
     /**
      * This instance is the platform's rebuild of a surface whose opening event the host has already
@@ -278,10 +291,14 @@ class FastoryHubActivity : AppCompatActivity() {
     /** Internal rather than private so it can be driven without the views having been built. */
     internal fun liftCover() = setCover(false)
 
-    private fun setCover(covered: Boolean) {
+    private fun stopPaintWait() {
         coverGeneration++
         awaitsFirstPaint = false
         paintWait.removeCallbacksAndMessages(null)
+    }
+
+    private fun setCover(covered: Boolean) {
+        stopPaintWait()
         coversOutgoingDocument = covered
         // Covered, the outgoing screen is still in the page, and a screen reader would read it.
         webView.importantForAccessibility = if (covered) {
@@ -334,6 +351,7 @@ class FastoryHubActivity : AppCompatActivity() {
                         // address must never read the outgoing document's own commit.
                         load.restart()
                         clearsHistoryOnCommitOf = url
+                        pageSession = Fastory.currentPageSession()
                         webView.loadUrl(url)
                     } else if (load.hasCommittedPage) {
                         // Reused as it stands. One reused while it still loads over an earlier
@@ -361,15 +379,18 @@ class FastoryHubActivity : AppCompatActivity() {
     }
 
     /**
-     * Loads the hub again under the session now in force, after an identity transition changed the
-     * identified fan (SPEC § 7). Not a new presentation: the load state keeps its opening, so no
-     * second opening event is announced, and a reload that fails is reported like any failure after
-     * the surface opened. The panel is never reloaded. A container that has not built its page yet
-     * has nothing to reload: its first resolution has not run, and it will read the new session.
+     * Loads the surface again under the session now in force, after an identity transition changed
+     * the identified fan (SPEC § 7). Its own resolution runs again: the hub's mints a handoff for
+     * the new session, the panel's lands on the address it was opened at, sequence included, whose
+     * page asks the bridge for the session again. Not a new presentation: the load state keeps its
+     * opening, so no second opening event is announced, and a reload that fails is reported like
+     * any failure after the surface opened. What the page showed stays covered until the new
+     * document draws. A container that has not built its page yet has nothing to reload: its first
+     * resolution has not run, and it will read the new session.
      */
     internal fun reloadAfterIdentityChange() {
-        if (surface != FastorySurface.HUB || presentationEnded || !::load.isInitialized) return
-        // A hub standing on its error view loads its page again, as a Retry would.
+        if (presentationEnded || !::load.isInitialized) return
+        // A surface standing on its error view loads its page again, as a Retry would.
         if (::errorView.isInitialized) {
             errorView.isVisible = false
             webView.isVisible = true
@@ -448,42 +469,81 @@ class FastoryHubActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         val launch = launch
-        if (launch != null && ::webView.isInitialized) {
-            if (load.hasFailedAttempt) {
-                // A page whose last attempt failed is not kept: its error document committed, so
-                // the slot would count it as loaded, and the error view left it hidden — the next
-                // opening, or the instance rebuilt in this one's place, would present it as it
-                // stands and announce the surface over a blank screen instead of loading the
-                // address again (SPEC § 9.1). A retry that loaded cleared the failure, so the page
-                // it healed is kept below like any other.
-                (webView.parent as? ViewGroup)?.removeView(webView)
-                webView.destroy()
-            } else {
-                // Keep the page warm for the next opening instead of reloading from scratch —
-                // presented as it stands only once it loaded, loaded again if it was still on its
-                // way — and in its own surface's slot: stashed over the other's it would open
-                // under the wrong entry point. `config`, not the SDK's current one: a re-configure
-                // may have happened while this surface was on screen, and this page still holds
-                // the workspace it was built for.
-                // A cover still up was this presentation's: the page goes back readable, but not
-                // as one to present as it stands — it may not have drawn its document yet.
-                val stillCovered = coversOutgoingDocument
-                liftCover()
-                Fastory.stashWebView(
-                    webView,
-                    surface,
-                    requestedUrl,
-                    config,
-                    launch,
-                    hasCommitted = load.hasCommittedPage && !stillCovered,
-                )
-            }
-        }
+        if (launch != null) releasePage(presentation = launch)
+        Fastory.forgetWarmPageHolder(this)
         // Destroyed while finishing without passing through finish() — a task the platform tore
         // down — the presentation ends here. Destroyed without finishing, the platform is rebuilding
         // the surface the fan is still looking at, and the presentation outlives this instance.
         if (isFinishing) endPresentation() else suspendPresentation()
         super.onDestroy()
+    }
+
+    /**
+     * The next opening of this surface arrived before the platform destroyed this instance: it gets
+     * the page now, kept or destroyed by the rule this instance's destruction applies, rather than a
+     * blank WebView loading the same address over a black container.
+     */
+    internal fun handOverPage() {
+        if (launch == null) return
+        releasePage(presentation = null)
+    }
+
+    /**
+     * The page this finished instance still holds went out of date before any opening asked for it:
+     * an identity transition, a re-configure or a memory trim emptied the warm slots, and handed over
+     * it would show the next opening what they threw away.
+     */
+    internal fun discardPage() {
+        if (pageReleased || !::webView.isInitialized) return
+        // Destroyed at this instance's own destruction rather than now: it may still be on screen,
+        // on its way out, and its page torn out of it would show the black container under the ✕.
+        pageIsStale = true
+        resolutionCount++
+        stopPaintWait()
+    }
+
+    /**
+     * [presentation] is checked against the latest opening of this surface, which drops a page from
+     * a presentation the fan has moved past; null is a page that latest opening asked for itself.
+     */
+    private fun releasePage(presentation: Int?) {
+        if (pageReleased || !::webView.isInitialized) return
+        pageReleased = true
+        // A resolution still in flight would land on a page this instance no longer presents:
+        // loading its address, hiding it behind an error view, or lifting the next one's cover.
+        resolutionCount++
+        // A paint probe outliving the page would query a destroyed WebView, and announce a Retry's
+        // success over a surface that has left.
+        stopPaintWait()
+        if (load.hasFailedAttempt || pageIsStale) {
+            // A page whose last attempt failed is not kept: its error document committed, so
+            // the slot would count it as loaded, and the error view left it hidden — the next
+            // opening, or the instance rebuilt in this one's place, would present it as it
+            // stands and announce the surface over a blank screen instead of loading the
+            // address again (SPEC § 9.1). A retry that loaded cleared the failure, so the page
+            // it healed is kept below like any other. Nor is a page [discardPage] found stale.
+            (webView.parent as? ViewGroup)?.removeView(webView)
+            webView.destroy()
+        } else {
+            // Keep the page warm for the next opening instead of reloading from scratch —
+            // presented as it stands only once it loaded, loaded again if it was still on its
+            // way — and in its own surface's slot: stashed over the other's it would open
+            // under the wrong entry point. `config`, not the SDK's current one: a re-configure
+            // may have happened while this surface was on screen, and this page still holds
+            // the workspace it was built for.
+            // A cover still up was this presentation's: the page goes back readable, but not
+            // as one to present as it stands — it may not have drawn its document yet.
+            val stillCovered = coversOutgoingDocument
+            liftCover()
+            val hasCommitted = load.hasCommittedPage && !stillCovered
+            if (presentation == null) {
+                Fastory.stashWebView(webView, surface, requestedUrl, config, hasCommitted, pageSession)
+            } else {
+                Fastory.stashWebView(
+                    webView, surface, requestedUrl, config, presentation, hasCommitted, pageSession,
+                )
+            }
+        }
     }
 
     private fun suspendPresentation() {
@@ -503,6 +563,7 @@ class FastoryHubActivity : AppCompatActivity() {
         val launch = launch ?: return
         if (presentationEnded) return
         presentationEnded = true
+        if (::webView.isInitialized && !pageReleased) Fastory.holdWarmPage(surface, this)
         if (owesClosingEvent()) {
             if (surface == FastorySurface.MEMBERSHIP) {
                 Fastory.notifyMembershipClosed(launch)
@@ -538,6 +599,7 @@ class FastoryHubActivity : AppCompatActivity() {
 
     private fun buildViews() {
         warmPage = Fastory.obtainWebView(surface, this)
+        pageSession = warmPage.session
         webView = warmPage.webView.apply {
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -871,6 +933,7 @@ class FastoryHubActivity : AppCompatActivity() {
             Fastory.retryHubResolution()
             openSurface()
         } else {
+            pageSession = Fastory.currentPageSession()
             webView.reload()
         }
     }

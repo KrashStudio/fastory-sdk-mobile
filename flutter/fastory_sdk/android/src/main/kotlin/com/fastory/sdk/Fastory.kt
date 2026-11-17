@@ -21,13 +21,14 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import java.lang.ref.WeakReference
 import java.net.URLEncoder
+import java.util.concurrent.atomic.AtomicInteger
 
-interface FastoryEventsListener {
-    fun onHubOpened(fanzoneSlug: String) {}
-    fun onHubClosed() {}
-    fun onGameOpened(slug: String) {}
-    fun onGameClosed() {}
-    fun onExternalLink(url: String) {}
+public interface FastoryEventsListener {
+    public fun onHubOpened(fanzoneSlug: String) {}
+    public fun onHubClosed() {}
+    public fun onGameOpened(slug: String) {}
+    public fun onGameClosed() {}
+    public fun onExternalLink(url: String) {}
 
     /**
      * A bridge message the web surface posted through the versioned envelope (SPEC §13). Only types
@@ -35,12 +36,18 @@ interface FastoryEventsListener {
      *
      * `fastory:login-requested` (empty payload) means a fan tapped a sign-in entry on a page. It is
      * posted only when [FastoryConfig.handlesLoginRequests] is declared: sign the fan in your own
-     * way, then call [Fastory.identify], and the hub on screen reloads signed in. Any frame of a page
-     * can post it, so never treat it as proof of who tapped: offer a sign-in, never grant one.
+     * way, then call [Fastory.identify], and the hub or panel on screen reloads signed in. Any
+     * frame of a page can post it, so never treat it as proof of who tapped: offer a sign-in, never
+     * grant one.
+     *
+     * `fastory:logout-requested` (empty payload) means a fan tapped a sign-out entry on a page, under
+     * the same declaration. The SDK signs nobody out on it: ask the fan to confirm, then call
+     * [Fastory.logout]. Never sign the fan out on receipt — any frame of a page can post it too, so
+     * it is a request, not proof that the fan tapped.
      */
-    fun onBridgeMessage(type: String, payload: Map<String, Any?>) {}
+    public fun onBridgeMessage(type: String, payload: Map<String, Any?>) {}
 
-    fun onIdentityResolved(identity: FastoryResolvedIdentity) {}
+    public fun onIdentityResolved(identity: FastoryResolvedIdentity) {}
 
     /**
      * The SDK dropped a delegated identity **on its own** (SPEC § 5.3): a session that expired with
@@ -49,27 +56,27 @@ interface FastoryEventsListener {
      * token or let the fan continue anonymously — never a blank panel. A host-driven `logout()` is
      * not a revocation and never fires this.
      */
-    fun onIdentityRevoked(revocation: FastoryIdentityRevocation) {}
+    public fun onIdentityRevoked(revocation: FastoryIdentityRevocation) {}
 
     /**
      * The membership panel is presented on a page that loaded (SPEC § 5.3). It carries nothing: the
      * panel opens the one page the workspace's publishable key resolves, so there is no identifier
      * the host could not already know.
      */
-    fun onMembershipOpened() {}
+    public fun onMembershipOpened() {}
 
     /**
      * The membership panel is dismissed. Owed exactly once per panel that opened, and never for one
      * whose page did not load (SPEC § 9.1).
      */
-    fun onMembershipClosed() {}
+    public fun onMembershipClosed() {}
 
     /**
      * A surface that did not load (SPEC § 9.1). The host is the only party that can decide what to
      * do about it — log it, alert its team, offer the fan something else — so the SDK reports and
      * never retries on its own.
      */
-    fun onSurfaceLoadFailed(failure: FastoryLoadFailure) {}
+    public fun onSurfaceLoadFailed(failure: FastoryLoadFailure) {}
 }
 
 /**
@@ -79,11 +86,11 @@ interface FastoryEventsListener {
  * Asynchronous on purpose: fetching a token may itself be a round trip, and blocking the SDK on it
  * would violate § 2.7.
  */
-fun interface FastoryHostTokenProvider {
-    fun provideHostToken(completion: (String?) -> Unit)
+public fun interface FastoryHostTokenProvider {
+    public fun provideHostToken(completion: (String?) -> Unit)
 }
 
-object Fastory {
+public object Fastory {
 
     @Volatile
     internal var config: FastoryConfig? = null
@@ -97,7 +104,7 @@ object Fastory {
      * after [logout].
      */
     @Volatile
-    var identity: FastoryResolvedIdentity? = null
+    public var identity: FastoryResolvedIdentity? = null
         private set
 
     /**
@@ -138,9 +145,68 @@ object Fastory {
      */
     private const val RENEWAL_RETRY_MS = 30_000L
 
-    /** Schedules the renewal work. Seam for tests: a suite replaces it so no timer fires mid-run. */
-    internal var renewalSchedule: (Long, Runnable) -> Unit = { delayMs, work ->
+    private val DEFAULT_SCHEDULE: (Long, Runnable) -> Unit = { delayMs, work ->
         Handler(Looper.getMainLooper()).postDelayed(work, delayMs)
+    }
+
+    /** Schedules the renewal work. Seam for tests: a suite replaces it so no timer fires mid-run. */
+    internal var renewalSchedule: (Long, Runnable) -> Unit = DEFAULT_SCHEDULE
+
+    /** Schedules the bound on the launch wait. Seam for tests, like [renewalSchedule]. */
+    internal var launchBoundSchedule: (Long, Runnable) -> Unit = DEFAULT_SCHEDULE
+
+    /**
+     * Advanced by every `logout()`, `identify` and replacing `configure` (SPEC § 2.6.3): a renewal
+     * answer or a stored-token read that returns under an older generation is ignored. Atomic, since a
+     * replacing `configure` advances it on the caller's thread.
+     */
+    private val sessionGeneration = AtomicInteger()
+
+    /**
+     * A `FanId` fan's refresh token as last read or stored, with the account and the configuration it
+     * belongs to — so letting it go erases and revokes the right one even once that configuration has
+     * been replaced. A restored fan's token is held unread until the launch read lands, so letting it
+     * go before then still revokes what the store holds.
+     */
+    private var heldRefreshToken: HeldRefreshToken? = null
+
+    /** [token] is null while the token is in the store and has not been read yet. */
+    private class HeldRefreshToken(val token: String?, val account: String, val config: FastoryConfig)
+
+    private val refreshTokenLock = Any()
+
+    /** Hands back the refresh token held until now, so the caller decides whether letting it go revokes it. */
+    private fun swapRefreshToken(token: HeldRefreshToken?): HeldRefreshToken? =
+        synchronized(refreshTokenLock) {
+            heldRefreshToken.also { heldRefreshToken = token }
+        }
+
+    private fun currentRefreshToken(): HeldRefreshToken? = synchronized(refreshTokenLock) { heldRefreshToken }
+
+    /** Holds the token stored for [config] as unread, unless one is already held. */
+    private fun holdUnreadRefreshToken(config: FastoryConfig) {
+        val unread = HeldRefreshToken(null, FastoryIdentityPersistence.stamp(config), config)
+        synchronized(refreshTokenLock) {
+            if (heldRefreshToken == null) heldRefreshToken = unread
+        }
+    }
+
+    private var installedRefreshTokenStore: RefreshTokenStore? = null
+
+    /**
+     * Where a `FanId` fan's refresh token is kept, built on the application context the first time it
+     * is needed. Seam for tests, which substitute a store over an in-memory key.
+     */
+    internal var refreshTokenStore: RefreshTokenStore
+        get() = checkNotNull(availableRefreshTokenStore()) { "no application context yet" }
+        set(value) {
+            synchronized(refreshTokenLock) { installedRefreshTokenStore = value }
+        }
+
+    private fun availableRefreshTokenStore(): RefreshTokenStore? = synchronized(refreshTokenLock) {
+        installedRefreshTokenStore ?: FastoryAppContext.application
+            ?.let { RefreshTokenStore(it) }
+            ?.also { installedRefreshTokenStore = it }
     }
 
     /**
@@ -149,7 +215,7 @@ object Fastory {
      * itself renew anything — it is consulted the next time a session nears expiry or a refresh is
      * refused.
      */
-    fun setHostTokenProvider(provider: FastoryHostTokenProvider?) {
+    public fun setHostTokenProvider(provider: FastoryHostTokenProvider?) {
         hostTokenProvider = provider
     }
 
@@ -218,6 +284,15 @@ object Fastory {
     private val latestLaunchBySurface = mutableMapOf<FastorySurface, Int>()
 
     /**
+     * The container each surface's page is still inside once its presentation is over. Android
+     * destroys a finishing Activity only after the one beneath it settles, and the page goes back to
+     * its slot only then: an opening in between found the slot empty and loaded from scratch, over a
+     * black container, the page that was about to be kept warm. [obtainWebView] asks this container
+     * for its page instead of waiting for its destruction.
+     */
+    private val warmPageHolders = mutableMapOf<FastorySurface, WeakReference<FastoryHubActivity>>()
+
+    /**
      * A presentation whose Activity the platform destroyed without dismissing it, which surface it
      * stood on, and whether the host has heard its opening event — and the `gameOpened` of a game
      * sheet torn down with it. The fan never saw the surface leave, so it stays reserved and nothing
@@ -240,11 +315,21 @@ object Fastory {
 
     private var identityGeneration = 0
 
+    /**
+     * Bumped as an erasing transition starts and again when its erasure completes, and stamped on
+     * each page as it starts loading: a page of another generation may hold the previous fan's
+     * rendered screen, or have read their cookies while the erasure ran. Not [identityGeneration],
+     * which the warm-up gates on and which moves only as a transition starts: a warm-up whose
+     * `configure` came during an erasure must still be prepared (SPEC § 2.5).
+     */
+    private var pageGeneration = 0
+
     internal var eraseWebsiteData: (List<String>, () -> Unit) -> Unit = FastoryWebsiteDataEraser::erase
 
-    fun configure(context: Context, config: FastoryConfig, listener: FastoryEventsListener? = null) {
+    public fun configure(context: Context, config: FastoryConfig, listener: FastoryEventsListener? = null) {
         val appContext = context.applicationContext
         WorkspaceResolver.applicationId = appContext.packageName
+        FastoryAppContext.application = appContext
         applyConfiguration(config, listener) {
             registerTrimCallbacksOnce(appContext)
             // configure(context) is the Flutter channel's warm-up entry and owns a Context, so this
@@ -259,7 +344,7 @@ object Fastory {
         "Configure with a Context: Fastory.configure(context, config, listener). The context-less " +
             "form keeps working for the whole 0.x window; it will be removed in 1.0.",
     )
-    fun configure(config: FastoryConfig, listener: FastoryEventsListener? = null) {
+    public fun configure(config: FastoryConfig, listener: FastoryEventsListener? = null) {
         applyConfiguration(config, listener, prepare = null)
     }
 
@@ -270,6 +355,7 @@ object Fastory {
     ) {
         val previous = this.config
         val configChanged = previous != config
+        val replacesConfiguration = previous != null && configChanged
         this.config = config
         this.listener = listener
         // A configure that *replaces* a configuration invalidates what the previous one justified:
@@ -277,15 +363,18 @@ object Fastory {
         // under the next one hands a production token to a staging page (SPEC § 13.8.6). Nothing to
         // invalidate on the first call — and a host may legitimately set the answer before
         // configuring, so revoking there would drop a value it never got to use.
-        if (previous != null && configChanged) {
+        if (replacesConfiguration) {
+            sessionGeneration.incrementAndGet()
             FastoryBridgeResponder.revokeAll()
             // The session was minted against the previous environment and workspace, so it must not
             // survive into the next one — same reason the standing answer it fed is revoked here. The
-            // persisted identity was stamped under the previous configuration too, so it goes with it.
+            // persisted identity and the refresh token were stamped under the previous configuration
+            // too, so they go with it.
             identity = null
             delegatedSessionToken = null
             delegatedOrigin = null
             FastoryIdentityPersistence.purge()
+            letGoOfRefreshToken(previous)
         }
         // On the UI thread, all of it. discardWarmPages() calls WebView.destroy() and flushes the
         // preloader, which Android answers with `A WebView method was called on thread …` off the UI
@@ -301,10 +390,19 @@ object Fastory {
                 discardWarmPages()
                 WorkspaceResolver.reset()
             }
+            if (replacesConfiguration) {
+                renewalGeneration++
+                abandonRenewals()
+                endLaunchWait()
+            }
             // Configured by key, neither the fanzone nor the workspace is known until the API
             // answers. Start the exchange now so a presentation usually finds it already resolved.
             WorkspaceResolver.resolve(config)
-            prepare?.invoke()
+            if (prepare != null) {
+                prepare()
+            } else {
+                FastoryAppContext.application?.let { rehydratePersistedIdentity(it) }
+            }
         }
     }
 
@@ -356,12 +454,19 @@ object Fastory {
      * single-use handoff token at load time (its window is short, so it is minted now, not at
      * [identify]). A failed mint falls back to the plain URL: an anonymous hub is better than a hub
      * that does not open. No session means the URL is unchanged.
+     *
+     * While a `FanId` fan's launch renewal is in flight there is no session yet, so the opening waits
+     * for it, at most [LAUNCH_WAIT_MS], and the hub opens signed in (SPEC § 13.8.2).
      */
     private fun hubUrlAdoptingSession(
         hubUrl: String,
         config: FastoryConfig,
         callback: (String) -> Unit,
     ) {
+        if (launchWaitPending) {
+            launchHubWaiters += { hubUrlAdoptingSession(hubUrl, config, callback) }
+            return
+        }
         val sessionToken = delegatedSessionToken
         if (sessionToken == null) {
             callback(hubUrl)
@@ -425,7 +530,7 @@ object Fastory {
      * so honestly: it takes the host's own [Context] to start an Activity from, so a caller holding
      * one is already in UI code.
      */
-    fun openGames(context: Context) {
+    public fun openGames(context: Context) {
         val config = checkNotNull(config) { "Fastory.configure() must be called before openGames()" }
         // Idempotent, as on iOS: asking for the games while a surface is already up — or already on
         // its way up — does nothing at all. Without it a double tap on the host's own tab bar stacks
@@ -437,7 +542,7 @@ object Fastory {
         WorkspaceResolver.resolve(config)
         // First point a standalone host hands the SDK a Context: restore a persisted fan so the hub
         // opens already identified, then confirm it in the background (SPEC § 2.6.3).
-        rehydratePersistedIdentity(context)
+        rehydratePersistedIdentity(context, opening = true)
         present(context, FastorySurface.HUB)
     }
 
@@ -454,7 +559,7 @@ object Fastory {
      * [sequenceId] opens the panel on one of the workspace's sequences; naming none, or naming a
      * blank one, opens it on its default screen.
      */
-    fun openMembership(context: Context, sequenceId: String? = null) {
+    public fun openMembership(context: Context, sequenceId: String? = null) {
         val config = checkNotNull(config) {
             "Fastory.configure() must be called before openMembership()"
         }
@@ -468,7 +573,7 @@ object Fastory {
         WorkspaceResolver.resolve(config)
         // A membership-only host hands the SDK a Context here first, so this is where its persisted
         // fan is restored — the panel opens identified, then a background re-exchange confirms it.
-        rehydratePersistedIdentity(context)
+        rehydratePersistedIdentity(context, opening = true)
         present(context, FastorySurface.MEMBERSHIP, sequenceId)
     }
 
@@ -538,7 +643,7 @@ object Fastory {
     }
 
     /** Ends whichever of the two surfaces is presented. */
-    fun close() {
+    public fun close() {
         // Read before the hop, on the caller's own thread: by the time the block below runs, the
         // surface this call was aimed at may already be gone and another one launching. Withdrawing
         // that one would turn a stale close() into a tap that opens nothing.
@@ -572,13 +677,13 @@ object Fastory {
      * the same session (SPEC § 2.6).
      *
      * [FastoryIdentity.Anonymous] over an identified fan drops that fan the way [logout] does —
-     * session, renewal, and the identity kept across launches — and a hub on screen reloads
-     * anonymous (SPEC § 7). Over an SDK already anonymous it does nothing.
+     * session, renewal, and the identity kept across launches — and the hub or panel on screen
+     * reloads anonymous (SPEC § 7). Over an SDK already anonymous it does nothing.
      *
      * Called before [configure] it throws the same [IllegalStateException] as [openGames], not a
      * new error shape.
      */
-    fun identify(
+    public fun identify(
         identity: FastoryIdentity,
         callback: ((Result<FastoryResolvedIdentity>) -> Unit)? = null,
     ) {
@@ -600,6 +705,7 @@ object Fastory {
                 return@onMainThread
             }
             val resolved = transition.resolved ?: return@onMainThread
+            startNewGeneration()
             applyTransition(transition, config) {
                 // Set before notifying, so a listener reading Fastory.identity sees the new fan.
                 Fastory.identity = resolved
@@ -645,10 +751,8 @@ object Fastory {
             )
             return
         }
-        // The session is bound to the games' origin, because the games are what read this token over
-        // the bridge; the hub adopts the same session through a handoff instead. Development has no
-        // stories origin, so it falls back to the base URL exactly as game-URL construction does.
-        val origin = config.environment.storiesOrigin ?: config.baseUrl
+        startNewGeneration()
+        val origin = sessionOrigin(config)
         WorkspaceResolver.whenResolved(config) { outcome ->
             when (outcome) {
                 is WorkspaceResolver.Outcome.Failure ->
@@ -706,7 +810,8 @@ object Fastory {
             )
             return
         }
-        val origin = config.environment.storiesOrigin ?: config.baseUrl
+        startNewGeneration()
+        val origin = sessionOrigin(config)
         WorkspaceResolver.whenResolved(config) { outcome ->
             when (outcome) {
                 is WorkspaceResolver.Outcome.Failure ->
@@ -812,9 +917,9 @@ object Fastory {
 
     /**
      * Records a freshly minted delegated session and everything that hangs off it: the token the hub
-     * hands off and the games read over the bridge, the identity kept across launches, and the renewal
-     * armed to fire before it expires. The one place all four are set, so a renewal and a first
-     * resolution leave the SDK in the same state.
+     * hands off and the games read over the bridge, the identity kept across launches, a `FanId` fan's
+     * refresh token, and the renewal armed to fire before it expires. The one place all five are set,
+     * so a renewal and a first resolution leave the SDK in the same state.
      */
     private fun adoptDelegatedSession(
         session: FastoryDelegatedSession,
@@ -828,8 +933,55 @@ object Fastory {
             mapOf("token" to session.token),
         )
         Fastory.identity?.let { FastoryIdentityPersistence.save(it, config) }
+        keepRefreshToken(session, config)
         armDelegatedRenewal(session.token)
     }
+
+    /**
+     * Stores the refresh token a `FanId` session came with, in place of the one held until now. A
+     * token held until now and not spent by this session — a new login, of this fan or another — is
+     * let go: its family is revoked, best effort (SPEC § 2.6.3). A rotation forgets the spent token
+     * before it gets here, since revoking it would end its successor's family too.
+     */
+    private fun keepRefreshToken(session: FastoryDelegatedSession, config: FastoryConfig) {
+        val account = FastoryIdentityPersistence.stamp(config)
+        val incoming = if (identity?.mode == FastoryIdentityMode.FAN_ID) session.refreshToken else null
+        val previous = swapRefreshToken(incoming?.let { HeldRefreshToken(it, account, config) })
+        val store = availableRefreshTokenStore()
+        if (previous != null) {
+            val previousToken = previous.token
+            if (previousToken == null) {
+                store?.let { letGoOfUnreadRefreshToken(it, previous) }
+            } else if (previousToken != incoming) {
+                DelegatedSessionClient.revoke(previousToken, previous.config)
+            }
+        }
+        if (store == null) return
+        if (incoming != null) {
+            store.write(incoming, account)
+        } else if (previous != null) {
+            store.erase(previous.account)
+        }
+    }
+
+    /**
+     * Lets go of a token held unread — a restored fan dropped before the launch read landed: one
+     * queued read-then-erase, behind that read, and the family of what it read revoked, best effort.
+     */
+    private fun letGoOfUnreadRefreshToken(store: RefreshTokenStore, held: HeldRefreshToken) {
+        store.take(held.account) { token ->
+            token?.let { DelegatedSessionClient.revoke(it, held.config) }
+        }
+    }
+
+    /**
+     * The origin a delegated session is bound to: the games' stories origin, because the games are
+     * what read its token over the bridge; the hub adopts the same session through a handoff instead.
+     * Development has no stories origin, so it falls back to the base URL exactly as game-URL
+     * construction does.
+     */
+    private fun sessionOrigin(config: FastoryConfig): String =
+        config.environment.storiesOrigin ?: config.baseUrl
 
     private fun failIdentifiedResolution(
         error: FastoryIdentifyException,
@@ -843,7 +995,7 @@ object Fastory {
         }
     }
 
-    // Host-token lifecycle (SPEC § 2.6.3, § 5.3)
+    // Delegated session lifecycle (SPEC § 2.6.3, § 5.3)
 
     /**
      * Arms renewal to fire [RENEWAL_LEAD_MS] before the session's `exp`. A token with no readable
@@ -872,70 +1024,174 @@ object Fastory {
     }
 
     /**
-     * Renews the current delegated session once (SPEC § 2.6.3). Tries the cheap path first —
-     * `/embed/auth/refresh`, involving no one — and falls back to a fresh host assertion from the
-     * provider only when the refresh is refused.
+     * Renews the current delegated session (SPEC § 2.6.3). Tries the cheap path first —
+     * `/embed/auth/refresh`, involving no one — and falls back to the mode's own credential only when
+     * the refresh is refused or there is no session to refresh: the stored refresh token for a `FanId`
+     * fan, a fresh host assertion from the provider for a `HostToken` one — never the provider for a
+     * `FanId` fan.
+     *
+     * One renewal at a time: a call made while one is in flight waits for it, since rotation admits a
+     * single successor and a second presentation would read as a replay.
      */
     internal fun renewDelegatedSessionNow(onDone: (() -> Unit)?) {
-        val token = delegatedSessionToken
-        val origin = delegatedOrigin
         val config = config
-        if (token == null || origin == null || config == null) {
+        if (config == null) {
             onDone?.invoke()
             return
         }
-        DelegatedSessionClient.refresh(token, origin, config) { result ->
-            result.fold(
-                onSuccess = { renewed ->
-                    // The same session extended: identity and persistence untouched, only the token
-                    // the games read is swapped and the renewal re-armed (fixture: session_expiring).
-                    delegatedSessionToken = renewed
-                    FastoryBridgeResponder.setReply(
-                        FastoryBridgeRequestType.USER_TOKEN,
-                        mapOf("token" to renewed),
-                    )
-                    // The standing answer changed under a live game — tell it to re-read (SPEC § 13.9).
-                    FastorySessionPush.broadcast()
-                    armDelegatedRenewal(renewed)
-                    onDone?.invoke()
-                },
-                onFailure = { reexchangeThroughProvider(config, onDone) },
-            )
+        val generation = sessionGeneration.get()
+        if (renewalInFlight == generation) {
+            onDone?.let { renewalWaiters += it }
+            return
+        }
+        val token = delegatedSessionToken
+        val origin = delegatedOrigin
+        if (token != null && origin != null) {
+            beginRenewal(generation, onDone)
+            DelegatedSessionClient.refresh(token, origin, config) { result ->
+                if (generation != sessionGeneration.get()) return@refresh
+                result.fold(
+                    onSuccess = { renewed ->
+                        // The same session extended: identity and persistence untouched, only the
+                        // token the games read is swapped and the renewal re-armed (fixture:
+                        // session_expiring).
+                        delegatedSessionToken = renewed
+                        FastoryBridgeResponder.setReply(
+                            FastoryBridgeRequestType.USER_TOKEN,
+                            mapOf("token" to renewed),
+                        )
+                        // The standing answer changed under a live game — tell it to re-read (SPEC § 13.9).
+                        FastorySessionPush.broadcast()
+                        armDelegatedRenewal(renewed)
+                        finishRenewal()
+                    },
+                    onFailure = { renewThroughModeCredential(config, generation) },
+                )
+            }
+            return
+        }
+        val mode = identity?.mode
+        if (mode != FastoryIdentityMode.FAN_ID &&
+            !(mode == FastoryIdentityMode.HOST_TOKEN && hostTokenProvider != null)
+        ) {
+            onDone?.invoke()
+            return
+        }
+        beginRenewal(generation, onDone)
+        renewThroughModeCredential(config, generation)
+    }
+
+    private fun renewThroughModeCredential(config: FastoryConfig, generation: Int) {
+        if (identity?.mode == FastoryIdentityMode.FAN_ID) {
+            renewFanIdSession(config, generation)
+        } else {
+            reexchangeThroughProvider(config, generation)
         }
     }
 
     /**
-     * The refresh was refused, so the session itself is no longer renewable. Ask the host for a fresh
-     * assertion and re-exchange it (fixture: refresh_refused). No provider, or a provider that hands
-     * back nothing, means the session lapses — revoked with `reason: expired`.
+     * Presents a `FanId` fan's refresh token, read from storage when it is not already held. What the
+     * read finds decides the rest ([FastoryIdentityPersistence.pairing]): a fan whose token is gone is
+     * signed out with no event, and a read that reached no answer signs no one out.
      */
-    private fun reexchangeThroughProvider(config: FastoryConfig, onDone: (() -> Unit)?) {
+    private fun renewFanIdSession(config: FastoryConfig, generation: Int) {
+        val account = FastoryIdentityPersistence.stamp(config)
+        val heldToken = currentRefreshToken()?.takeIf { it.account == account }?.token
+        if (heldToken != null) {
+            presentRefreshToken(heldToken, config, generation)
+            return
+        }
+        val store = availableRefreshTokenStore()
+        if (store == null) {
+            armDelegatedRenewalRetry()
+            finishRenewal()
+            return
+        }
+        store.read(account) { result ->
+            if (generation != sessionGeneration.get()) return@read
+            when (val pairing = FastoryIdentityPersistence.pairing(identity, result)) {
+                is FastoryIdentityPersistence.Pairing.Renew -> {
+                    swapRefreshToken(HeldRefreshToken(pairing.token, account, config))
+                    presentRefreshToken(pairing.token, config, generation)
+                }
+                FastoryIdentityPersistence.Pairing.SignOut -> signOutWithoutToken(config)
+                FastoryIdentityPersistence.Pairing.RetryLater -> {
+                    armDelegatedRenewalRetry()
+                    finishRenewal()
+                }
+                is FastoryIdentityPersistence.Pairing.EraseToken,
+                FastoryIdentityPersistence.Pairing.Unchanged,
+                -> finishRenewal()
+            }
+        }
+    }
+
+    /**
+     * Presents [token] for a new session. Without the application identifier the grant would be
+     * refused, so the SDK refuses in its place, with the code the key exchange uses for the same
+     * absence (SPEC § 2.5).
+     */
+    private fun presentRefreshToken(token: String, config: FastoryConfig, generation: Int) {
+        val origin = sessionOrigin(config)
+        val publishableKey = config.publishableKey
+        val applicationId = WorkspaceResolver.applicationId?.takeIf { it.isNotBlank() }
+            ?: FastoryAppContext.application?.packageName
+        if (publishableKey == null || applicationId.isNullOrBlank()) {
+            val revocation = FastoryIdentityRevocation(
+                FastoryRevocationReason.REJECTED,
+                "sdk_application_id_required",
+            )
+            finishReexchange(RenewalAnswer.Refused(revocation), FastoryIdentityMode.FAN_ID, origin, config, generation)
+            return
+        }
+        DelegatedSessionClient.refreshGrant(token, publishableKey, applicationId, config) { result ->
+            val answer = when (result) {
+                is FastoryRefreshGrantResult.Renewed -> RenewalAnswer.Renewed(result.session)
+                is FastoryRefreshGrantResult.Failed -> when (val outcome = result.outcome) {
+                    FastoryRefreshGrantOutcome.Transient -> RenewalAnswer.Transient
+                    is FastoryRefreshGrantOutcome.Refused ->
+                        RenewalAnswer.Refused(FastoryIdentityRevocation(outcome.reason, outcome.code))
+                }
+            }
+            finishReexchange(answer, FastoryIdentityMode.FAN_ID, origin, config, generation)
+        }
+    }
+
+    /**
+     * The refresh was refused, or there is no session to refresh, so the session itself is no longer
+     * renewable. Ask the host for a fresh assertion and re-exchange it (fixture: refresh_refused). No
+     * provider, or a provider that hands back nothing, means the session lapses — revoked with
+     * `reason: expired`.
+     */
+    private fun reexchangeThroughProvider(config: FastoryConfig, generation: Int) {
+        val origin = sessionOrigin(config)
+        val lapsed = RenewalAnswer.Refused(FastoryIdentityRevocation(FastoryRevocationReason.EXPIRED))
         val provider = hostTokenProvider
         if (provider == null) {
-            revokeDelegatedSession(FastoryIdentityRevocation(FastoryRevocationReason.EXPIRED), config)
-            onDone?.invoke()
+            finishReexchange(lapsed, FastoryIdentityMode.HOST_TOKEN, origin, config, generation)
             return
         }
         provider.provideHostToken { freshToken ->
             onMainThread {
+                if (generation != sessionGeneration.get()) return@onMainThread
                 val jwt = freshToken?.trim()
                 if (jwt.isNullOrEmpty()) {
-                    revokeDelegatedSession(FastoryIdentityRevocation(FastoryRevocationReason.EXPIRED), config)
-                    onDone?.invoke()
+                    finishReexchange(lapsed, FastoryIdentityMode.HOST_TOKEN, origin, config, generation)
                     return@onMainThread
                 }
-                val origin = config.environment.storiesOrigin ?: config.baseUrl
                 WorkspaceResolver.whenResolved(config) { outcome ->
                     when (outcome) {
-                        is WorkspaceResolver.Outcome.Failure -> {
+                        is WorkspaceResolver.Outcome.Failure ->
                             finishReexchange(
-                                Result.failure(FastoryIdentityExchangeClassifier.error(outcome.code)),
-                                origin, config, onDone,
+                                RenewalAnswer.of(Result.failure(FastoryIdentityExchangeClassifier.error(outcome.code))),
+                                FastoryIdentityMode.HOST_TOKEN, origin, config, generation,
                             )
-                        }
                         is WorkspaceResolver.Outcome.Success ->
                             DelegatedSessionClient.exchange(jwt, outcome.workspace.id, origin, config) { result ->
-                                finishReexchange(result, origin, config, onDone)
+                                finishReexchange(
+                                    RenewalAnswer.of(result),
+                                    FastoryIdentityMode.HOST_TOKEN, origin, config, generation,
+                                )
                             }
                     }
                 }
@@ -943,103 +1199,336 @@ object Fastory {
         }
     }
 
+    /** What a renewal through the mode's own credential came back with. */
+    private sealed class RenewalAnswer {
+        class Renewed(val session: FastoryDelegatedSession) : RenewalAnswer()
+
+        class Refused(val revocation: FastoryIdentityRevocation) : RenewalAnswer()
+
+        /** No verdict was reached: nothing was refused. */
+        object Transient : RenewalAnswer()
+
+        companion object {
+            /** A re-exchange refused by the API is a refusal; anything else it failed on reached no verdict. */
+            fun of(exchange: Result<FastoryDelegatedSession>): RenewalAnswer = exchange.fold(
+                onSuccess = { Renewed(it) },
+                onFailure = { error ->
+                    val exception = error as? FastoryIdentifyException
+                    if (exception?.code == FastoryIdentifyException.REJECTED) {
+                        Refused(FastoryIdentityRevocation(FastoryRevocationReason.REJECTED, exception.detailsCode))
+                    } else {
+                        Transient
+                    }
+                },
+            )
+        }
+    }
+
+    /**
+     * Lands a renewal through the mode's own credential, in the mode the fan signed in with. An answer
+     * that returns under an older generation is ignored: the fan it renews was signed out, replaced or
+     * configured away in the meantime, and applying it would sign them back in. A renewal forgets the
+     * token it presented rather than revoking it: that token is spent, and revoking it would end its
+     * successor's family with it.
+     */
     private fun finishReexchange(
-        result: Result<FastoryDelegatedSession>,
+        answer: RenewalAnswer,
+        mode: FastoryIdentityMode,
         origin: String,
         config: FastoryConfig,
-        onDone: (() -> Unit)?,
+        generation: Int,
     ) {
-        result.fold(
-            onSuccess = { session ->
-                val resolved = FastoryResolvedIdentity(FastoryIdentityMode.HOST_TOKEN, session.fanId)
+        if (generation != sessionGeneration.get()) return
+        when (answer) {
+            is RenewalAnswer.Renewed -> {
+                val session = answer.session
+                val resolved = FastoryResolvedIdentity(mode, session.fanId)
                 val transition = FastoryIdentityRules.afterResolution(resolved, Fastory.identity)
+                swapRefreshToken(null)
                 applyTransition(transition, config) {
                     Fastory.identity = resolved
                     adoptDelegatedSession(session, origin, config)
-                    // A re-exchange is a renewal: the session behind the standing answer is fresh
-                    // whether or not the fan changed, so the live game re-reads it unconditionally
-                    // (SPEC § 13.9).
+                    // A renewal through the credential is a fresh session whether or not the fan
+                    // changed, so the live game re-reads it unconditionally (SPEC § 13.9).
                     FastorySessionPush.broadcast()
                     if (transition.emitsIdentityResolved) {
                         listener?.onIdentityResolved(resolved)
                     }
-                    onDone?.invoke()
+                    finishRenewal()
                 }
-            },
-            onFailure = { error ->
-                // A refusal drops the fan and tells the host why. A network failure did not refuse
-                // anything, so it keeps the identity and re-arms a bounded retry rather than signing a
-                // fan out over a lost connection — the timer that fired this renewal is spent, so
-                // without this the session would stay identified but never renew again.
-                val exception = error as FastoryIdentifyException
-                if (exception.code == FastoryIdentifyException.REJECTED) {
-                    revokeDelegatedSession(
-                        FastoryIdentityRevocation(FastoryRevocationReason.REJECTED, exception.detailsCode),
-                        config,
-                    )
-                } else {
-                    armDelegatedRenewalRetry()
-                }
-                onDone?.invoke()
-            },
-        )
+            }
+            is RenewalAnswer.Refused -> revokeDelegatedSession(answer.revocation, config) { finishRenewal() }
+            RenewalAnswer.Transient -> {
+                // A failure that refused nothing keeps the identity and re-arms a bounded retry rather
+                // than signing a fan out over a lost connection — the timer that fired this renewal is
+                // spent, so without this the session would stay identified but never renew again.
+                armDelegatedRenewalRetry()
+                finishRenewal()
+            }
+        }
     }
 
     /**
      * Drops a delegated session the SDK could not keep (SPEC § 5.3): erase, revoke the standing
-     * answer, purge the persisted identity, land on anonymous, and tell the host why. The one path
-     * that emits `onIdentityRevoked` — a host-driven `logout` never comes through here.
+     * answer, purge the persisted identity and the refresh token, land on anonymous, and tell the host
+     * why. The one path that emits `onIdentityRevoked` — a host-driven `logout` never comes through
+     * here. The refused token is erased and never revoked again: the server already ended its family.
      */
-    private fun revokeDelegatedSession(revocation: FastoryIdentityRevocation, config: FastoryConfig) {
+    private fun revokeDelegatedSession(
+        revocation: FastoryIdentityRevocation,
+        config: FastoryConfig,
+        onDone: (() -> Unit)? = null,
+    ) {
         val transition = FastoryIdentityRules.afterResolutionFailure(Fastory.identity)
+        swapRefreshToken(null)
         applyTransition(transition, config) {
             Fastory.identity = null
             // The standing answer was revoked, so a live game must re-ask and get `unavailable`,
             // which is how it learns the fan is gone (SPEC § 13.9).
             FastorySessionPush.broadcast()
             listener?.onIdentityRevoked(revocation)
+            onDone?.invoke()
+        }
+    }
+
+    /**
+     * A `FanId` fan whose refresh token is gone — a reinstall, a restore — cannot be renewed: the fan
+     * is signed out the way `logout()` does it, with no event, since nothing was refused and the host
+     * signed no one out (SPEC § 2.6.3).
+     */
+    private fun signOutWithoutToken(config: FastoryConfig) {
+        applyTransition(FastoryIdentityRules.logout(Fastory.identity), config) {
+            Fastory.identity = null
+            FastorySessionPush.broadcast()
+            finishRenewal()
+        }
+    }
+
+    // One renewal at a time, under one generation
+
+    /** The generation the renewal in flight was started under, and the callers waiting for it. UI-thread-confined. */
+    private var renewalInFlight: Int? = null
+    private val renewalWaiters = mutableListOf<() -> Unit>()
+
+    private fun beginRenewal(generation: Int, onDone: (() -> Unit)?) {
+        renewalInFlight = generation
+        onDone?.let { renewalWaiters += it }
+    }
+
+    private fun finishRenewal() {
+        renewalInFlight = null
+        endLaunchWait()
+        releaseRenewalWaiters()
+    }
+
+    /** The generation moved on: the renewal in flight answers into nothing, so nothing waits for it. */
+    private fun abandonRenewals() {
+        renewalInFlight = null
+        releaseRenewalWaiters()
+    }
+
+    private fun releaseRenewalWaiters() {
+        val waiters = renewalWaiters.toList()
+        renewalWaiters.clear()
+        waiters.forEach { it() }
+    }
+
+    /** Every `logout()`, `identify` and replacing `configure` starts a new generation (SPEC § 2.6.3). */
+    private fun startNewGeneration() {
+        sessionGeneration.incrementAndGet()
+        abandonRenewals()
+        endLaunchWait()
+    }
+
+    // The launch wait (SPEC § 13.8.2)
+
+    /** How long a token request and the hub's opening wait for a `FanId` fan's launch renewal. */
+    private const val LAUNCH_WAIT_MS = 3_000L
+
+    /** Whether a `FanId` fan's launch renewal is awaited. UI-thread-confined, like what follows. */
+    private var launchWaitPending = false
+    private var launchBoundArmed = false
+    private var launchBoundSerial = 0
+    private val launchHubWaiters = mutableListOf<() -> Unit>()
+
+    /** Numbers the launch waits begun, so a page loaded during one knows which answer it reads. */
+    private var launchWait = 0
+
+    /** The fan whose session each ended launch wait answered its held requests with, null with none. */
+    private val launchWaitOutcomes = mutableMapOf<Int, String?>()
+
+    /** From now on a page's request for the fan's token, and the hub's opening, wait for the launch renewal. */
+    private fun beginLaunchWait() {
+        if (!launchWaitPending) launchWait++
+        launchWaitPending = true
+        FastoryBridgeResponder.beginDeferringUserToken()
+    }
+
+    /** Bounds the launch wait to [LAUNCH_WAIT_MS], beginning it if it is not already pending. */
+    private fun boundLaunchWait() {
+        if (!launchWaitPending) beginLaunchWait()
+        if (launchBoundArmed) return
+        launchBoundArmed = true
+        val serial = ++launchBoundSerial
+        launchBoundSchedule(LAUNCH_WAIT_MS) {
+            if (serial == launchBoundSerial) endLaunchWait()
+        }
+    }
+
+    /**
+     * Answers the waiting token requests with the answer in force now, and opens the waiting hubs on
+     * the session in force now — signed in when the renewal landed, anonymous otherwise.
+     */
+    private fun endLaunchWait() {
+        if (launchWaitPending) launchWaitOutcomes[launchWait] = currentSessionFan()
+        launchWaitPending = false
+        launchBoundArmed = false
+        launchBoundSerial++
+        FastoryBridgeResponder.endDeferringUserToken()
+        val waiters = launchHubWaiters.toList()
+        launchHubWaiters.clear()
+        waiters.forEach { it() }
+    }
+
+    /**
+     * Re-establishes what the stored identity and refresh token call for, on the UI thread: erases the
+     * tokens stamped for another configuration, renews a rehydrated fan in the background — with its
+     * refresh token for `FanId`, through the provider for `HostToken` — and erases a token that has no
+     * `FanId` fan beside it (SPEC § 2.6.3, § 7.5).
+     */
+    private fun startLaunch(config: FastoryConfig, generation: Int) {
+        if (generation != sessionGeneration.get() || config != Fastory.config || config.publishableKey == null) {
+            endLaunchWait()
+            return
+        }
+        sweepRefreshTokensOfOtherConfigurations(config, generation)
+        val mode = identity?.mode
+        if (mode == FastoryIdentityMode.FAN_ID && delegatedSessionToken == null) {
+            boundLaunchWait()
+            renewDelegatedSessionNow(null)
+            return
+        }
+        endLaunchWait()
+        if (mode == FastoryIdentityMode.HOST_TOKEN && delegatedSessionToken == null && hostTokenProvider != null) {
+            renewDelegatedSessionNow(null)
+        }
+        if (mode != FastoryIdentityMode.FAN_ID) {
+            eraseUnpairedRefreshToken(config, generation)
+        }
+    }
+
+    private var sweptAccount: String? = null
+
+    private fun sweepRefreshTokensOfOtherConfigurations(config: FastoryConfig, generation: Int) {
+        val account = FastoryIdentityPersistence.stamp(config)
+        if (sweptAccount == account) return
+        val store = availableRefreshTokenStore() ?: return
+        sweptAccount = account
+        store.otherAccounts(keeping = account) { others ->
+            if (generation != sessionGeneration.get() || config != Fastory.config) {
+                if (sweptAccount == account) sweptAccount = null
+                return@otherAccounts
+            }
+            for (other in others) {
+                store.erase(other.account)
+                FastoryIdentityPersistence.apiBaseUrlOfStamp(other.account)?.let { apiBaseUrl ->
+                    DelegatedSessionClient.revoke(other.token, apiBaseUrl)
+                }
+            }
+        }
+    }
+
+    /**
+     * A token with no `FanId` fan beside it — the identity was lost to a reinstall, or the fan is a
+     * `HostToken` one — renews no one: it is erased, and its family revoked.
+     */
+    private fun eraseUnpairedRefreshToken(config: FastoryConfig, generation: Int) {
+        val account = FastoryIdentityPersistence.stamp(config)
+        val store = availableRefreshTokenStore() ?: return
+        store.read(account) { result ->
+            if (generation != sessionGeneration.get()) return@read
+            val pairing = FastoryIdentityPersistence.pairing(identity, result)
+            if (pairing !is FastoryIdentityPersistence.Pairing.EraseToken) return@read
+            store.erase(account)
+            DelegatedSessionClient.revoke(pairing.token, config)
         }
     }
 
     /** Forgets everything tied to a delegated session and disarms its renewal. */
-    private fun clearDelegatedSession() {
+    private fun clearDelegatedSession(config: FastoryConfig?) {
         delegatedSessionToken = null
         delegatedOrigin = null
         FastoryIdentityPersistence.purge()
+        letGoOfRefreshToken(config)
         // Bumping the generation is the disarm: the pending timer's guard no longer matches.
         renewalGeneration++
     }
 
     /**
-     * Restores a persisted delegated identity for this configuration once a [Context] is available
-     * (the SDK's `configure` has none), then re-establishes the session behind it in the background.
-     * Called from [openGames] and the hub warm-up. No `onIdentityResolved` from the cache: it
-     * announces a resolution, and this is a restoration.
+     * Erases the refresh token held and the one stored for [config], then revokes the family of the
+     * one held, best effort and without waiting (SPEC § 2.6.3): the SDK is letting it go. A token held
+     * unread is read and erased in one step on the store's executor, so what the launch read would
+     * have found is revoked too. A token the server already ended is forgotten before this runs, so it
+     * is never revoked twice.
      */
-    internal fun rehydratePersistedIdentity(context: Context) {
+    private fun letGoOfRefreshToken(config: FastoryConfig?) {
+        val held = swapRefreshToken(null)
+        val configured = config?.takeIf { it.publishableKey != null }?.let(FastoryIdentityPersistence::stamp)
+        availableRefreshTokenStore()?.let { store ->
+            if (held != null && held.token == null) letGoOfUnreadRefreshToken(store, held)
+            setOfNotNull(held?.account, configured).forEach { store.erase(it) }
+        }
+        held?.token?.let { DelegatedSessionClient.revoke(it, held.config) }
+    }
+
+    /** The configuration the launch last ran for. UI-thread-confined. */
+    private var launchedConfig: FastoryConfig? = null
+
+    /**
+     * Restores a persisted delegated identity for this configuration once a [Context] is available,
+     * then re-establishes the session behind it in the background. Called from [configure], [openGames]
+     * and [openMembership]. No `onIdentityResolved` from the cache: it announces a resolution, and this
+     * is a restoration. A `FanId` fan's token is awaited from here on, and held unread until the launch
+     * read lands.
+     *
+     * An opening renews a `FanId` fan only when no launch has run for this configuration — a host
+     * configured without a [Context] — or when it restored the fan itself: after a launch renewal that
+     * failed on the network, the armed retry renews, never the opening. Every other opening runs the
+     * launch, so a `HostToken` fan with no session re-exchanges through a provider registered since.
+     */
+    internal fun rehydratePersistedIdentity(context: Context, opening: Boolean = false) {
+        if (FastoryAppContext.application == null) {
+            FastoryAppContext.application = context.applicationContext
+        }
         FastoryIdentityPersistence.attach(context)
         val config = config ?: return
+        var restored = false
         if (identity == null) {
-            val persisted = FastoryIdentityPersistence.load(config) ?: return
-            identity = persisted
+            FastoryIdentityPersistence.load(config)?.let { persisted ->
+                identity = persisted
+                restored = true
+                if (persisted.mode == FastoryIdentityMode.FAN_ID) {
+                    holdUnreadRefreshToken(config)
+                    beginLaunchWait()
+                }
+            }
         }
-        // Confirm the rehydrated identity by re-exchanging a fresh assertion, so the games get a live
-        // token. With no provider the identity stays shown but the first game is anonymous until the
-        // host identifies again.
-        if (identity?.mode == FastoryIdentityMode.HOST_TOKEN &&
-            delegatedSessionToken == null &&
-            hostTokenProvider != null
-        ) {
-            reexchangeThroughProvider(config, null)
-        }
+        val alreadyLaunched = opening && !restored && launchedConfig == config
+        if (alreadyLaunched && identity?.mode == FastoryIdentityMode.FAN_ID) return
+        launchedConfig = config
+        startLaunch(config, sessionGeneration.get())
     }
 
     /**
      * Signs the fan out of Fastory only — the host application's own session is never touched.
-     * Idempotent, and needs no network call.
+     * Idempotent, and waits on no network call: a `FanId` fan's refresh token is erased at once and its
+     * family revoked in the background, best effort. A renewal answer that lands after this call is
+     * ignored rather than signing the fan back in.
      */
-    fun logout(callback: (() -> Unit)? = null) {
+    public fun logout(callback: (() -> Unit)? = null) {
         onMainThread {
+            sessionGeneration.incrementAndGet()
+            abandonRenewals()
             val transition = FastoryIdentityRules.logout(Fastory.identity)
             // A sign-out wins over a fanId login still in the system browser: answer it cancelled so
             // it cannot re-identify the fan after this logout has run.
@@ -1053,13 +1542,14 @@ object Fastory {
                 FastorySessionPush.broadcast()
                 callback?.invoke()
             }
+            endLaunchWait()
         }
     }
 
     /**
      * [then] stores what the transition lands on — the identity, and the session the hub hands off.
-     * The hub on screen reloads once [then] has run and the erasure has completed, so it loads under
-     * that session, never under the previous fan's cookies (SPEC § 7).
+     * The surface on screen reloads once [then] has run and the erasure has completed, so it loads
+     * under that session, never under the previous fan's cookies (SPEC § 7).
      */
     private fun applyTransition(
         transition: FastoryIdentityTransition,
@@ -1070,7 +1560,7 @@ object Fastory {
         // and `logout()` revokes even when it has no session to erase (SPEC § 13.8.2).
         if (transition.revokesBridgeReplies) {
             FastoryBridgeResponder.revokeAll()
-            clearDelegatedSession()
+            clearDelegatedSession(config)
         }
         val fanBefore = identity?.fanId
         var pending = 1
@@ -1079,22 +1569,29 @@ object Fastory {
         }
         if (transition.erasesStorage && config != null) {
             identityGeneration++
+            pageGeneration++
             // All of them were built before this transition, so they hold the previous fan's
             // rendered page.
             discardWarmPages()
             pending++
-            eraseWebsiteData(FastoryIdentityStorage.origins(config)) { settle() }
+            eraseWebsiteData(FastoryIdentityStorage.origins(config)) {
+                // Again once the erasure is done: a page that started loading while it ran may
+                // have read the previous fan's cookies.
+                pageGeneration++
+                settle()
+            }
         }
         then()
         settle()
     }
 
     /**
-     * A hub on screen follows the identified fan (SPEC § 2.6.1, § 7): it reloads, through the session
-     * handoff [resolveHub] mints, when the transition changed *which* fan is identified, and only
-     * then. Anonymous and not identified both carry no `fanId`, so moving between them reloads
-     * nothing, and neither does the same fan identified again or renewed. The panel is not reloaded,
-     * and a game learns the change from the session-change signal.
+     * The surface on screen, hub or panel, follows the identified fan (SPEC § 2.6.1, § 7): it
+     * reloads when the transition changed *which* fan is identified, and only then — the hub
+     * through the session handoff [resolveHub] mints, the panel on the address it was opened at,
+     * whose page asks the bridge for the session again. Anonymous and not identified both carry no
+     * `fanId`, so moving between them reloads nothing, and neither does the same fan identified
+     * again or renewed. A game learns the change from the session-change signal.
      */
     private fun reloadPresentedHubIfTheFanChanged(fanBefore: String?) {
         if (identity?.fanId == fanBefore) return
@@ -1242,7 +1739,28 @@ object Fastory {
         config = null
         listener = null
         identity = null
+        delegatedSessionToken = null
+        delegatedOrigin = null
         identityGeneration = 0
+        pageGeneration = 0
+        sessionGeneration.incrementAndGet()
+        renewalGeneration++
+        synchronized(refreshTokenLock) {
+            heldRefreshToken = null
+            installedRefreshTokenStore = null
+        }
+        sweptAccount = null
+        launchedConfig = null
+        renewalInFlight = null
+        renewalWaiters.clear()
+        launchWaitPending = false
+        launchWait = 0
+        launchWaitOutcomes.clear()
+        launchBoundArmed = false
+        launchBoundSerial++
+        launchHubWaiters.clear()
+        renewalSchedule = DEFAULT_SCHEDULE
+        launchBoundSchedule = DEFAULT_SCHEDULE
         discardWarmPages()
         failedWarmWebViews.clear()
         // The registration below is made on one application context while the flag guarding it is
@@ -1288,7 +1806,7 @@ object Fastory {
      * A payload that cannot be encoded as JSON is refused and the current answer left as it was —
      * non-throwing, and traced at debug level.
      */
-    fun setBridgeReply(type: FastoryBridgeRequestType, payload: Map<String, Any?>?) {
+    public fun setBridgeReply(type: FastoryBridgeRequestType, payload: Map<String, Any?>?) {
         FastoryBridgeResponder.setReply(type, payload)
         // The host changed the answer by hand — set or cleared. A live game re-asks and adopts the
         // new value, or gets `unavailable` on a clear (SPEC § 13.9). No-op when no game is open.
@@ -1335,7 +1853,67 @@ object Fastory {
         val config: FastoryConfig,
         var loadStarted: Boolean,
         var didCommit: Boolean,
+        /**
+         * The session the page read, stamped when it started loading and carried with it like
+         * [config] — never the one in force when it is put in the slot.
+         *
+         * The panel's page asks for the fan's session once, when it loads, and is reused on its
+         * address alone: a page that read none would open the fan who has since signed in, or
+         * whose session has since landed, as anonymous (SPEC § 3.5). Read at stash time instead, a
+         * panel on screen while the same fan's session lands — which nothing reloads — would go
+         * back stamped with a session its page never had. The hub reads only the stamp's
+         * [PageSession.generation]: a fan with a session reopens it through a handoff address its
+         * warm page never has, but one whose handoff could not be minted opens it on the plain
+         * address, and that page must still not outlive an erasure.
+         */
+        val session: PageSession = currentPageSession(),
     )
+
+    /** What a page's request for the fan's session reads (SPEC § 3.5, § 13.8.2). */
+    internal sealed interface PageSession {
+        /**
+         * The [pageGeneration] when the page started loading. An erasure since then means the
+         * page may hold the previous fan's rendered screen, even under an address an anonymous
+         * opening asks for, so it is never presented again.
+         */
+        val generation: Int
+
+        /** The fan whose session stood when the page started loading, null with none. */
+        data class Read(val fan: String?, override val generation: Int) : PageSession
+
+        /**
+         * Loaded while a launch wait held those requests: the page reads whatever that wait ends
+         * with, which is not known yet.
+         */
+        data class AwaitingLaunch(val wait: Int, override val generation: Int) : PageSession
+    }
+
+    /**
+     * The fan whose session a page loaded now could read: the identified fan once a delegated
+     * session stands for them, null before that. An identity without a `fanId` still has a
+     * session, so it reads as an empty name rather than as none.
+     */
+    private fun currentSessionFan(): String? =
+        if (delegatedSessionToken == null) null else (identity?.fanId ?: "")
+
+    /** The stamp of a page that starts loading now. */
+    internal fun currentPageSession(): PageSession =
+        if (launchWaitPending) {
+            PageSession.AwaitingLaunch(launchWait, pageGeneration)
+        } else {
+            PageSession.Read(currentSessionFan(), pageGeneration)
+        }
+
+    /**
+     * Whether a page stamped [stamp] holds the session in force now. One whose launch wait is still
+     * pending does: its request is held, and will be answered as a page loaded now would.
+     */
+    private fun readsCurrentSession(stamp: PageSession): Boolean = when (stamp) {
+        is PageSession.Read -> stamp.fan == currentSessionFan()
+        is PageSession.AwaitingLaunch ->
+            !launchWaitOutcomes.containsKey(stamp.wait) ||
+                launchWaitOutcomes[stamp.wait] == currentSessionFan()
+    }
 
     private val failedWarmWebViews = mutableListOf<WebView>()
     private var trimCallbacksRegistered = false
@@ -1349,6 +1927,8 @@ object Fastory {
         val url: String?,
         val hasCommitted: Boolean,
         val isLoading: Boolean,
+        /** What the page read when it loaded, for the presentation to carry back to the slot. */
+        val session: PageSession,
     ) {
         /**
          * Decided on the address, never on the arguments the opening carried: a page warm on the
@@ -1467,6 +2047,9 @@ object Fastory {
         // re-configure: the rendered page would be replaced by one still loading, so a harmless call
         // would be paid for as a cold open.
         if (warmPages[surface] != null) return
+        // A page still inside a finished container comes back to this slot, at the next opening or
+        // at that container's destruction; one prepared now would take its place.
+        if (warmPageHolders[surface]?.get() != null) return
         val webView = createWebView(MutableContextWrapper(appContext))
         // Kicks off game discovery as soon as the warm hub has rendered, and drops the page when the
         // warm-up failed (SPEC § 9.1).
@@ -1476,6 +2059,7 @@ object Fastory {
     }
 
     internal fun obtainWebView(surface: FastorySurface, activity: Activity): WarmSurfacePage {
+        if (warmPages[surface] == null) warmPageHolders.remove(surface)?.get()?.handOverPage()
         // Nothing warm is not a mismatch. Discarding on an empty slot would flush the preloader on
         // every cold open, throwing away the games discovered from the very hub that is opening —
         // this runs on presentation, when the slot has just been emptied or was never filled.
@@ -1483,6 +2067,16 @@ object Fastory {
         if (resident != null && resident.config != config) {
             // Rendered for another configuration: presenting it under the current one is the
             // whole defect, so it is dropped rather than handed over (SPEC § 2.1).
+            discardWarmPage(surface)
+        } else if (resident != null && resident.session.generation != pageGeneration) {
+            // Loaded before an erasure: a page stashed after the discard that erasure ran — closed
+            // while it was still erasing — would bring the previous fan's screen back.
+            discardWarmPage(surface)
+        } else if (
+            resident != null &&
+            surface == FastorySurface.MEMBERSHIP &&
+            !readsCurrentSession(resident.session)
+        ) {
             discardWarmPage(surface)
         }
         warmPages.remove(surface)?.let { page ->
@@ -1493,6 +2087,7 @@ object Fastory {
                 url = page.url,
                 hasCommitted = page.didCommit,
                 isLoading = page.loadStarted && !page.didCommit,
+                session = page.session,
             )
         }
         return WarmSurfacePage(
@@ -1500,6 +2095,7 @@ object Fastory {
             url = null,
             hasCommitted = false,
             isLoading = false,
+            session = currentPageSession(),
         )
     }
 
@@ -1517,13 +2113,14 @@ object Fastory {
         config: FastoryConfig,
         presentation: Int,
         hasCommitted: Boolean,
+        session: PageSession = currentPageSession(),
     ) {
         if ((latestLaunchBySurface[surface] ?: presentation) > presentation) {
             (webView.parent as? ViewGroup)?.removeView(webView)
             webView.destroy()
             return
         }
-        stashWebView(webView, surface, url, config, hasCommitted)
+        stashWebView(webView, surface, url, config, hasCommitted, session)
     }
 
     /**
@@ -1538,6 +2135,9 @@ object Fastory {
      * [WebView.getUrl] is wherever the page ended, which a fan browsing the hub moves at will. Read
      * off the page, the slot would come back stamped with a deep address no opening ever asks for,
      * and every reopening would reload a document already rendered.
+     *
+     * [session] is what the page read when it loaded, carried for the reason [config] is: the
+     * session in force now may have landed after the page asked. It defaults to a page loaded now.
      */
     internal fun stashWebView(
         webView: WebView,
@@ -1545,6 +2145,7 @@ object Fastory {
         url: String?,
         config: FastoryConfig,
         hasCommitted: Boolean,
+        session: PageSession = currentPageSession(),
     ) {
         val wrapper = webView.context as? MutableContextWrapper ?: run {
             webView.destroy()
@@ -1567,7 +2168,16 @@ object Fastory {
             config = config,
             loadStarted = hasCommitted,
             didCommit = hasCommitted,
+            session = session,
         )
+    }
+
+    internal fun holdWarmPage(surface: FastorySurface, container: FastoryHubActivity) {
+        warmPageHolders[surface] = WeakReference(container)
+    }
+
+    internal fun forgetWarmPageHolder(container: FastoryHubActivity) {
+        warmPageHolders.values.removeAll { it.get().let { held -> held == null || held === container } }
     }
 
     internal fun discardWarmPage(surface: FastorySurface) {
@@ -1577,6 +2187,10 @@ object Fastory {
     private fun discardWarmPages() {
         discardWarmPage(FastorySurface.HUB)
         discardWarmPage(FastorySurface.MEMBERSHIP)
+        // A finished container's page is as out of date as the slots', and the next opening would
+        // be handed it.
+        warmPageHolders.values.mapNotNull { it.get() }.forEach { it.discardPage() }
+        warmPageHolders.clear()
     }
 
     internal fun warmPageDidFail(webView: WebView, surface: FastorySurface) {

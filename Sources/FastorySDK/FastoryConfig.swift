@@ -5,7 +5,7 @@ public enum FastoryEnvironment: Equatable, Sendable {
     case staging
     case development(baseURL: URL)
 
-    public var baseURL: URL {
+    var baseURL: URL {
         switch self {
         case .production:
             return URL(string: "https://fanzone.me")!
@@ -88,8 +88,8 @@ public enum FastoryConfigError: Error, Equatable, Sendable, CustomStringConverti
 }
 
 public struct FastoryConfig: Equatable, Sendable {
-    public static let livePublishableKeyPrefix = "fpk_live_"
-    public static let testPublishableKeyPrefix = "fpk_test_"
+    static let livePublishableKeyPrefix = "fpk_live_"
+    static let testPublishableKeyPrefix = "fpk_test_"
 
     public let environment: FastoryEnvironment
     /// Identifies the workspace the host app belongs to. The fanzone to open is resolved from
@@ -111,14 +111,17 @@ public struct FastoryConfig: Equatable, Sendable {
     /// preloaded from the hub's page, so they follow `.hub`. The deprecated slug path resolves no
     /// workspace, so it has no panel to prepare and ignores `.membership`.
     public let prewarm: Set<FastorySurface>
-    /// Whether your app signs the fan in when a Fastory page asks it to (SPEC § 2.6).
+    /// Whether your app signs the fan in and out when a Fastory page asks it to (SPEC § 2.6).
     ///
-    /// No page the SDK presents ever shows a login form of its own. Declared, the hub, the
-    /// membership panel and the games keep their sign-in entries, and a fan's tap on one reaches
-    /// `FastoryEventsDelegate.fastoryBridgeMessage(type:payload:)` as `fastory:login-requested`:
-    /// sign the fan in your own way, then call `Fastory.identify`. Left `false`, the pages show no
-    /// sign-in entry at all. Declare it only if you handle that message — otherwise every sign-in
-    /// entry becomes a control that does nothing.
+    /// No page the SDK presents ever shows a login form of its own, nor signs the fan out on its
+    /// own. Declared, the hub, the membership panel and the games keep their sign-in and sign-out
+    /// entries, and a fan's tap on one reaches `FastoryEventsDelegate.fastoryBridgeMessage(type:payload:)`:
+    /// - `fastory:login-requested`: sign the fan in your own way, then call `Fastory.identify`.
+    /// - `fastory:logout-requested`: ask the fan to confirm, then call `Fastory.logout`. Never sign
+    ///   the fan out on the message alone — a page can post it without the fan's tap.
+    ///
+    /// Left `false`, the pages show no sign-in or sign-out entry at all. Declare it only if you
+    /// handle both messages — otherwise each of those entries becomes a control that does nothing.
     public let handlesLoginRequests: Bool
 
     /// Not deprecated, so SDK-internal construction never trips the deprecation warning attached to
@@ -236,9 +239,8 @@ public struct FastoryConfig: Equatable, Sendable {
         }
     }
 
-    /// Backwards-compatible entry point: the Flutter plugin calls this before constructing a
-    /// slug-based config. New code calls `validate()` on the built config instead.
-    public static func validate(fanzoneSlug: String, hubTabSlug: String) throws {
+    /// The two rules on the slugs alone, without a configuration to build.
+    static func validate(fanzoneSlug: String, hubTabSlug: String) throws {
         guard !fanzoneSlug.isBlank else { throw FastoryConfigError.blankFanzoneSlug }
         guard !hubTabSlug.isBlank else { throw FastoryConfigError.blankHubTabSlug }
     }
@@ -367,13 +369,21 @@ extension URL {
     /// The URL a game is loaded with (SPEC § 3.3): `embed`, `utm_source`, `consent`, then the host's
     /// own parameters (`FastoryConfig.gamePresentationQueryItems`), each added only when the link
     /// does not carry it already — the fanzone builds its own game links, and a value it put there
-    /// wins. The host's parameters are required rather than defaulted: a call that forgot them would
-    /// still compile, and quietly drop the locale and theme the host configured.
+    /// wins. `utm_source` is the exception: a game the SDK opens is SDK traffic, so the link's own
+    /// takes the value `sdk` where it stands and a repeat of it is dropped. The host's parameters are
+    /// required rather than defaulted: a call that forgot them would still compile, and quietly drop
+    /// the locale and theme the host configured.
     func fastoryEmbeddedGameURL(with hostItems: [URLQueryItem]) -> URL {
         guard var components = URLComponents(url: self, resolvingAgainstBaseURL: false) else {
             return self
         }
         var queryItems = components.queryItems ?? []
+        if let attribution = queryItems.firstIndex(where: { $0.name == "utm_source" }) {
+            queryItems[attribution].value = "sdk"
+            queryItems = queryItems.enumerated()
+                .filter { $0.offset == attribution || $0.element.name != "utm_source" }
+                .map(\.element)
+        }
         let embedItems = [
             URLQueryItem(name: "embed", value: "1"),
             URLQueryItem(name: "utm_source", value: "sdk"),

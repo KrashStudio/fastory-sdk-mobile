@@ -12,6 +12,8 @@ library — there is nothing here to configure.
   entries the SDK needs, and the R8 keep rules applied to your application through
   `consumerProguardFiles` — which is why you need no ProGuard rule of your own.
 
-**The SDK's public API is the Dart one.** Nothing in this directory is meant to be called from a host
-app: see the plugin's `README.md` for the surface, and `SPEC.md` at the repository root for the
-normative contract.
+**In a Flutter app, the SDK's public API is the Dart one.** Nothing in this directory is meant to be
+called from a host app: see the plugin's `README.md` for the surface, and `SPEC.md` at the repository
+root for the normative contract. A native Android app does not use this directory either: it adds the
+same Kotlin core as the library `io.fastory:fastory-sdk` from Maven Central, as the repository root's
+`README.md` describes — never alongside this plugin, whose copy of the same classes would collide.

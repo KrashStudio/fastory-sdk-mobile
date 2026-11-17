@@ -1,17 +1,17 @@
 import Foundation
 
-public enum NavigationDecision: Equatable, Sendable {
+enum NavigationDecision: Equatable, Sendable {
     case allow
     case openGameSheet
     case openExternal
 }
 
-public enum URLPolicy {
+enum URLPolicy {
     // Games are served from the Fanzone origin or from the Fastory stories domains; /s/ links on
     // either open the game sheet. Any other stories-domain path stays external.
     private static let storiesHosts: Set<String> = ["story.tl", "staging.story.tl"]
 
-    public static func decide(url: URL, baseURL: URL) -> NavigationDecision {
+    static func decide(url: URL, baseURL: URL) -> NavigationDecision {
         guard isWebScheme(url) else {
             return .openExternal
         }

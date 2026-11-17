@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Declaring any resource public makes every other one private to the host app. The six strings
+     are public because a host may redefine them, for every language it ships; the theme and ids are
+     implementation, and a library publishes nothing it did not mean to. -->
+<resources>
+    <public type="string" name="fastory_sdk_error_message" />
+    <public type="string" name="fastory_sdk_error_no_connection" />
+    <public type="string" name="fastory_sdk_retry" />
+    <public type="string" name="fastory_sdk_close" />
+    <public type="string" name="fastory_sdk_loading" />
+    <public type="string" name="fastory_sdk_loaded" />
+</resources>

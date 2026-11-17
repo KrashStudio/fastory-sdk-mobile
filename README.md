@@ -1,21 +1,18 @@
 # Fastory Mobile SDK — Integration Guide
 
 Audience: host app engineering teams integrating the SDK.
-Scope: Fastory Mobile SDK v0.5.0 (ultra-light, WebView-based).
+Scope: Fastory Mobile SDK v0.5.1 (ultra-light, WebView-based).
 
-Two ways to consume it, same behavior and same version:
+Three ways to consume it, same behavior and same version:
 
 | Channel | For | How |
 |---|---|---|
 | **Flutter plugin** | Flutter apps | git dependency on this repo, `path: flutter/fastory_sdk` |
 | **Swift package** | Native iOS apps | Swift Package Manager, this repo's root package |
+| **Android library** | Native Android apps | Gradle dependency on `io.fastory:fastory-sdk`, from Maven Central |
 
-A native Android app has no channel of its own yet, and no supported path in the meantime: the Kotlin
-core ships only inside the Flutter plugin, for Flutter apps, and embedding it any other way is
-neither documented nor tested here. A native Kotlin artifact on Maven Central follows, with no date
-attached — if a native Android integration is what blocks you, ask us rather than planning around a
-version number (see *Known limitations*). The real logic is native in both channels — the Flutter
-plugin is a thin bridge over the same Swift and Kotlin cores.
+The real logic is native in every channel — the Flutter plugin is a thin bridge over the same Swift
+and Kotlin cores, and the Android library is the Kotlin core itself.
 
 ## Overview
 
@@ -24,7 +21,7 @@ The SDK opens the Fastory games hub of your Fanzone inside your app, in five ste
 1. Your app calls `Fastory.openGames()` (e.g. from your footer tab).
 2. The SDK presents a full-screen native view containing **WebView A**, which loads the hub — a hidden tab of your Fanzone: `https://fanzone.me/your-fanzone?tab=games&chrome=0&consent=0`.
 3. The user taps a game image. The hub triggers `window.open(url)`; the SDK intercepts the navigation natively.
-4. The SDK presents a native bottom sheet ("toaster") containing **WebView B**, which loads the game: `https://fanzone.me/s/{slug}?embed=1&utm_source=sdk&consent=0`.
+4. The SDK presents a native bottom sheet ("toaster") containing **WebView B**, which loads the game: `https://fanzone.me/s/{slug}?embed=1&utm_source=sdk&consent=0`. `utm_source=sdk` replaces the `utm_source` the hub's link carries, so every game opened from the hub is counted as SDK traffic; the link's other parameters stay on it.
 5. Any navigation to an origin other than `fanzone.me` opens in the system browser — except a `/s/` link on a Fastory stories domain, which is a game and opens in the sheet like step 4 (see *URL interception* below). Closing the sheet returns to the hub; closing the hub returns to your app.
 
 ```
@@ -59,6 +56,9 @@ The SDK opens the Fastory games hub of your Fanzone inside your app, in five ste
 - iOS 15.0+ (deployment target)
 - Android minSdk 24
 - Flutter >= 3.10.0 (Dart >= 3.0) — Flutter channel only
+- Android Gradle Plugin 8.2+, Kotlin 1.9+, a JDK 17 toolchain and `compileSdk` 34+ — native Android
+  channel only; the versions the library is built and tested with, and the `compileSdk` its AndroidX
+  dependencies require of the app that consumes them
 
 ## Install
 
@@ -72,7 +72,7 @@ dependencies:
     git:
       url: https://github.com/KrashStudio/fastory-sdk-mobile
       path: flutter/fastory_sdk
-      ref: sdk-v0.5.0
+      ref: sdk-v0.5.1
 ```
 
 Then:
@@ -87,27 +87,59 @@ In Xcode: *File > Add Package Dependencies…*, enter `https://github.com/KrashS
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/KrashStudio/fastory-sdk-mobile.git", .upToNextMinor(from: "0.5.0"))
+    .package(url: "https://github.com/KrashStudio/fastory-sdk-mobile.git", .upToNextMinor(from: "0.5.1"))
 ]
 ```
 
-**Pick the minor rule, not *Up to Next Major Version*, for the whole 0.x line.** SwiftPM's `from:` means *at least this version, and anything below 1.0.0* — it gives a leading zero no special meaning, unlike Cargo's or npm's caret, so it is a range across every future minor. This SDK ships source breaks in minors while it is on 0.x: *Upgrading from 0.3.0* below lists three that arrived in 0.4.0, one of which deletes a configuration field your code passes. *Up to Next Major Version* accepts all of that without asking you. The minor rule accepts patch releases — bug fixes, no API change — and stops there.
+**Pick the minor rule, not *Up to Next Major Version*, for the whole 0.x line.** SwiftPM's `from:` means *at least this version, and anything below 1.0.0* — it gives a leading zero no special meaning, unlike Cargo's or npm's caret, so it is a range across every future minor. This SDK ships source breaks in minors while it is on 0.x: *Upgrading from 0.3.0* below lists three that arrived in 0.4.0, one of which deletes a configuration field your code passes. *Up to Next Major Version* accepts all of that without asking you. The minor rule accepts patch releases — fixes, and no change to the API the SPEC declares — and stops there. *Upgrading from 0.5.0* below lists the one exception a patch has made: names that were public without ever being declared.
 
-The two channels are not identical on this point, and it is worth knowing which you have: the Flutter snippet above pins one immutable tag, so it never moves until you edit it, while the rule here still takes a patch release on its own. If you want the Swift channel to behave exactly like the Flutter one, use SwiftPM's `exact:` requirement with the same version, or *Exact Version* in Xcode.
+The Flutter and Swift channels are not identical on this point, and it is worth knowing which you have: the Flutter snippet above pins one immutable tag, so it never moves until you edit it, while the rule here still takes a patch release on its own. If you want the Swift channel to behave exactly like the Flutter one, use SwiftPM's `exact:` requirement with the same version, or *Exact Version* in Xcode.
 
 Each release carries two tags on the same commit: the bare version, which is the only form SwiftPM resolves, and `sdk-v<version>`, the name the Flutter channel uses.
 
-No extra native setup is required beyond the minimum OS versions above (iOS deployment target 15.0 in your Podfile/Xcode project, `minSdkVersion 24` in your Android Gradle config).
+### Native Android (Maven Central)
 
-## Upgrading from 0.4.x: three source breaks
+Add the library to your app module's `build.gradle.kts`, pinned to an exact version:
 
-0.5.0 adds `openMembership()` and its own pair of events. No name you already call moves, nothing changes signature and nothing is removed — but two public types gain cases, and an exhaustive `switch` over either stops compiling until you add them.
+```kotlin
+dependencies {
+    implementation("io.fastory:fastory-sdk:0.5.1")
+}
+```
+
+It resolves from `mavenCentral()`, which a new Android project already lists among its repositories. Pin the exact version, as the Flutter channel pins its tag: on the 0.x line a minor release may break source, and Gradle moves an exact version only when you edit it. Every release publishes the library at the same version as the two tags above.
+
+The library brings its own dependencies (see *What does the SDK add to app size?*) and its own R8 keep rule. Beyond the prerequisites above, your app declares one thing, the `appAuthRedirectScheme` manifest placeholder, without which the manifest merge fails — see *Setting up `fanId`*.
+
+A Flutter app already embeds this library through the plugin: add one channel or the other, never both, or the build fails on duplicate classes.
+
+Beyond the minimum OS versions above (iOS deployment target 15.0 in your Podfile/Xcode project, `minSdkVersion 24` in your Android Gradle config), one native step is required, on Android: the `appAuthRedirectScheme` manifest placeholder, set to your application id. **Your Android build fails at manifest merge without it**, whether or not you ever call `fanId` — *Setting up `fanId`* below has the line, and the URL scheme iOS needs once you adopt that mode.
+
+## Upgrading from 0.5.0: names that were never part of the API
+
+Every name the SDK declares keeps working, unchanged. What 0.5.1 removes is a set of names the native code made public without the SPEC ever declaring them — internal machinery an integrator had no reason to call, and which would otherwise have become a contract with the Android core's first publication on Maven Central, in this same release.
+
+**Swift** — `URLPolicy` and `NavigationDecision`, the key-exchange error type `FastoryBootstrapError` (a refused key always reached you as `FastoryLoadFailure.code` or `FastoryIdentifyError.rejected(code:)`, and still does), `FastoryEnvironment.baseURL`, the two publishable-key prefix constants, the static `FastoryConfig.validate(fanzoneSlug:hubTabSlug:)` (call `validate()` on the configuration instead) and `FastoryIdentity.mode`.
+
+**Kotlin** — `UrlPolicy` and its decision enum `NavigationDecision`, the bridge object `FastoryBridge`, the hub `Activity` `FastoryHubActivity`, the game sheet `GameBottomSheet`, `FastoryConfig.baseUrl`, its URL builders (`hubUrl`, `membershipUrl`, `staticHubUrl`) and its publishable-key prefix constants, and the `wireName` of `FastorySurface` and `FastoryLoadFailureReason`. The library's Android theme and ids become private too; the six strings you may redefine (see *Offline*) stay public.
+
+If your code names none of these, there is nothing to do. A Flutter app is concerned only if its own Swift or Kotlin code imports the plugin's native classes, which the plugin never asked of it. If you used one, write the value yourself: the surface and failure-reason names are the lowercase strings of SPEC § 5.3 and § 9.1, the prefixes are `fpk_live_` and `fpk_test_`, and the base URLs are the table in SPEC § 3.1.
+
+## Upgrading from 0.4.x: five source breaks and one Android build line
+
+0.5.0 adds `openMembership()` with its own pair of events, and `FastoryIdentityRevoked`. No method you already call moves or changes signature, and nothing is removed — but two public types gain cases, four in all, and an exhaustive `switch` over either stops compiling until you add them; and on Swift one error case changes the type of the value it carries. Five source breaks in all, though no host meets every one: a Flutter host meets the four new cases, a Swift host `FastorySurface` and that error case, a Kotlin host `FastorySurface` alone. On Android your build also needs one line it did not need before.
 
 **1. `FastorySurface` gains `membership`, on all three channels.** Read this one first: it is a plain public enum on Swift and Kotlin as well as in Dart, so a `switch` or a `when` used as an expression that already covers `hub` and `game` stops compiling there too — this minor is *not* additive for a native host. Add the case, or an `else` / `default:` branch. You meet this type on one event only, `FastorySurfaceLoadFailed`, which now also reports a membership panel that did not load; a host that never inspects a failed load has nothing to change.
 
 **2. Dart: `FastoryEvent` gains `FastoryMembershipOpened` and `FastoryMembershipClosed`.** Same `sealed` rule as 0.4.0, two cases this time. The two native listeners stay additive — each new callback has a no-op default, so an existing delegate or listener keeps compiling.
 
-**3. Nothing else.** `openMembership()` is a call you add when you want the panel, not a migration: it needs the publishable key you already configure with, and nothing else in 0.5.0 asks anything of you. If you add it, consider adding `membership` to `prewarm` too, so its first opening is as instant as the hub's — the SDK prepares the hub alone unless told otherwise (see *Preparing the panel ahead of time*).
+**3. Dart: `FastoryEvent` also gains `FastoryIdentityRevoked`.** It tells you that a fan you identified lapsed to anonymous, and why (see *Identity*). It is a third new case of the same `sealed` type, so an exhaustive `switch` needs it as well. The native listeners stay additive here too: the new callback has a no-op default.
+
+**4. Swift: `FastoryIdentifyError.rejected` now carries `code: String?`.** It carried a `String`: the API's code is now `nil` when a refusal named none. A `case .rejected(let code)` that hands `code` on as a `String` stops compiling until you unwrap it. Kotlin's `FastoryIdentifyException` gains it as `detailsCode`, a nullable property with a default, and the Flutter channel reads it from `PlatformException.details`, so neither is affected.
+
+**And one build line, on Android: declare the `appAuthRedirectScheme` manifest placeholder.** 0.5.0 brings AppAuth, the OpenID library the `fanId` login runs through, and its manifest reads that placeholder: set it to your application id, as *Setting up `fanId`* shows. Without it your build fails at manifest merge, whether or not you ever call `fanId`. It is a build line, not a source break; iOS needs nothing until you adopt `fanId`.
+
+**Nothing else asks anything of you.** `openMembership()` is a call you add when you want the panel, not a migration: it needs the publishable key you already configure with. If you add it, consider adding `membership` to `prewarm` too, so its first opening is as instant as the hub's — the SDK prepares the hub alone unless told otherwise (see *Preparing the panel ahead of time*).
 
 ## Upgrading from 0.3.0: three source breaks
 
@@ -164,9 +196,10 @@ void main() {
 onTap: () => Fastory.openGames(),
 ```
 
-Both snippets on this page show a staging setup, because that is where most teams do their first
-integration. Production is the same two lines with an `fpk_live_…` key and
-`FastoryEnvironment.production`, which is also the default when you pass no environment at all.
+The snippets on this page show a staging setup, because that is where most teams do their first
+integration. Production is the same two lines with an `fpk_live_…` key and the production
+environment (`FastoryEnvironment.production`, `.production` in Swift, `FastoryEnvironment.PRODUCTION`
+in Kotlin), which is also the default when you pass no environment at all.
 
 ### Native iOS
 
@@ -194,6 +227,25 @@ selection stays put. To avoid the line, read that state in the tabs' content rat
 view that owns the `TabView`, or in any view above it; deferring the call by one runloop tick does
 not remove it.
 
+### Native Android
+
+Configure in your `Application`, then open from any `Context`:
+
+```kotlin
+import com.fastory.sdk.Fastory
+import com.fastory.sdk.FastoryConfig
+import com.fastory.sdk.FastoryEnvironment
+import com.fastory.sdk.FastoryTheme
+
+// In your Application.onCreate():
+Fastory.configure(this, FastoryConfig(publishableKey = "fpk_test_...", environment = FastoryEnvironment.STAGING, theme = FastoryTheme.DARK))
+
+// From your games tab or button:
+Fastory.openGames(context)
+```
+
+The Kotlin API takes a `Context` — `configure(context, config)` keeps the application one, `openGames(context)` presents from yours — and delivers lifecycle events through a `FastoryEventsListener`, the optional last argument of `configure`. The rest of this guide shows the Dart and Swift forms; `SPEC.md` § 2.3 gives every Kotlin signature, the listener's callbacks included.
+
 ## Configuration reference
 
 `FastoryConfig`:
@@ -206,27 +258,27 @@ not remove it.
 | `environment` | `FastoryEnvironment` | no (default `production`) | `production` (`https://fanzone.me`), `staging` (`https://staging.fanzone.me`), or `development` (uses `developmentBaseUrl`) |
 | `hubTabSlug` | `String` | no (default `"games"`) | The hidden hub tab slug |
 | `locale` | `String?` | no | Forwarded to the hub and game URLs when provided, and the error view's fallback language (see *Offline*); unset, the web Fanzone resolves its own locale |
-| `developmentBaseUrl` | `String?` | only when `environment == development` | Custom `https` base URL, for testing against a Fanzone you serve yourself. Flutter only: `configure` refuses a `development` configuration without it. On the Swift channel the field does not exist — `FastoryEnvironment.development(baseURL:)` carries the URL, so a development environment without one cannot be written |
+| `developmentBaseUrl` | `String?` | only when `environment == development` | Custom `https` base URL, for testing against a Fanzone you serve yourself. Flutter and Android: a `development` configuration without it is refused — by `configure` on Flutter, by `FastoryConfig`'s constructor on Android. On the Swift channel the field does not exist — `FastoryEnvironment.development(baseURL:)` carries the URL, so a development environment without one cannot be written |
 | `prewarm` | `Set<FastorySurface>` | no (default: the hub alone) | The surfaces prepared before their first opening, so that opening shows them already rendered (since 0.5.0). Add `membership` if your app opens the membership panel — see *Preparing the panel ahead of time*. An empty set prepares nothing |
-| `handlesLoginRequests` | `bool` | no (default `false`) | Declares that your app listens for `fastory:login-requested` and signs the fan in itself (since 0.5.0). Set it and the sign-in entries of the hub, the panel and the games ask your app; leave it `false` and the pages show no sign-in entry at all — see *Signing the fan in from a page* |
+| `handlesLoginRequests` | `bool` | no (default `false`) | Declares that your app listens for `fastory:login-requested` and `fastory:logout-requested`, signs the fan in itself, and signs them out itself once they confirm (the sign-in request since 0.5.0). Set it and the sign-in and sign-out entries of the hub, the panel and the games ask your app; leave it `false` and the pages show neither — see *Signing the fan in and out from a page* |
 
 Public methods:
 
 | Method | Description |
 |---|---|
-| `Fastory.configure(FastoryConfig)` | Sets the configuration. Call once before anything else. |
+| `Fastory.configure(FastoryConfig)` | Sets the configuration. Call once before anything else — except `setHostTokenProvider`, which an app using `FastoryHostToken` registers first. |
 | `Fastory.openGames()` | Presents the full-screen hub view. Idempotent: a call while the hub is up does nothing. |
 | `Fastory.openMembership({String? sequenceId})` | Presents the full-screen membership panel (since 0.5.0). Needs a publishable key. One surface at a time: a call while the hub or the panel is up does nothing. `sequenceId` opens the panel on one of the club's sequences; call it with no argument for the default screen — see *Opening the panel on a sequence*. |
 | `Fastory.close()` | Programmatically dismisses whichever surface is presented (and any open game sheet). |
 | `Fastory.identify(FastoryIdentity)` | Binds your user to a Fastory fan. See *Identity* below. |
-| `Fastory.logout()` | Signs the fan out of Fastory. Never touches your own session. |
+| `Fastory.logout()` | Signs the fan out of Fastory and erases what the SDK stores for them. Never touches your own session. |
 | `Fastory.setBridgeReply(type, payload)` | Declares what the SDK answers when an embedded surface asks. See *Answering the web content* below. |
 | `Fastory.setHostTokenProvider(provider)` | Registers the closure the SDK calls back for a fresh host token when a delegated session needs renewing (since 0.5.0); `null` clears it. See *Identity* below. |
 
 **When `configure()` refuses your configuration.** A configuration is refused locally, before any
 network call, when it supplies neither identifier or both, a blank `fanzoneSlug` or `hubTabSlug`, a
 malformed `publishableKey`, or a key minted for another environment (`fpk_live_…` outside production,
-or `fpk_test_…` in it). **The two channels do not react the same way, and the difference matters most
+or `fpk_test_…` in it). **The three channels do not react the same way, and the difference matters most
 on a debug build.**
 
 *On Flutter*, `Fastory.configure()` throws `ArgumentError` synchronously, before it reaches the
@@ -240,22 +292,30 @@ On a **release** build it returns normally and nothing is stored. If you want to
 what a bad configuration does, call `try config.validate()` first: it is public, it throws
 `FastoryConfigError`, it applies the same rules, and it calls nothing. `FastoryConfigError` is a
 `LocalizedError`, so `error.localizedDescription` names the rule that was broken — the same sentence
-you get by interpolating the error.
+you get by interpolating the error. Branch on its six cases rather than on that sentence:
+`missingIdentifier` (neither identifier), `conflictingIdentifier` (both), `blankFanzoneSlug`,
+`blankHubTabSlug`, `malformedPublishableKey` and `publishableKeyEnvironmentMismatch`.
 
-**A refused `configure()` changes nothing — including nothing you had already set.** On either
+*On native Android*, the refusal comes one step earlier: `FastoryConfig` checks its own fields when
+it is constructed, so building the configuration throws `IllegalArgumentException` and
+`Fastory.configure()` is never reached — on a **debug** build and a **release** build alike. If you
+build the configuration from values you do not control, construct it inside a `try`. The message names
+the rule that was broken, never your key; unlike Flutter's, it does not name the environment expected.
+
+**A refused `configure()` changes nothing — including nothing you had already set.** On every
 channel the configuration already in force keeps applying. So the "nothing is stored" above is the
 whole story only for your *first* call: refuse that one and you are simply unconfigured, and
 `openGames()` says so. Refuse a *later* one — an environment switch, a re-`configure()` from a
 failure handler — and the SDK keeps running on the previous configuration, and `openGames()` opens
 **that** fanzone rather than reporting a problem. On a debug iOS build you will not get that far,
-because the assertion fires first; on release, and on Flutter if you swallow the exception, a refused
+because the assertion fires first; on release, and on Flutter or Android if you swallow the exception, a refused
 switch looks exactly like a switch that did not happen.
 
 **An environment switch is the edit that hits this most easily.** Moving between staging and
 production is a two-line change — the key and the environment — and changing one line and not the
 other is exactly the refusal above, because a key is minted for one environment and `configure()`
 checks the pair before it calls anything. On iOS, every debug build of your app then dies at launch;
-on Flutter you get an exception you can catch. Change both lines together, and if a debug build
+on Flutter and Android you get an exception you can catch. Change both lines together, and if a debug build
 starts dying at launch right after an environment switch, this is why.
 
 **Threading (since 0.4.0).** Every method above may be called from any thread except `openGames()`,
@@ -274,6 +334,14 @@ screen it does nothing at all — no second hub, and no error to catch. You get 
 `hubClosed` per hub your fan actually sees, so a tab-bar entry a fan double-taps needs no debouncing
 of its own. On Android this used to stack two hub `Activity` instances, which also made `close()`
 return the fan to the hub underneath instead of to your app. `SPEC.md` § 2.1 is the normative rule.
+
+**Reopening while a surface leaves (since 0.5.1).** `close()` returns before the surface has left the
+screen. An `openGames()` or `openMembership()` you call in that window — right after `close()`, from
+the closing event, or from the completion of `identify` with `fanId` while the sign-in sheet is still
+going away — opens the surface once the other one has gone: the closing event first, then the opening
+event, and one surface on screen, on iOS and Android alike. Only the first call made during the
+departure counts, and a `close()` made after it cancels it. Before 0.5.1, iOS dropped that call
+without a word. `SPEC.md` § 2.1 is the normative rule.
 
 **Startup cost (since 0.4.0).** `configure()` no longer builds the hub WebView while your app is
 drawing its first screen — it waits for the first frame, and warms nothing at all on a background
@@ -377,10 +445,20 @@ you install nothing. What the platform needs from your app is the redirect back 
 its scheme is **your application id** (bundle identifier on iOS, package name on Android), always —
 the SDK derives it, and the server refuses a code minted for any other app.
 
-**Android** — declare the placeholder in your app's `build.gradle` (the build fails at manifest
+**Android** — declare the placeholder in your app module's Gradle build (the build fails at manifest
 merge without it once the SDK is present, even if you never call `fanId`):
 
+```kotlin
+// build.gradle.kts
+android {
+  defaultConfig {
+    manifestPlaceholders["appAuthRedirectScheme"] = "com.example.yourapp" // your applicationId
+  }
+}
+```
+
 ```groovy
+// build.gradle
 android {
   defaultConfig {
     manifestPlaceholders += [appAuthRedirectScheme: applicationId]
@@ -423,43 +501,129 @@ What is worth knowing before you wire it up:
 - **A resolved fan carries an id and follows the user across surfaces.** `fan.fanId` is a stable
   identifier for the account; asking for the same user again is idempotent, and asking for a different
   one replaces the session with no trace of the previous fan.
-- **The SDK keeps a delegated fan signed in — give it a way to get a fresh token (since 0.5.0).**
+- **The SDK keeps a `hostToken` fan signed in — give it a way to get a fresh token (since 0.5.0).**
   Register a provider once and the SDK renews the session before it expires, without a visible break:
 
   ```dart
   Fastory.setHostTokenProvider(() async => await yourBackend.freshJwt()); // return null when you cannot
   ```
 
-  It refreshes the session server-side while it is still valid (asking no one), and only calls your
-  provider when that refresh is refused. The call is non-blocking and the SDK never inspects your
-  token. Pass `null` to clear it. With no provider, a session simply lapses when it expires.
+  It refreshes the session server-side while it is still valid (asking no one), and calls your
+  provider when that refresh fails or there is no session to refresh — once the session has expired,
+  or at launch for a fan restored without a session (below). The call is non-blocking and the SDK never inspects your
+  token. Pass `null` to clear it. With no provider, a session simply lapses when it expires. A fan
+  who signed in with `FastoryFanId()` needs no provider, and the SDK never calls yours for them: you
+  did not sign them in. The SDK keeps that fan signed in on its own — see *What the SDK stores, and
+  how a fan's session ends* below.
 - **A session that cannot be renewed lapses to anonymous, and tells you why.** Listen for
   `FastoryIdentityRevoked` on the event stream: `reason == FastoryRevocationReason.expired` when
   nothing could renew it, `rejected` (with the server's `code`) when a renewal was refused. Re-`identify`
   with a fresh token, or let the fan continue anonymously — you are never left with a blank panel.
-  `logout()` and a failed `identify()` never emit it.
-- **A verified fan survives an app restart.** The SDK stores the identity (never the token) and
-  rehydrates it on `configure`, so the panel opens already identified rather than re-verifying from
-  scratch; the session behind it is re-established in the background.
+  `logout()` and a failed `identify()` never emit it. For a `fanId` fan it can arrive shortly after
+  launch, and `identify(FastoryFanId())` is how they sign in again.
+- **A verified fan survives an app restart, and their session can come back in the background.** The
+  SDK stores the identity and restores it at `configure`, with no `identityResolved` — it restores,
+  it does not resolve. The session behind it is not stored, so the hub, the panel and the games show
+  the fan signed in once the SDK has a new one. A `fanId` fan's is renewed at launch, and the hub's
+  opening and a page asking for the fan wait for it, 3 seconds at most. A `hostToken` fan's comes
+  from your provider, which the SDK asks when `configure` runs — on Android also at each opening of
+  the hub or the panel while the fan has no session — and nothing waits for it: **register the
+  provider before you call `configure`**. A hub or a panel that loads before the session is back
+  shows the fan anonymous: a game picks the session up as soon as it is back, and the hub and the
+  panel at their next opening, but a panel already on screen is not reloaded for it. Without a provider a `hostToken` fan's session does not come
+  back on its own: the surfaces show the fan anonymous, with no event, until you call `identify`
+  again — or, if you register one later, until the SDK next asks it: at your next `configure`, and on
+  Android at the next opening. Beside the identity the SDK stores **no token for a `hostToken` fan, and
+  a refresh token for a `fanId` fan** — see *What the SDK stores, and how a fan's session ends* below.
 - **Failures are typed and leave a clean state.** `identify` rejects with a `PlatformException` whose
-  `code` you branch on — `identify_mode_unavailable` for an identified mode on the slug path,
-  `not_configured` if `configure` has not run, `invalid_host_token` for a blank JWT,
-  `login_cancelled` for a dismissed browser, and `identify_rejected` (with the API's own code in
-  `details['code']`) when the assertion or the login code is refused. A refusal or a network failure
-  leaves the SDK anonymous; it never leaves it half-identified.
+  `code` you branch on. Three are refused before anything is attempted, and leave the fan you had
+  exactly as they were, signed in or anonymous: `identify_mode_unavailable` for an identified mode on
+  the slug path, `not_configured` if `configure` has not run, and `invalid_host_token` for a blank
+  JWT. Three leave the SDK anonymous: `login_cancelled` for a dismissed browser,
+  `identify_rejected` (with the API's own code in `details['code']`) when the assertion or the login
+  code is refused — a malformed or expired JWT included — and `identify_network_error`. None leaves it
+  half-identified.
 - **`logout()` is Fastory-only, in both directions.** It clears the Fastory session on the Fastory
-  domains and nothing else; and signing your user out of your own app does not sign them out of
-  Fastory, so call `logout()` when that happens.
+  domains, and what the SDK stores for the fan, and nothing else; and signing your user out of your
+  own app does not sign them out of Fastory, so call `logout()` when that happens.
 - An identity change drops the warm hub and the preloaded games, since they were rendered for the
-  previous fan. The next `openGames()` after a `logout()` is a cold open.
-- **A hub on screen follows the signed-in fan (since 0.5.0).** When an `identify` signs in a fan, or
-  a different one, and when `logout()` or a lapsed session drops one, an open hub reloads — signed in
-  as the new fan, or anonymous. Identifying the same fan again, a background renewal, and
+  previous fan. After a `logout()`, the next `openGames()` is a cold open, with one exception: a
+  signed-in fan's hub still on screen once their data has been cleared reloads signed out, and once
+  that page has loaded, it is kept when your fan closes it, like any hub, so the next `openGames()`
+  shows it at once. Either way, nothing of the previous fan comes back.
+- **The hub and the membership panel show the signed-in fan (the hub since 0.5.0).** A panel opened while a
+  fan is identified shows that fan signed in, as the hub does.
+- **A hub or a panel on screen follows the signed-in fan (the hub since 0.5.0).** When an `identify` signs in
+  a fan, or a different one, and when `logout()` or a lapsed session drops one, an open hub or panel
+  reloads — signed in as the new fan, or anonymous. A panel reloads on the screen it was opened on,
+  your `sequenceId` included. Identifying the same fan again, a background renewal, and
   `identify(FastoryAnonymous())` while no fan is signed in reload nothing. The reload does not keep the
-  fan's scroll position, and it emits no `hubOpened` or `hubClosed`. Games learn of the change without
-  reloading.
+  fan's scroll position, and it emits no opening or closing event — no `hubOpened` or `hubClosed`, no
+  `membershipOpened` or `membershipClosed`. Games learn of the change without reloading.
 - **A fan who taps a sign-in entry inside the hub, the panel or a game is asking your app to sign
-  them in** — never a form in the page. See *Signing the fan in from a page* below.
+  them in** — never a form in the page. A sign-out entry asks your app to sign them out, and the page
+  ends no session on its own. See *Signing the fan in and out from a page* below.
+
+### What the SDK stores, and how a fan's session ends
+
+A fan you identified stays identified from one launch of your app to the next. What the SDK keeps on
+the device for that depends on the mode. If you declare the data your app stores — an App Store
+privacy label, a Google Play data safety form — this is the SDK's own part of it, beside what the
+pages store on their own sites (see *Sessions and stored data*):
+
+| Mode | What the SDK stores | What brings the session back at the next launch |
+|---|---|---|
+| `FastoryAnonymous()` | nothing | nothing to bring back: each page keeps its own visitor |
+| `FastoryHostToken(jwt)` | the identity — its mode and the fan's `fanId`, an account identifier, not a credential — and **no token** | your provider (`setHostTokenProvider`), asked in the background when `configure` runs — and on Android at each opening while the fan has no session — so register it before `configure`. With none, nothing until you call `identify` again |
+| `FastoryFanId()` | the identity, and the **refresh token** the fan's login returned | the SDK itself, at launch, with no browser and no call to your code |
+
+The identity is kept in your app's ordinary preferences (`UserDefaults` on iOS, `SharedPreferences`
+on Android), scoped to the environment and the publishable key it was resolved under. The refresh
+token is a credential, so it is kept apart, and it never reaches a page — not in a URL, a script, a
+bridge answer or a log:
+
+- **iOS** — in the Keychain, as a generic password under a service of the SDK's own, readable once
+  the device has been unlocked after a restart, on this device only, and never synchronised to
+  iCloud Keychain. **The SDK sets no access group, so the item lands in your app's default access
+  group**: if your app shares that group with other apps of your team, they can read the item too.
+  The item is scoped to your app's bundle identifier, so the SDK in another app of that group never
+  erases or revokes it. The SDK only ever reads or erases its own items, never a whole class of them.
+- **Android** — in a file of your app's no-backup files directory, encrypted with an AES-GCM key
+  held in the Android Keystore. It is excluded from backups, and the key never leaves the Keystore.
+
+**A `fanId` fan stays signed in across launches.** At launch the SDK presents the stored refresh token
+for a new session, so the hub, the membership panel and the games open signed in as that fan from
+the first screen. A page that asks for the fan while that renewal is in flight waits for it, and so
+does the hub's opening, 3 seconds at most. Each renewal replaces the stored token. A fan who opens
+your app at least once every 90 days stays signed in for a year from their login, then signs in
+again in the system browser. A launch with no network, or an answer from our servers that reached no
+verdict, keeps the fan signed in, and the SDK tries again later. A launch after a restart, before
+the device's first unlock, decides nothing either: the SDK waits for the unlock, and the fan is still
+signed in then.
+
+**Updating from 0.5.0 signs a `fanId` fan out once.** 0.5.0 kept that fan's identity across launches
+but no refresh token, so the first launch of your app on this version finds the identity with nothing
+to renew it: the fan is anonymous, with no event, and signs in again in the system browser. From then
+on they stay signed in across launches. A `hostToken` fan is unaffected.
+
+**How a `fanId` fan's session ends:**
+
+| What happens | On the device | On our servers | Event |
+|---|---|---|---|
+| You call `logout()` | Everything the SDK holds for the fan is erased at once, the refresh token included | The session is revoked, best effort: `logout()` never waits for it and never fails. Offline, the token it could not revoke is already gone from the device, and expires on its own | None — you asked |
+| You identify a different fan, the same fan again with `FastoryFanId()` or `FastoryHostToken(jwt)`, or `FastoryAnonymous()` | The previous token is replaced or erased | The previous session is revoked, best effort | `identityResolved`, as for any resolution |
+| The fan's sign-in ages out — 90 days without opening your app, or a year since the login | Erased; the fan is anonymous | — | `FastoryIdentityRevoked`, `expired`. A month or more past that lifetime our servers may no longer know the token, and the reason is then `rejected`, with `refresh_token_invalid` |
+| A renewal is refused — your publishable key revoked or deleted, your application identifier removed from it, or the same token presented twice, which our servers treat as a copy and end for every holder | Erased; the fan is anonymous | The session has already ended | `FastoryIdentityRevoked`, `rejected`, with the API's `code` when it named one — for instance `refresh_token_reused`, `refresh_token_invalid` or `sdk_key_revoked` |
+| The app is reinstalled, or restored onto another device — on Android, restored from any backup | Nothing usable is found: a token left without its identity beside it is erased | Revoked, best effort | None: the fan is anonymous and signs in again |
+| On Android, the platform invalidates the Keystore key | The token no longer decrypts | — | None, as above |
+| Your app configures another environment or publishable key — a regenerated key shipped in a new version of your app included | The token stored under the previous configuration is erased | Revoked, best effort | None, as above |
+
+`FastoryIdentityRevoked` usually arrives shortly after a launch, since the launch renewal is where the
+SDK learns that a session ended; whatever its reason, `identify(FastoryFanId())` signs the fan in
+again. The SDK never signs the fan out for a failure that reached no verdict.
+
+A fan can be signed in on several devices. Signing in on one does not sign the others out, and
+neither does `logout()` on one.
 
 ## Events
 
@@ -477,7 +641,7 @@ The SDK exposes a broadcast stream of lifecycle events:
 | `bridgeMessage` | `{type, payload}` | A Fastory web surface posted a message through the bridge (see below) |
 | `identityResolved` | `{mode, fanId}` | `identify` resolved an identity — once per resolution, before any hub or game opening carrying it. `fanId` is null when anonymous |
 | `surfaceLoadFailed` | `{surface, reason, code, statusCode}` | A hub, a game or (since 0.5.0) the membership panel did not load (see below) |
-| `identityRevoked` | `{reason, code}` | The SDK dropped a delegated fan on its own — the session expired unrenewably (`expired`) or a renewal was refused (`rejected`, with the server's `code`). The fan is now anonymous; `logout()` never emits it |
+| `identityRevoked` | `{reason, code}` | The SDK dropped an identified fan — `hostToken` or `fanId` — on its own: the session expired unrenewably (`expired`) or a renewal was refused (`rejected`, with the server's `code`). For a `fanId` fan it can arrive shortly after launch. The fan is now anonymous; `logout()` never emits it |
 
 Events are Dart sealed classes — switch over the event instance:
 
@@ -620,7 +784,7 @@ Fastory.events.listen((FastoryEvent event) {
 
 What to know before you build on it:
 
-- **Two types exist today.**
+- **Three types exist today.**
   - `fastory:ready` — the embedded Fastory surface has rendered. It is a liveness signal, not a
     lifecycle event: `hubOpened` / `gameOpened` remain the source of truth for what is on screen, and
     you must not *require* `fastory:ready` to arrive, because the web side may be deployed at a
@@ -629,7 +793,10 @@ What to know before you build on it:
     splash screen on it can uncover a surface that is not finished drawing.
   - `fastory:login-requested` (since 0.5.0) — a fan tapped a sign-in entry on the hub, the membership
     panel or a game, and asks your app to sign them in. Sent only if you declared
-    `handlesLoginRequests`; see *Signing the fan in from a page* below.
+    `handlesLoginRequests`; see *Signing the fan in and out from a page* below.
+  - `fastory:logout-requested` — a fan tapped a sign-out entry on the same pages, and
+    asks your app to sign them out. Sent under the same declaration. Ask the fan to confirm before
+    you call `logout()` — never sign them out on the message alone; see the same section.
 - **These messages travel web → app only.** They are notifications, and nothing you do makes one
   arrive. The other direction is *answering* — see the next section.
 - **Unknown message types are dropped.** That is what lets us ship a new message type later without
@@ -640,34 +807,44 @@ What to know before you build on it:
 
 The normative envelope, the type registry and the JavaScript entry points are in `SPEC.md` § 13.
 
-### Signing the fan in from a page (since 0.5.0)
+### Signing the fan in and out from a page (signing in since 0.5.0)
 
 Your fanzone's pages have sign-in entries of their own: a *Log in* button, a contest reserved to
-signed-in fans, the end of a game offering to save the score. Inside your app none of them ever opens
-a login form — signing the fan in is your app's job, through `identify`. What they do instead depends
-on one configuration field:
+signed-in fans, the end of a game offering to save the score. A signed-in fan also finds sign-out
+entries: a *Log out* button, a sign-out link in a message. Inside your app none of them ever opens a
+login form, and none signs the fan out of the page on its own — the fan's session is your app's job,
+through `identify` and `logout()`. What they do instead depends on one configuration field:
 
-- **You set `handlesLoginRequests: true`.** The entries stay. A tap sends your app
-  `fastory:login-requested`; you sign the fan in your own way, then call `identify`. The hub on
-  screen then reloads with the fan signed in.
-- **You leave it `false`, the default.** The pages show no sign-in entry at all: an entry whose only
-  job is to sign in is hidden, and content that needs a signed-in fan reads *Sign in from the app to
-  continue*, with no button. Your fan never meets a button that does nothing.
+- **You set `handlesLoginRequests: true`.** The entries stay. A tap on a sign-in entry sends your app
+  `fastory:login-requested`; you sign the fan in your own way, then call `identify`. The hub or the
+  panel on screen then reloads with the fan signed in. A tap on a sign-out entry sends your app
+  `fastory:logout-requested`, and the fan stays signed in until you answer: you ask them to confirm,
+  and call `logout()` only if they do. The hub or the panel then reloads signed out.
+- **You leave it `false`, the default.** The pages show no sign-in entry and no sign-out entry at
+  all: an entry whose only job is to sign in or out is hidden, and content that needs a signed-in fan
+  reads *Sign in from the app to continue*, with no button. Your fan never meets a button that does
+  nothing. A fan you signed in with `identify` is signed out by your own `logout()` call.
 
-**On Flutter, close the surface before you show your sign-in.** The hub, the panel and the game sheet
-are native screens presented above your Flutter view — full screen on iOS, a separate Activity on
-Android — so a Flutter route or dialog draws beneath them, and your fan sees it only once they are
-gone. Answer in four steps: `close()`, your sign-in, `identify`, then reopen the surface your fan was
-on — `openGames()` for the hub or a game, which reopens on the hub, or `openMembership()` with the
-same `sequenceId`. `close()` returns before the surface has left the screen — on iOS it animates
-out — so show your sign-in once its closing event arrives, `FastoryHubClosed` or
-`FastoryMembershipClosed`. Bound that wait: with nothing on screen no closing event comes, so skip
-it, and a short timeout keeps your fan from waiting on an event that never arrives. A refused or
-cancelled `identify` rejects with a `PlatformException`: catch it, or it leaves your listener as an
-unhandled error. Reopen in a `finally`, so your fan gets the surface back in every case — signed in,
-refused, cancelled, or after a sign-in of yours that throws. And answer one request at a time — a
-fan who taps twice sends two. A native iOS host presents its sign-in above the SDK's screens and
-keeps them open.
+**Never sign the fan out on the message alone.** Ask first, in your own interface, and call
+`logout()` only on the fan's yes. On Android a frame embedded inside a game can post
+`fastory:logout-requested` without the fan touching anything; an app that called `logout()` on
+receipt would let that frame sign your fan out behind their back. Asked first, the worst it can do is
+show a confirmation the fan dismisses.
+
+**On Flutter, close the surface before you show your sign-in or your confirmation.** The hub, the
+panel and the game sheet are native screens presented above your Flutter view — full screen on iOS,
+a separate Activity on Android — so a Flutter route or dialog draws beneath them, and your fan sees
+it only once they are gone. Answer in four steps: `close()`, your sign-in or your confirmation,
+`identify` or `logout()`, then reopen the surface your fan was on — `openGames()` for the hub or a
+game, which reopens on the hub, or `openMembership()` with the same `sequenceId`. `close()` returns
+before the surface has left the screen — on iOS it animates out — so show your screen once its
+closing event arrives, `FastoryHubClosed` or `FastoryMembershipClosed`. Bound that wait: with nothing
+on screen no closing event comes, so skip it, and a short timeout keeps your fan from waiting on an
+event that never arrives. A refused or cancelled `identify` rejects with a `PlatformException`: catch
+it, or it leaves your listener as an unhandled error. Reopen in a `finally`, so your fan gets the
+surface back in every case — signed in, signed out, refused, cancelled, or after a sign-in of yours
+that throws. And answer one request at a time — a fan who taps twice sends two. A native iOS host
+presents its sign-in and its confirmation above the SDK's screens and keeps them open.
 
 ```dart
 Fastory.configure(const FastoryConfig(
@@ -676,7 +853,7 @@ Fastory.configure(const FastoryConfig(
 ));
 
 FastorySurface? onScreen;
-bool signingIn = false;
+bool answering = false;
 
 Fastory.events.listen((FastoryEvent event) async {
   switch (event) {
@@ -687,40 +864,52 @@ Fastory.events.listen((FastoryEvent event) async {
     case FastoryHubClosed() || FastoryMembershipClosed():
       onScreen = null;
     case FastoryBridgeMessage(type: 'fastory:login-requested'):
-      // One sign-in at a time: a second tap asks nothing new.
-      if (signingIn) return;
-      signingIn = true;
-      final FastorySurface? origin = onScreen;
-      try {
-        final Future<void> leftScreen = origin == null
-            ? Future<void>.value()
-            : Fastory.events
-                .firstWhere((FastoryEvent e) =>
-                    e is FastoryHubClosed || e is FastoryMembershipClosed)
-                .then((_) {});
-        // First, and wait until the surface is gone, or your sign-in draws under it:
-        await Fastory.close();
-        await leftScreen.timeout(const Duration(seconds: 2), onTimeout: () {});
+      await answerOffTheSurface(() async {
         // Your own sign-in, then the assertion your backend signs for that user:
         final String? jwt = await yourApp.signIn();
         if (jwt != null) await Fastory.identify(FastoryHostToken(jwt));
         // No identity system of your own? Let the fan sign in to Fastory in the system browser:
         // await Fastory.identify(const FastoryFanId());
-      } on PlatformException catch (refusedOrCancelled) {
-        debugPrint('Sign-in not completed: ${refusedOrCancelled.code}');
-      } finally {
-        signingIn = false;
-        // Back where the fan was, whatever happened above: signed in, as they were if they
-        // cancelled, or as the failure left them:
-        if (origin == FastorySurface.hub) await Fastory.openGames();
-        if (origin == FastorySurface.membership) {
-          await Fastory.openMembership(sequenceId: yourApp.panelSequenceId);
-        }
-      }
+      });
+    case FastoryBridgeMessage(type: 'fastory:logout-requested'):
+      await answerOffTheSurface(() async {
+        // Ask first: the message alone is not the fan's tap.
+        final bool confirmed = await yourApp.confirmSignOut();
+        if (confirmed) await Fastory.logout();
+      });
     default:
       break;
   }
 });
+
+Future<void> answerOffTheSurface(Future<void> Function() answer) async {
+  // One request at a time: a second tap asks nothing new.
+  if (answering) return;
+  answering = true;
+  final FastorySurface? origin = onScreen;
+  try {
+    final Future<void> leftScreen = origin == null
+        ? Future<void>.value()
+        : Fastory.events
+            .firstWhere((FastoryEvent e) =>
+                e is FastoryHubClosed || e is FastoryMembershipClosed)
+            .then((_) {});
+    // First, and wait until the surface is gone, or your screen draws under it:
+    await Fastory.close();
+    await leftScreen.timeout(const Duration(seconds: 2), onTimeout: () {});
+    await answer();
+  } on PlatformException catch (refusedOrCancelled) {
+    debugPrint('Sign-in not completed: ${refusedOrCancelled.code}');
+  } finally {
+    answering = false;
+    // Back where the fan was, whatever happened above: signed in, signed out, as they were if
+    // they cancelled, or as the failure left them:
+    if (origin == FastorySurface.hub) await Fastory.openGames();
+    if (origin == FastorySurface.membership) {
+      await Fastory.openMembership(sequenceId: yourApp.panelSequenceId);
+    }
+  }
+}
 ```
 
 ```swift
@@ -731,30 +920,47 @@ Fastory.configure(FastoryConfig(
 
 // In your FastoryEventsDelegate:
 func fastoryBridgeMessage(type: String, payload: [String: Any]) {
-    guard type == "fastory:login-requested" else { return }
-    yourApp.signIn { jwt in
-        guard let jwt else { return }
-        Fastory.identify(.hostToken(jwt: jwt))
+    switch type {
+    case "fastory:login-requested":
+        yourApp.signIn { jwt in
+            guard let jwt else { return }
+            Fastory.identify(.hostToken(jwt: jwt))
+        }
+    case "fastory:logout-requested":
+        // Ask first: the message alone is not the fan's tap.
+        let confirm = UIAlertController(title: "Sign out?", message: nil, preferredStyle: .alert)
+        confirm.addAction(UIAlertAction(title: "Sign out", style: .destructive) { _ in
+            Fastory.logout()
+        })
+        confirm.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        // Above whatever the SDK presents — the hub, the panel or a game:
+        yourApp.topmostViewController.present(confirm, animated: true)
+    default:
+        break
     }
 }
 ```
 
 What to know before you declare it:
 
-- **Declare it only if you listen for the message.** Declared and unheard, every sign-in entry in
-  the pages is a button that does nothing — and no event tells you so. The SDK does nothing with the
-  message itself: it opens no screen and changes no navigation.
-- **The message carries nothing.** Its `payload` is empty. It arrives on the main thread, once per
+- **Declare it only if you listen for both messages.** Declared and unheard, every sign-in and
+  sign-out entry in the pages is a button that does nothing — and no event tells you so. The SDK does
+  nothing with either message itself: it opens no screen, signs nobody out and changes no navigation.
+- **The messages carry nothing.** Their `payload` is empty. They arrive on the main thread, once per
   tap, and only after a fan's tap — never because a page loaded or a game ended.
-- **You answer with `identify`, not with a bridge reply.** There is no reply on the bridge. Once
-  `identify` resolves a different fan, the hub on screen reloads signed in as that fan and the games
-  pick the new session up on their own — see *Identity* above. If your fan cancels your sign-in, a
-  native host does nothing and the page stays as it was; a Flutter host reopens the surface it
-  closed, without calling `identify`.
-- **On Android, a frame embedded inside a game can post this message too.** It carries nothing, so
-  the worst it can do is show your sign-in when the fan did not ask. Never decide anything that
-  matters on it: offer a sign-in, never grant one.
-- **The membership panel does not show the signed-in fan yet** — see *Known limitations*.
+- **You answer with `identify` or `logout()`, not with a bridge reply.** There is no reply on the
+  bridge. Once `identify` resolves a different fan, the hub or the panel on screen reloads signed in
+  as that fan and the games pick the new session up on their own — see *Identity* above. Once
+  `logout()` drops the fan, the hub or the panel on screen reloads signed out and the games learn it
+  the same way. If your fan
+  cancels your sign-in or your confirmation, a native host does nothing and the page stays as it was;
+  a Flutter host reopens the surface it closed, without calling `identify` or `logout()`.
+- **`logout()` signs the fan out of Fastory only.** Whether a sign-out entry in the page should also
+  sign your user out of your own app is your decision — the SDK never touches your session.
+- **On Android, a frame embedded inside a game can post either message too.** They carry nothing, so
+  the worst it can do is show your sign-in, or your confirmation, when the fan did not ask. Never
+  decide anything that matters on them: offer a sign-in, never grant one, and sign the fan out only
+  once they have confirmed.
 - **Changing it is changing the configuration**: a `configure()` that flips it drops what is warm and
   prepares again, like any other change.
 
@@ -803,8 +1009,13 @@ What to know before you build on it:
   on would mean reading your credential.
 - **The SDK does not read your payload**, and the web side verifies the token on our servers before
   trusting anything in it. Setting a reply is an assertion, not a login.
-- **Still no JavaScript in your users' pages.** The answer goes back through the platform's own return
-  path for the message that asked. The SDK never speaks to a page first.
+- **Still no data pushed into your users' pages.** The answer goes back through the platform's own
+  return path for the message that asked: data reaches a page only as the answer to a request it just
+  made. Since 0.5.0 the SDK speaks first in exactly one way — the session-change signal, a constant,
+  payload-free event it dispatches in the game pages it owns when the answer they would get changes:
+  a session renewed or revoked, a new fan identified or a fan signed out, a value you set or clear
+  with `setBridgeReply`. It tells a game *that* the answer changed, never what it became: the game asks
+  again and is answered on this same channel.
 
 The normative request and reply envelopes, the registry and the origin rules are in `SPEC.md` § 13.8.
 
@@ -834,7 +1045,9 @@ session, and no store configuration can make them: the hub reads a cookie, and a
 `embed=1` takes its session from its host page, not from storage — and in an SDK WebView it has no
 host page. Each page still reads and writes storage of its own: the game keeps its own cookies and
 web storage on its own site, as any page does, so if you declare the data your app stores, count the
-game's as well as the hub's. What never happens is a session crossing from one site to the other.
+game's as well as the hub's — and the SDK's own, for an identified fan (see *What the SDK stores, and
+how a fan's session ends* above). What never happens is a session crossing from one site to the
+other.
 Each surface keeps its own persisted state across `openGames()` sessions and app restarts.
 
 Releases up to 0.3.0 documented the opposite — that the game inherited the hub's session through a
@@ -847,7 +1060,8 @@ it as "games already know who the fan is", use `Fastory.identify(...)` instead (
 
 Both of those stores are **shared with your app**, which is why the SDK never calls a "clear
 everything" API. `logout()` expires a declared list of Fastory cookies on the Fastory origins and
-deletes their web storage, and touches nothing else — see `SPEC.md` § 7.4.
+deletes their web storage, erases what the SDK stores for the fan, and touches nothing else — see
+`SPEC.md` § 7.4 and § 7.5.
 
 ### Android back button
 
@@ -857,9 +1071,13 @@ Priority order:
 2. Else if the presented surface's WebView `canGoBack`, `goBack()`.
 3. Else close the full-screen view and return to the app.
 
-The same order applies to the membership panel, and step 2 is why back behaves hierarchically there:
-its page pushes a history entry per tab and per sub-screen it opens, so back walks the fan out of a
-sub-screen, then back through the tabs, and only then closes the panel.
+The same order applies to the membership panel, and step 2 is why back behaves hierarchically there.
+Each press first closes the sub-screen the fan has open (a reward's detail, for instance); else, when
+the fan is no longer on the screen the panel opened on, it returns to that screen; else it closes the
+panel. Switching tabs costs at most one press however many times the fan switches: back never walks
+the tabs one by one, it returns straight to the opening screen. A sub-screen left open on a tab the
+fan switches away from is closed at that moment, so no press is ever spent on a screen the fan cannot
+see, and coming back to that tab shows its first screen again. Nothing is needed on your side.
 
 Back only walks what the fan did since the SDK last loaded the page. An opening that loads its page
 — the panel on a named sequence, or on its default screen after one, and the hub of a fan you
@@ -887,13 +1105,13 @@ If a surface fails to load (airplane mode, no network, a page that answers an er
 No — the two WebViews are owned and configured by the SDK (URL interception, safe areas, and the scoped session erasure of `logout()` all depend on it). External links respect the system default browser.
 
 **Do we need ProGuard / R8 rules?**
-No. The SDK's Android module declares its keep rule with `consumerProguardFiles`, which is what makes R8 merge that rule into your application's configuration when it shrinks — whether your R8 setup is hand-written or derived from AGP's defaults. The rule keeps the bridge's JavaScript entry point, the one member R8 finds no caller for, because the WebView reaches it by reflection. Everything else the SDK uses — the platform `android.webkit.WebView`, standard Flutter plugin registration — is covered by default Flutter/AGP rules. If your build uses aggressive custom shrinking and you still hit an issue, keep the SDK's plugin package and report it to us.
+No. The SDK's Android module declares its keep rule with `consumerProguardFiles`, which is what makes R8 merge that rule into your application's configuration when it shrinks — whether your R8 setup is hand-written or derived from AGP's defaults. The rule keeps the bridge's JavaScript entry point, the one member R8 finds no caller for, because the WebView reaches it by reflection. Everything else the SDK uses — the platform `android.webkit.WebView`, standard Flutter plugin registration — is covered by default Flutter/AGP rules. If your build uses aggressive custom shrinking and you still hit an issue, keep the `com.fastory.sdk` package and report it to us.
 
 **What does the SDK add to app size?**
-It is intentionally ultra-light: Dart plugin glue plus thin native view controllers around system WebViews. No bundled UI frameworks and no analytics libraries. The Swift package declares no dependency. The Android module depends on five AndroidX and Material libraries — `androidx.core:core-ktx:1.13.1`, `androidx.appcompat:appcompat:1.7.0`, `com.google.android.material:material:1.12.0`, `androidx.webkit:webkit:1.11.0` and `androidx.lifecycle:lifecycle-process:2.6.1` — which most Android apps already resolve. Expect a negligible footprint (well under 1 MB per platform).
+It is intentionally ultra-light: Dart plugin glue plus thin native view controllers around system WebViews. No bundled UI frameworks and no analytics libraries. Since 0.5.0 every channel depends on AppAuth, the reference OpenID library the `fanId` login runs through; it arrives with the SDK, and you never declare it yourself. The Swift package declares that one dependency, `AppAuth-iOS` up to the next minor from 1.7.5 — the Flutter plugin's iOS side takes the same library as the `AppAuth` pod, `~> 1.7`. The Android library depends on six libraries — `androidx.core:core-ktx:1.13.1`, `androidx.appcompat:appcompat:1.7.0`, `com.google.android.material:material:1.12.0`, `androidx.webkit:webkit:1.11.0`, `androidx.lifecycle:lifecycle-process:2.6.1` and `net.openid:appauth:0.11.1` — the first five of which most Android apps already resolve; AppAuth is the one that asks for the manifest placeholder under *Setting up `fanId`*. A Gradle build lists all six in its dependency report. Expect a negligible footprint (well under 1 MB per platform).
 
 **Will this pass Apple App Store review / TestFlight?**
-The SDK displays the partner's own web content (your Fanzone) in a WebView, with no payments, no OAuth, no account creation, and no downloadable code beyond regular web pages. This is standard partner-content embedding. Prize-based games remain subject to the usual App Store Review Guidelines on contests (the contest organizer is the partner/Fastory, not Apple — state this in your contest rules as usual).
+The SDK displays the partner's own web content (your Fanzone) in a WebView, with no payments and no downloadable code beyond regular web pages, and no page it shows renders a login form. The one sign-in it can run, `FastoryFanId()`, is yours to offer or not: it opens the Fastory login in the system browser (`ASWebAuthenticationSession`, the platform's own sheet for signing in with an external account), never in a WebView. This is standard partner-content embedding. Prize-based games remain subject to the usual App Store Review Guidelines on contests (the contest organizer is the partner/Fastory, not Apple — state this in your contest rules as usual).
 
 **Which environments exist?**
 Production (`https://fanzone.me`) and staging (`https://staging.fanzone.me`). A development environment takes a base URL of your own (`developmentBaseUrl`), for testing against a Fanzone you serve yourself.
@@ -904,14 +1122,15 @@ Three kinds, and the API one is the one people miss:
 | What | Production | Staging | `development` |
 |---|---|---|---|
 | Fanzone (the hub) | `https://fanzone.me` | `https://staging.fanzone.me` | your `developmentBaseUrl` |
-| API (the publishable-key exchange only) | `https://api.fastory.io` | `https://api.staging.fastory.io` | your `developmentBaseUrl` |
+| API (the publishable-key exchange, and an identified fan's session) | `https://api.fastory.io` | `https://api.staging.fastory.io` | your `developmentBaseUrl` |
 
 Plus the two **stories** hosts the games are served from, `https://story.tl` and
 `https://staging.story.tl` — a fixed pair rather than an environment split, in every environment,
 because a game link is whatever the fanzone page put on the tile. That is also why a `/s/` link to
 either one opens in the game sheet whichever environment you configured (`SPEC.md` § 4, rule 1).
 
-The API host is reached **only** on the publishable-key path, at `POST /sdk/auth/bootstrap`. "Once
+The API host is reached **only** on the publishable-key path: at `POST /sdk/auth/bootstrap`, and for
+an identified fan (below). "Once
 per configuration" is true of an exchange that succeeded: it is not run again until you configure
 again. A **failed** exchange is not remembered as final, and the two platforms re-run it differently:
 on Android, `openGames()` asks the resolver again, so a second request leaves before the hub decides
@@ -920,6 +1139,11 @@ request leaves when the fan taps Retry (never for `sdk_rate_limited` — see *Wh
 load*). So a configuration whose exchange failed costs **two requests on Android** before the fan
 taps anything, and **one on iOS** until they tap Retry — plus one per Retry press on either — and
 none of them is a retry loop: each is triggered by a call of yours or a tap of the fan's.
+An identified fan adds requests to the same host, each the consequence of a call of yours or of the
+session itself: the exchange behind `identify` with `FastoryHostToken` or `FastoryFanId`, the
+handoff that carries the session into the hub when it opens, the renewals that keep that session
+alive, and, for a `fanId` fan, one at every launch to renew the stored sign-in and one at `logout()`
+or at a change of fan to revoke it.
 Configured with the deprecated `fanzoneSlug` the SDK calls no endpoint at all. Anything else your fan
 reaches through a hub tile leaves for the system browser and is not the SDK's traffic.
 
@@ -928,18 +1152,12 @@ reaches through a hub tile leaves for the system browser and is not the SDK's tr
 All of these hold for the version documented above. None has a committed release date — ask us if
 one of them blocks you, rather than planning around a version number.
 
-- **The membership panel does not show the signed-in fan yet.** A fan you identified with
-  `identify()` still appears anonymous in the panel, and a sign-in entry tapped there sends you
-  `fastory:login-requested` like anywhere else, but the panel does not change once you have signed
-  the fan in. The hub and the games do show the signed-in fan. A fix is planned on our side.
 - **A club whose membership panel is not enabled shows an explanatory page, and the SDK reports that
   panel as opened.** The page answers normally, so there is no failure to observe and no event
   distinguishing it — `membershipOpened` fires as it would for any other page. If you need to know
   whether a given club has it, ask us rather than inferring it from the event stream.
-- No standalone Android artifact, and no supported native Android path until it ships: the Kotlin
-  core reaches an app only inside the Flutter plugin, for a Flutter app. Ask us if this blocks you.
 - No SDK-side analytics — use the event stream and your own tracker.
-- No JavaScript injection. The bridge carries two notification types and answers one question type —
+- No JavaScript injection. The bridge carries three notification types and answers one question type —
   there is no API to *push* into the web content unprompted, and no haptics or share hooks.
 - On Android the reply channel needs a WebView from Chrome 85 (mid-2020) or later. Below that it is
   simply absent and surfaces stay anonymous; nothing else about the SDK is affected.

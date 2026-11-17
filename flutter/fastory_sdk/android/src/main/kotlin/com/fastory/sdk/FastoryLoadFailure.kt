@@ -9,7 +9,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 
 /** Which Fastory surface a load failure is about (SPEC § 9.1). */
-enum class FastorySurface(val wireName: String) {
+public enum class FastorySurface(internal val wireName: String) {
     HUB("hub"),
     GAME("game"),
 
@@ -24,7 +24,7 @@ enum class FastorySurface(val wireName: String) {
  * [FastoryLoadFailure.statusCode], and a host that only needs "was anything reachable at all" must
  * not have to enumerate every future API code to answer it.
  */
-enum class FastoryLoadFailureReason(val wireName: String) {
+public enum class FastoryLoadFailureReason(internal val wireName: String) {
     /**
      * Something answered and refused. `code` carries the API's machine-readable failure code when
      * the refusal came from the publishable-key exchange (§ 2.5); `statusCode` carries the HTTP
@@ -51,7 +51,7 @@ enum class FastoryLoadFailureReason(val wireName: String) {
  * configuration (§ 2.5). [statusCode] is the HTTP status the surface's main document answered,
  * non-null only when one did (§ 9).
  */
-data class FastoryLoadFailure(
+public data class FastoryLoadFailure(
     val surface: FastorySurface,
     val reason: FastoryLoadFailureReason,
     val code: String? = null,

@@ -69,14 +69,17 @@ class FastoryConfig {
   /// has no panel to prepare and ignores [FastorySurface.membership].
   final Set<FastorySurface> prewarm;
 
-  /// Whether your app signs the fan in when a Fastory page asks it to (SPEC §2.6).
+  /// Whether your app signs the fan in and out when a Fastory page asks it to (SPEC §2.6).
   ///
-  /// No page the SDK presents ever shows a login form of its own. Declared, the hub, the
-  /// membership panel and the games keep their sign-in entries, and a fan's tap on one reaches
-  /// [Fastory.events] as a [FastoryBridgeMessage] of type `fastory:login-requested`: sign the fan
-  /// in your own way, then call [Fastory.identify]. Left `false`, the pages show no sign-in entry
-  /// at all. Declare it only if you handle that message — otherwise every sign-in entry becomes a
-  /// control that does nothing.
+  /// No page the SDK presents ever shows a login form of its own, nor signs the fan out on its
+  /// own. Declared, the hub, the membership panel and the games keep their sign-in and sign-out
+  /// entries, and a fan's tap on one reaches [Fastory.events] as a [FastoryBridgeMessage]:
+  /// - `fastory:login-requested`: sign the fan in your own way, then call [Fastory.identify].
+  /// - `fastory:logout-requested`: ask the fan to confirm, then call [Fastory.logout]. Never
+  ///   sign the fan out on the message alone — a page can post it without the fan's tap.
+  ///
+  /// Left `false`, the pages show no sign-in or sign-out entry at all. Declare it only if you
+  /// handle both messages — otherwise each of those entries becomes a control that does nothing.
   final bool handlesLoginRequests;
 
   /// Every rule the three platforms enforce identically. Called by [Fastory.configure]
@@ -227,6 +230,12 @@ class FastoryExternalLink extends FastoryEvent {
 ///
 /// The native side validates the envelope and only forwards types in [knownTypes], so a web
 /// release that introduces a new type is dropped by an older SDK rather than breaking it.
+///
+/// Under [FastoryConfig.handlesLoginRequests], `fastory:login-requested` (empty payload) means a
+/// fan tapped a sign-in entry on a page: sign the fan in your own way, then call
+/// [Fastory.identify]. `fastory:logout-requested` (empty payload) means a fan tapped a sign-out
+/// entry: the SDK signs nobody out on it, so ask the fan to confirm, then call [Fastory.logout].
+/// Never sign the fan out on receipt — the message is a request, not proof that the fan tapped.
 class FastoryBridgeMessage extends FastoryEvent {
   const FastoryBridgeMessage(this.type, this.payload);
 
@@ -235,6 +244,7 @@ class FastoryBridgeMessage extends FastoryEvent {
   static const Set<String> knownTypes = <String>{
     'fastory:ready',
     'fastory:login-requested',
+    'fastory:logout-requested',
   };
 
   final String type;
@@ -331,22 +341,26 @@ class FastoryIdentityResolved extends FastoryEvent {
   String toString() => 'FastoryIdentityResolved(mode: ${mode.name}, fanId: $fanId)';
 }
 
-/// Why the SDK dropped a delegated identity on its own (`SPEC.md` § 5.3).
+/// Why the SDK dropped an identified fan on its own (`SPEC.md` § 5.3).
 enum FastoryRevocationReason {
-  /// A background re-exchange was refused by the API. Carries the API's own code
+  /// A background renewal was refused by the API — a host-token re-exchange, or the
+  /// renewal of a [FastoryFanId] fan's stored session. Carries the API's own code
   /// when it named one.
   rejected,
 
-  /// The embed session expired and could not be renewed — no host-token provider
-  /// was registered, so there was no fresh assertion to re-exchange. Carries no code.
+  /// The session lapsed and could not be renewed — no host-token provider was
+  /// registered, or a [FastoryFanId] fan's stored session outlived its lifetime.
+  /// Carries no code.
   expired,
 }
 
-/// The SDK dropped a delegated identity **on its own** (`SPEC.md` § 5.3): a session
-/// that expired with no way to renew, or a background re-exchange the API refused.
-/// The fan is now anonymous. The host learns why through [reason] so it can
-/// re-`identify` with a fresh token or let the fan continue anonymously — never a
-/// blank panel. A host-driven `logout()` is not a revocation and never emits this.
+/// The SDK dropped an identified fan — [FastoryHostToken] or [FastoryFanId] — **on
+/// its own** (`SPEC.md` § 5.3): a session that expired with no way to renew, or a
+/// background renewal the API refused. For a [FastoryFanId] fan it often arrives
+/// shortly after launch, when the SDK renews the stored session. The fan is now
+/// anonymous. The host learns why through [reason] so it can re-`identify` or let
+/// the fan continue anonymously — never a blank panel. A host-driven `logout()` is
+/// not a revocation and never emits this.
 class FastoryIdentityRevoked extends FastoryEvent {
   const FastoryIdentityRevoked(this.reason, this.code);
 
@@ -375,7 +389,7 @@ sealed class FastoryIdentity {
 }
 
 /// The v0.1 behaviour: each origin's web page mints or reuses its own device visitor.
-/// The only mode that resolves in this version.
+/// Resolves on either configuration, publishable key or fanzone slug.
 class FastoryAnonymous extends FastoryIdentity {
   const FastoryAnonymous();
 
@@ -384,8 +398,9 @@ class FastoryAnonymous extends FastoryIdentity {
       <String, Object?>{'mode': 'anonymous', 'jwt': null};
 }
 
-/// Fastory login through the system browser. Reserved: fails with
-/// `identify_mode_unavailable` until it ships.
+/// Fastory login through the system browser, since 0.5.0. Needs a configuration by
+/// publishable key: configured by fanzone slug, it fails with
+/// `identify_mode_unavailable`.
 class FastoryFanId extends FastoryIdentity {
   const FastoryFanId();
 
@@ -393,8 +408,9 @@ class FastoryFanId extends FastoryIdentity {
   Map<String, Object?> _toMap() => <String, Object?>{'mode': 'fanId', 'jwt': null};
 }
 
-/// Delegated identity: a JWT signed by the partner's backend, verified server-side.
-/// Reserved: fails with `identify_mode_unavailable` until it ships.
+/// Delegated identity: a JWT signed by the partner's backend, verified server-side,
+/// since 0.5.0. Needs a configuration by publishable key: configured by fanzone slug,
+/// it fails with `identify_mode_unavailable`.
 class FastoryHostToken extends FastoryIdentity {
   const FastoryHostToken(this.jwt);
 
@@ -483,9 +499,12 @@ abstract final class Fastory {
 
   /// Binds the host app's user to a Fastory fan (`SPEC.md` § 2.6).
   ///
-  /// Only [FastoryAnonymous] resolves in this version, and calling it twice is a
-  /// no-op that hands back the same fan. The two identified modes are reserved
-  /// signatures that reject with `identify_mode_unavailable`.
+  /// [FastoryAnonymous] resolves at once, and calling it twice is a no-op that
+  /// hands back the same fan. [FastoryHostToken] exchanges your backend's assertion
+  /// with no screen; [FastoryFanId] opens the Fastory login in the system browser,
+  /// and the SDK then keeps that fan signed in from one launch to the next. Both
+  /// identified modes need a publishable key and reject with
+  /// `identify_mode_unavailable` on the slug path.
   ///
   /// Rejects with a [PlatformException] carrying one of the § 5.4 codes; it never
   /// completes with a partially resolved identity.
@@ -506,6 +525,10 @@ abstract final class Fastory {
 
   /// Signs the fan out of Fastory only — the host app's own session is never
   /// touched. Idempotent, and never fails.
+  ///
+  /// Everything the SDK holds for the fan is erased at once, the refresh token it
+  /// stores for a [FastoryFanId] fan included (`SPEC.md` § 7.5); the server is then
+  /// asked to revoke that token, best effort — `logout()` never waits for it.
   static Future<void> logout() => _methodChannel.invokeMethod<void>('logout');
 
   static FastoryHostTokenProvider? _hostTokenProvider;

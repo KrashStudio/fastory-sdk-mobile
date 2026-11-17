@@ -4,6 +4,223 @@ All notable changes to the Fastory Mobile SDK are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: [SemVer](https://semver.org),
 tags `sdk-vX.Y.Z`.
 
+## 0.5.1
+
+A page's request to sign the fan out joins its request to sign them in, under the same declaration,
+the membership panel shows the fan you identified and follows them as the hub does, and a fan who
+signed in with `FastoryFanId` stays signed in from one launch of your app to the next; alongside, a
+game opened from the hub is now counted as SDK traffic. A native Android app gets a channel of its
+own: the Kotlin core, on Maven Central — see *Added*. Nothing you call changes signature, and no
+name the specification declares moves; native names it never declared are withdrawn — see
+*Breaking*. **If you declare `handlesLoginRequests`, listen for `fastory:logout-requested` too**, and
+**if you declare the data your app stores on the device, add the identifier the SDK now keeps for a
+`FastoryFanId` fan** — see *Changed*. A fan who signed in with `FastoryFanId` under 0.5.0 is signed
+out once by the update.
+
+### Breaking
+
+- **Native: names that were public without being part of the API are withdrawn.** Every name the SDK
+  declares keeps working, unchanged; what goes is a set of names the Swift and Kotlin code made
+  public without the specification ever declaring them, before the Android core's first publication
+  on Maven Central — in this same release — where a version cannot be withdrawn.
+  On Swift: `URLPolicy`, `NavigationDecision`, the key-exchange error type `FastoryBootstrapError`,
+  `FastoryEnvironment.baseURL`, the publishable-key prefix constants, the static
+  `FastoryConfig.validate(fanzoneSlug:hubTabSlug:)` and `FastoryIdentity.mode`. On Kotlin: `UrlPolicy`
+  and its decision enum `NavigationDecision`, the bridge object `FastoryBridge`, the hub `Activity`
+  `FastoryHubActivity`, the game sheet `GameBottomSheet`, `FastoryConfig.baseUrl`, its URL builders
+  (`hubUrl`, `membershipUrl`, `staticHubUrl`) and key-prefix constants, and
+  the `wireName` of `FastorySurface` and `FastoryLoadFailureReason`; the library's Android theme and
+  ids become private too, while the six strings an app may redefine stay public. Your Dart code is
+  not concerned, and neither is native code that only calls the documented API. If your own Swift or
+  Kotlin code named one of these, write the value yourself — the README's *Upgrading from 0.5.0*
+  gives each. The specification now states that its § 2 blocks are the whole public surface, and the
+  0.5.0 identity-renewal names that were public but missing from them are declared there.
+
+### Added
+
+- **Android library on Maven Central** — native Android apps no longer need Flutter to embed the SDK.
+  Add `implementation("io.fastory:fastory-sdk:<version>")`, pinned to this release's exact version,
+  declare the `appAuthRedirectScheme` manifest placeholder every Android build of the SDK needs, and
+  call `Fastory.configure(context, config)` then `Fastory.openGames(context)`. The library is the
+  Kotlin core the plugin bundles, with the public names the specification's § 2.3 declares and its R8
+  keep rule included. Every release now publishes the three channels at the same version: the two
+  tags for Flutter and SwiftPM, and the library on Central. A Flutter app keeps the plugin — adding
+  the library as well fails its build on duplicate classes.
+- **`fastory:logout-requested`, the counterpart of `fastory:login-requested`** (spec § 13.3),
+  delivered the same way with an empty payload when a fan taps a sign-out entry, once per tap. The fan
+  stays signed in until you answer. **Ask the fan to confirm, then call `logout()`** — never on the
+  message alone: on Android a frame embedded inside a game can post it without the fan's tap, and
+  calling `logout()` on receipt would let that frame sign your fan out behind their back. The SDK
+  signs nobody out on the message itself. `FastoryBridgeMessage.knownTypes` now holds three types.
+
+### Changed
+
+- **A `FastoryFanId` fan stays signed in across launches** (spec § 2.6.3). A relaunched app used to
+  find the fan identified while the hub, the membership panel and the games were anonymous until the
+  next `identify`. The login now also returns a refresh token, which the SDK presents at launch for a
+  new session, with no browser and no call to your code: the three surfaces open signed in as that
+  fan from the first screen. A page asking for the fan during that renewal waits for it, and so does
+  the hub's opening, 3 seconds at most. Each renewal replaces the token; a fan who opens your app at
+  least once every 90 days stays signed in for a year from their login, then signs in again in the
+  system browser. A launch with no network keeps the fan signed in. `setHostTokenProvider` is never
+  called for this fan.
+- **Updating from 0.5.0 signs a `FastoryFanId` fan out once.** 0.5.0 kept that fan's identity across
+  launches but no refresh token, so the first launch of your app on this version finds nothing to
+  renew it with: the fan is anonymous, with no event, and signs in again in the system browser. From
+  then on they stay signed in. A `FastoryHostToken` fan is unaffected.
+- **The SDK now stores an identifier on the device for a `FastoryFanId` fan: the refresh token**
+  (spec § 7.5). On iOS it is a Keychain item under the SDK's own service, readable once the device
+  has been unlocked after a restart, on this device only and never synchronised to iCloud — in your
+  app's **default access group**, since the SDK sets none, so apps of your team that share that
+  group can read it. On Android it is a file of your app's no-backup files directory, encrypted with a
+  key held in the Android Keystore. It never reaches a page, a URL or a log, and it is never restored
+  to another device. If you declare the data your app stores, declare this one too. A
+  `FastoryHostToken` fan still has no token stored.
+- **`logout()` also revokes a `FastoryFanId` fan's session on our servers**, best effort: it still
+  erases everything on the device at once, never waits for that request and never fails, and offline
+  the token it could not revoke expires on its own. Identifying another fan, or the same fan again,
+  revokes the previous session the same way. Signing in on one device signs the fan out of none of
+  their others.
+- **`FastoryIdentityRevoked` can arrive shortly after launch for a `FastoryFanId` fan**, with the same
+  two reasons: `expired` when the sign-in aged out — 90 days without opening your app, or a year since
+  the login — and `rejected`, with the API's `code`, when the launch renewal was refused: a revoked or
+  deleted publishable key, an application identifier removed from it, or the same token presented
+  twice (`refresh_token_reused`), which ends the session for every holder. Long past its lifetime, a
+  token our servers no longer know comes back `rejected` with `refresh_token_invalid`. The fan is then
+  anonymous; `identify(FastoryFanId())` signs them in again.
+- **Four things sign a `FastoryFanId` fan out on the device, with no event**: a reinstall of your
+  app, a restore onto another device (on Android, any restore from a backup), a Keystore key Android
+  invalidated, and a version of your app configured with another environment or a regenerated
+  publishable key. The fan is anonymous and signs in again.
+- **`FastoryConfig.handlesLoginRequests` covers sign-out entries too** (spec § 2.1–2.4, § 2.6).
+  Declared, it also says that your app listens for `fastory:logout-requested` and signs the fan out
+  itself once they confirm: the sign-out entries of the hub, the panel and the games stay, and no page
+  signs the fan out at a tap on its own entry — it sends you the message. Left `false`, an entry whose
+  only job is to sign in or out is hidden. **Declare the field only if you listen for both
+  messages**: declared and unheard, every sign-in and sign-out entry is a button that does nothing.
+- **The panel shows the fan you identified**, signed in, as the hub does — whether you identified
+  them with `FastoryHostToken` or `FastoryFanId`, before the panel opened or while it is on screen
+  (spec § 3.5). With `FastoryHostToken`, the games and the membership panel receive the session over
+  the bridge, and the hub adopts it.
+- **The hub or the panel on screen follows the signed-in fan** (spec § 2.6.1, § 7). When `identify`
+  signs in a fan or a different one, and when `logout()` or a lapsed session drops one, an open hub
+  or panel reloads — signed in as the new fan, or anonymous. A panel reloads on the screen it was
+  opened on, the `sequenceId` you named included. Identifying the same fan again, a background
+  renewal, and an anonymous `identify` while no fan is signed in reload nothing. The reload emits no
+  opening or closing event — no `hubOpened` or `hubClosed`, no `membershipOpened` or
+  `membershipClosed` — and does not keep the fan's scroll position. The panel reloaded after your
+  fan's identity changes is covered as the hub is, so the previous fan's screen is not shown while
+  the new one loads.
+- **A game opened from a tile of the hub is counted as SDK traffic.** The fanzone's tiles link
+  their games with `utm_source=fanzone`, and the SDK kept a parameter the link already carried, so
+  the most common way into a game reached your statistics as fanzone traffic. A game opened from the
+  hub now always loads with `utm_source=sdk`, in place of the value the link carried (spec § 3.3); every
+  other parameter of the link is kept as before. Nothing changes in your code; a dashboard that
+  splits game traffic by source sees these games move from `fanzone` to `sdk`.
+
+### Fixed
+
+- **The membership panel no longer opens anonymous for a fan you signed in.** A panel prepared ahead
+  (`prewarm`), or left by a panel your fan closed before their session was in place, was reopened as
+  it stood: its page reads the fan's session once, when it loads, so after your first `identify`, or
+  once the session of a fan restored at launch was back, it still showed the fan anonymous. Such a
+  page is now reopened only for the session it was loaded with; otherwise the panel loads again,
+  signed in. A session renewed in the background for the same fan keeps the prepared panel, and so
+  does a panel prepared while the SDK was restoring the session of a fan who signed in with
+  `FastoryFanId`, when that session is back within the few seconds the SDK waits for it. Nothing
+  changes in your code.
+- **The upgrade notes for 0.5.0 list every break, and the line your Android build needs.** The
+  integration guide and the plugin's README said 0.5.0 brought three source breaks and that nothing
+  else asked anything of you, and the guide that no native setup was needed beyond the minimum OS
+  versions. There are five, of which a Flutter host meets four: `FastoryIdentityRevoked` joined the
+  sealed `FastoryEvent` too. The fifth is Swift's alone, and the 0.5.0 entry below did not name it:
+  `FastoryIdentifyError.rejected` carries `code: String?` since 0.5.0, where it carried a `String`, so
+  a `case .rejected(let code)` that hands `code` on as a `String` has to unwrap it. And your Android
+  build fails at manifest merge without the `appAuthRedirectScheme` placeholder, whether or not you
+  call `FastoryFanId`. The 0.5.0 entry below already said that and the new event; the guide and the
+  README now say all of it. The guide's answer on app size now names AppAuth, a dependency of both
+  channels since 0.5.0: the one the Swift package declares, and the sixth library of the Android
+  module. And the guide, the README and the repository's `CLAUDE.md` no longer say or imply that the
+  SDK never speaks to a page first: since 0.5.0 it sends the game pages one constant, payload-free
+  session-change signal, and data still reaches a page only as the answer to its own request.
+- **The guide and the README no longer say the panel opens already identified after a restart.**
+  Both said so of a fan the SDK restores at launch. What the SDK restores at `configure` is the
+  identity; the session behind it comes back in the background, and the hub, the panel and the games
+  show the fan signed in once it has. For a `FastoryFanId` fan the hub's opening and a page asking for
+  the fan wait for that renewal, 3 seconds at most. For a `FastoryHostToken` fan nothing waits: the
+  session comes back once your provider has handed the SDK a fresh token, which it asks for when
+  `configure` runs — on Android also at each opening of the hub or the panel while the fan has no
+  session — so **register the provider before you call `configure`**. A hub or a panel that loads
+  before the session is back shows the fan anonymous: a game picks the session up as soon as it is
+  back and the hub and the panel at their next opening, but a panel already on screen is not
+  reloaded for it.
+  Without a provider a `FastoryHostToken` fan's session does not come back on its own: the surfaces
+  show the fan anonymous, with no event, until you call `identify` again, or until the SDK next asks
+  a provider you register later. This corrects the documents only: a `FastoryHostToken` fan has
+  behaved this way since 0.5.0, and the `FastoryFanId` wait is the one *Changed* above brings.
+- **The 0.5.0 entry below says the SDK renews a `FastoryHostToken` session.** Its *hostToken* notes
+  said the SDK did not renew the session and that it lived for the token's lifetime, the opposite of
+  its own *Session lifecycle* section and of what the SDK does: it refreshes the session ahead of its
+  expiry, asking no one, calls your `setHostTokenProvider` provider when that refresh fails or the
+  session has expired, and emits `FastoryIdentityRevoked` (`expired`) when nothing can renew it.
+  *Session lifecycle* also said a fan restored at launch opened the panel already identified. Both
+  bullets keep their text as the record of that release and carry a note. The specification's
+  summary of 0.5.0 made the same claim about renewal, and called `FastoryHostToken`
+  source-compatible on Swift; it now says what its § 2.6.3 requires, and names the Swift break above.
+- **A bridge message whose characters alternate with nul characters is now ignored on iOS, as on
+  Android.** iOS read such a text in another encoding: `{"v":1,…}` written with one or three nul
+  characters after or before each character was read as UTF-16 or UTF-32, so it reached the host as
+  a valid envelope, and a request written that way was answered with the value you set with
+  `setBridgeReply()`. Android refused both, a nul character outside a string not being JSON. Both
+  platforms now read a message as the text the page sent: ignored on the receive-only channel,
+  answered `malformed` on the reply channel. `JSON.stringify` never writes a raw nul character — it
+  escapes one inside a string as `\u0000`, which both platforms still read — so web content that
+  builds its envelope with it is unaffected.
+- **iOS: reopening a surface while another one leaves the screen now opens it.** An `openGames()` or
+  `openMembership()` called right after `close()`, from the `hubClosed` or `membershipClosed`
+  callback in native code, or from the completion of `identify(FastoryFanId())` while the sign-in
+  browser sheet was still going away, did nothing on iOS: no surface, no event, nothing reported. On
+  Android the same code opened the surface, so a host validated on Android saw nothing happen on
+  iOS. The SDK now waits for the leaving surface or sheet to be gone, then opens what was asked for:
+  the closing event comes first, then the opening event, with one surface on screen. Only the
+  first call made during that departure counts, as while a surface is on screen, and a `close()`
+  called after it cancels it. Nothing to change on your side — and if you worked around this by
+  reopening from the closing event, or after a delay, that keeps working. One behaviour does
+  change: a call iOS used to swallow now opens a surface.
+- **The identity reference no longer calls `fanId` and `hostToken` reserved.** The Dart reference
+  of `FastoryFanId`, `FastoryHostToken` and `identify`, and the package's `CLAUDE.md`, still
+  described 0.4.x: only `FastoryAnonymous` resolving, the two identified modes failing with
+  `identify_mode_unavailable`. All three resolve since 0.5.0; the two identified ones need a
+  configuration by publishable key, and fail with `identify_mode_unavailable` only on a fanzone
+  slug.
+- **Android: a surface reopened right after it closed no longer shows a black screen first.** The
+  hub or the membership panel, closed on a page that had loaded and opened again before Android had
+  torn down the screen that showed it, loaded that page from scratch instead of reusing it: up to a
+  second of black screen with only the close button and a progress bar (white in a light theme),
+  then the page. It now reopens on that page at once, as after a longer pause and as on iOS. A hub
+  opened for an identified fan still loads its page again on every opening, as it always has. The
+  opening and closing events are unchanged, and nothing changes in your code.
+- **The specification no longer contradicts itself on what a refused `identify` leaves.** One section
+  said that any failed `identify` leaves the SDK anonymous; two others said that a call refused before
+  anything is attempted leaves the current fan as they were, and listed different codes. The second
+  reading is what the SDK has always done, and the specification and the integration guide now agree
+  on it. Of the codes a Dart app can receive, `not_configured`, `invalid_host_token` and
+  `identify_mode_unavailable` keep the fan you had, signed in or anonymous, while `login_cancelled`,
+  `identify_rejected` and `identify_network_error` leave the SDK anonymous. A malformed or expired
+  host token is one of the latter: it comes back as `identify_rejected`. `invalid_identity_mode`, as a
+  Dart app receives it, is neither: it reports a defect in the plugin, after the call has resolved.
+  Nothing changes in your code.
+- **After `logout()`, a hub that had opened without its sign-in step no longer reopens on the
+  previous fan's screen.** When the hub of a signed-in fan opened on its plain address — the fan had
+  no session yet, or the sign-in token could not be obtained — and was closed while `logout()` was
+  still clearing the fan's data, the next opening could show that page as it stood. A page loaded
+  before the clearing finished is now never reused. Nothing changes in your code.
+- **The guide and the README no longer say that every opening after `logout()` is cold.** One is
+  not: a signed-in fan's hub still on screen once their data has been cleared reloads signed out,
+  and once that page has loaded, it is kept when your fan closes it, like any hub, so the next
+  `openGames()` shows it at once. That has been the behaviour since 0.5.0; the 0.4.5 and 0.4.0
+  entries below say the first opening after a `logout()` loads cold. Either way nothing of the previous fan comes back, and nothing changes in your code.
+
 ## 0.5.0
 
 The whole delegated-identity surface, the club's membership panel and a page's request to sign the
@@ -116,6 +333,13 @@ quietly now ends in an announced return to anonymous.
   `fanId` — never the host token, never the embed session — and rehydrates it on `configure`, so the
   panel opens already identified instead of re-verifying from scratch. The rehydrated identity is
   confirmed in the background and emits no `identityResolved` (it is restored, not resolved).
+
+  **Corrected.** What survives is the identity, not the session, and the panel did not open
+  identified: when this version shipped it showed no signed-in fan at all (*Membership panel* below).
+  After a launch the hub and the games showed a `FastoryHostToken` fan signed in once the SDK had
+  exchanged a fresh token from your provider in the background, and anonymous until then — or until
+  the next `identify`, with no provider registered; a `FastoryFanId` fan stayed anonymous on every
+  surface until the next `identify`.
 - **A delegated session that cannot be renewed now ends in an announced return to anonymous** rather
   than lapsing silently. This is the one behaviour change to be aware of when upgrading from an SDK
   that resolved `hostToken` without a lifecycle.
@@ -205,6 +429,9 @@ as well. **Read `Breaking` and you are done**; the rest asks nothing of you.
   - The panel does not show a signed-in fan in this version: a fan you identified stays anonymous
     there (see *Sign-in request* below). A club whose panel is not enabled gets an explanatory page,
     which the SDK reports as opened like any other — there is no separate signal for it.
+
+    **Partly fixed since.** A panel you open after identifying the fan now shows them signed in,
+    with no SDK update — see the *Sign-in request* limitation below.
 - **`FastoryConfig.prewarm` chooses which surfaces are prepared before their first opening.** A
   prepared surface opens already rendered, and it costs a WebView kept in memory from launch on — a
   renderer process on Android — plus the requests its page makes, whether your fan opens it or not.
@@ -245,6 +472,11 @@ changes** — the mode and its errors shipped frozen in 0.4.0, so this is additi
   malformed or expired one is the server's verdict, not a local one.
 - The SDK does not renew the session; it lives for the token's lifetime.
 
+  **Corrected.** It does renew it, as *Session lifecycle* above says: ahead of its expiry, server-side
+  and asking no one, then through the provider you register with `setHostTokenProvider` when that
+  refresh fails or the session has expired. A session nothing can renew ends with `FastoryIdentityRevoked`,
+  `reason == FastoryRevocationReason.expired`.
+
 ### Sign-in request
 
 A sign-in entry on a page the SDK shows — the hub, the membership panel or a game — now asks your app
@@ -275,6 +507,12 @@ adopts neither. Without the field, the pages show no sign-in entry at all.
   that needs a signed-in fan reads *Sign in from the app to continue*, with no button. **Declare the
   field only if you listen for the message**: declared and unheard, every sign-in entry is a button
   that does nothing.
+
+  **Note.** If your app declares `handlesLoginRequests`, pages now also send
+  `fastory:logout-requested` when a fan taps a sign-out entry. 0.5.0 does not deliver that message,
+  so the sign-out entry does nothing until you update the SDK to the version above. If your app does
+  not declare the field, pages no longer show a sign-out entry at all: sign the fan out with
+  `logout()`.
 - **The hub on screen follows the signed-in fan.** When `identify` signs in a fan or a different one,
   and when `logout()` or a lapsed session drops one, an open hub reloads — signed in as the new fan,
   or anonymous. Identifying the same fan again, a background renewal, and an anonymous `identify`
@@ -292,6 +530,10 @@ adopts neither. Without the field, the pages show no sign-in entry at all.
   message like anywhere else, but once you have signed the fan in the panel still shows them as
   anonymous — the *Membership panel* section above says the same. The hub and the games do show the
   fan. A fix is planned on our side.
+
+  **Partly fixed since.** A panel you open after identifying the fan now shows them signed in: the
+  fix is on our servers, so it needs no SDK update. A panel already on screen when the fan changes
+  still keeps the session it opened with on 0.5.0; following that change takes the version above.
 - **On Android a frame embedded inside a game can post `fastory:login-requested` too.** It carries
   nothing, so the worst it can do is show your sign-in when the fan did not ask: offer a sign-in on
   it, never decide anything that matters.
@@ -440,6 +682,10 @@ contradictory, found by reading it the way an integrator does.
   `surfaceLoadFailed` and no `hubOpened`. And a hub reopened before the platform destroyed the
   previous one starts from a cold page; the one after it is warm again. A second `openGames()` while
   a hub is still launching is still absorbed, as before. iOS was not affected.
+
+  **Corrected.** iOS was affected, differently: an `openGames()` called while the hub was still
+  animating out did nothing, and only one called from the `hubClosed` callback in Flutter reopened
+  it. Fixed in the release after 0.5.0.
 - **iOS: one `close()` now returns the fan to your app even while a game is open.** With a game sheet
   on screen, a single `close()` used to dismiss the sheet only: the hub stayed up, `hubClosed` was
   never emitted, and a second call was needed — a workaround no document described, and one that
